@@ -28,6 +28,12 @@ type Client struct {
 	// Lock handles are session-bound and may carry the transport selected by
 	// SAP in the LOCK response. sync.Map keeps concurrent workflows isolated.
 	lockTransports sync.Map // map[lockHandle]corrNr
+
+	// rfcFetcherFactory, when non-nil, overrides the default WebSocket-backed
+	// RFC source fetcher used by GetEnhancement's fallback path. Production
+	// callers leave this nil; tests inject a stub to avoid opening a real
+	// WebSocket. The factory is invoked once per RFC attempt.
+	rfcFetcherFactory func(ctx context.Context) (rfcSourceFetcher, error)
 }
 
 // NewClient creates a new ADT client with the given configuration.
