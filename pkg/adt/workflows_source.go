@@ -215,6 +215,10 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		ObjectType: objectType,
 		ObjectName: name,
 	}
+	if opts.Mode != WriteModeCreate && opts.Mode != WriteModeUpdate && opts.Mode != WriteModeUpsert {
+		result.Message = fmt.Sprintf("Invalid mode %q (supported: create, update, upsert)", opts.Mode)
+		return result, nil
+	}
 
 	// Validate object type
 	switch objectType {
@@ -225,33 +229,12 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		return result, nil
 	}
 
-	// Determine if object exists (for upsert mode)
-	objectExists := false
-	if opts.Mode == WriteModeUpsert {
-		// Try to check if object exists
-		switch objectType {
-		case "PROG":
-			_, err := c.GetProgram(ctx, name)
-			objectExists = (err == nil)
-		case "CLAS":
-			_, err := c.GetClass(ctx, name)
-			objectExists = (err == nil)
-		case "INTF":
-			_, err := c.GetInterface(ctx, name)
-			objectExists = (err == nil)
-		case "DDLS":
-			_, err := c.GetDDLS(ctx, name)
-			objectExists = (err == nil)
-		case "BDEF":
-			_, err := c.GetBDEF(ctx, name)
-			objectExists = (err == nil)
-		case "SRVD":
-			_, err := c.GetSRVD(ctx, name)
-			objectExists = (err == nil)
-		case "SRVB":
-			_, err := c.GetSRVB(ctx, name)
-			objectExists = (err == nil)
-		}
+	// All three modes need an authoritative existence check. Treat only a
+	// definite 404 as absence; authentication, network and server failures must
+	// not be misclassified as a reason to create or overwrite an object.
+	objectExists, err := c.writeSourceObjectExists(ctx, objectType, name)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine actual operation mode
@@ -282,6 +265,17 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 	} else {
 		return c.writeSourceUpdate(ctx, objectType, name, source, opts)
 	}
+}
+
+func (c *Client) writeSourceObjectExists(ctx context.Context, objectType, name string) (bool, error) {
+	_, err := c.GetSource(ctx, objectType, name, nil)
+	if err == nil {
+		return true, nil
+	}
+	if IsNotFoundError(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("checking whether %s %s exists: %w", objectType, name, err)
 }
 
 // writeSourceCreate handles creation workflow
