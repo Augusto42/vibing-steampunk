@@ -21,9 +21,9 @@ Data da auditoria: 2026-08-15
 | Plataforma | Windows/amd64 |
 | Go | `go1.25.0` |
 | CGO | desabilitado no runtime de auditoria |
-| Commit de código auditado | `8bd5c63c470ef6b688880071e4cd8ac9d4362d5e` |
-| Árvore Git do código auditado | `9a9929a42079eda087b494e1b81e1ef661cc0eb2` |
-| Descrição do código auditado | `v2.38.1-82-g8bd5c63` |
+| Commit de código auditado | `596b8cce0a10da847b877f1677e4e1c026cf669a` |
+| Árvore Git do código auditado | `229172f779898e605cc90ed851da65a63fb2680d` |
+| Descrição do código auditado | `v2.38.1-85-g596b8cc` |
 
 ## Matriz de diagnóstico e correção
 
@@ -34,6 +34,8 @@ Data da auditoria: 2026-08-15
 | C. `ExecuteABAP` | Ativação sem sucesso e alertas ABAP Unit reais podiam terminar como sucesso; camadas CLI/MCP não tratavam `Success=false` como erro. | Ativação bem-sucedida passou a ser obrigatória; analisador separa o marcador de resultado de assertions/exceções reais e exige marcador de conclusão; CLI/MCP propagam falha lógica. | Testes puros para sucesso, assertion, exceção, ausência de marcador e falha de ativação. | Corrigido |
 | D. Instaladores | A existência do pacote era inferida por endpoint inadequado, opções não eram integralmente repassadas e o resultado lógico do deploy não era verificado. | Consulta direta do pacote; criação idempotente com verificação; deploy compartilhado valida erro, `Success`, sintaxe, ativação e leitura posterior; objeto preexistente nunca é excluído por reconciliação automática. | Fakes para pacote existente/ausente, falha lógica, sintaxe, ativação, leitura e conflito de existência. | Corrigido |
 | E. Lock, sessão, CSRF e transporte | Descoberta CSRF podia abrir contexto stateless; havia busca de pacote entre lock e escrita; `NoModification` era interpretado como proibição; `corrNr` do lock era descartado. | CSRF usa o mesmo modo stateful, com fallback HEAD→GET; pacote é validado antes do lock; somente a busca redundante é suprimida, mantendo gates de operação/transporte; `NoModification` é preservado como metadado; `corrNr` é reutilizado com whitelist e preferência ao transporte explícito; erros 400/409/423 não recebem retry cego. | Mocks de cookie, renovação 403, ordem LOCK→PUT→UNLOCK, unlock após falha, fallback/override de transporte e bloqueio fail-closed. | Corrigido |
+| F. IDs de gravação | A resolução do relógio no Windows permitia IDs idênticos em gravações criadas em rajada, sobrescrevendo arquivo e índice. | O timestamp usado no ID avança atomicamente quando o relógio não progride, preservando ordenação e formato. | Teste concorrente de 4.000 IDs e 50 repetições da suíte de histórico. | Corrigido |
+| G. Oracle JavaScript no Windows | O teste gravava o script em `/tmp`, caminho não portável, e ignorava erro de escrita. | `t.TempDir`, escrita verificada, `CommandContext` e skip explícito quando Node.js não está disponível. | `pkg/jseval` e `TestOracleComparison` passam no Windows. | Corrigido |
 
 ## Histórico e correlação pública
 
@@ -49,6 +51,8 @@ O histórico da branch principal já continha correções parciais de sessão (`
 4. `057c3c66cbf3a264017f74fc6f5f51f11959f889` — `fix(install): verify package and deployed objects`
 5. `60ec08e86e070fc116d812b30ac9feb110a88fba` — `fix(adt): preserve lock session and transport context`
 6. `8bd5c63c470ef6b688880071e4cd8ac9d4362d5e` — `style(go): format audited files`
+7. `cc9690bdf3c846f98fa7aec0437268b2856178bc` — `fix(adt): guarantee unique recording IDs`
+8. `596b8cce0a10da847b877f1677e4e1c026cf669a` — `test(jseval): use portable oracle temp files`
 
 ## Arquivos modificados
 
@@ -57,6 +61,7 @@ O histórico da branch principal já continha correções parciais de sessão (`
 - Execução: `pkg/adt/workflows_execute.go`, `pkg/adt/workflows_execute_test.go`, `internal/mcp/handlers_help.go`, `internal/mcp/handlers_transport.go`, `internal/mcp/tools_register.go`.
 - Instaladores: `internal/install/install.go`, `internal/install/install_test.go`, `internal/mcp/handlers_install.go`, `pkg/adt/client.go`, `pkg/adt/crud.go`, `pkg/adt/crud_reconcile_test.go`.
 - Sessão e mutações: `pkg/adt/http.go`, `pkg/adt/http_test.go`, `pkg/adt/mutation_gate.go`, `pkg/adt/saml_auth_test.go`, `pkg/adt/workflows.go`, `pkg/adt/workflows_deploy.go`, `pkg/adt/workflows_deploy_order_test.go`, `pkg/adt/workflows_edit.go`, `pkg/adt/workflows_fileio.go`.
+- Portabilidade e histórico: `pkg/adt/recorder.go`, `pkg/adt/recorder_test.go`, `pkg/jseval/oracle_test.go`.
 
 ## Verificação
 
@@ -68,14 +73,14 @@ Passaram:
 - `golangci-lint v1.64.8 run --new-from-rev=origin/main ./...`;
 - `git diff origin/main..HEAD --check`;
 - inspeção do delta para dados de cliente, usando somente fixtures sintéticas.
+- 50 repetições dos testes de histórico que falhavam intermitentemente;
+- teste oracle de `pkg/jseval` com diretório temporário nativo do sistema.
 
-A suíte `go test ./...` não fica integralmente verde no ambiente atual por causas já presentes na base:
+A suíte `go test ./...` agora passa em todos os pacotes que não dependem de SQLite com CGO. No ambiente atual, restam somente falhas já presentes na base:
 
 - testes SQLite de `cmd/vsp` e `pkg/cache` requerem CGO;
-- `pkg/jseval` usa caminhos `/tmp` que não são válidos da mesma forma no Windows;
-- testes de histórico em `pkg/adt` apresentam intermitência no índice de gravações. O pacote passou em uma execução completa e a intermitência foi reproduzida isoladamente.
 
-Essas falhas não interceptam os cenários corrigidos e não foram mascaradas nem alteradas nesta auditoria.
+O problema de `/tmp` em `pkg/jseval` e a intermitência do histórico foram corrigidos, não apenas ignorados. A limitação restante de CGO não intercepta os cenários corrigidos e não foi mascarada.
 
 ## Riscos residuais
 
