@@ -156,6 +156,59 @@ func TestCreateObject_CleanFailureBeforePersistence(t *testing.T) {
 	}
 }
 
+func TestReconcileFailedCreate_DoesNotDeletePreExistingObject(t *testing.T) {
+	mock := &methodPathMock{}
+	client := newReconcileClient(t, mock)
+	createErr := &APIError{
+		StatusCode: http.StatusBadRequest,
+		Message:    "ExceptionResourceAlreadyExists: synthetic object already exists",
+	}
+
+	err := client.reconcileFailedCreate(context.Background(), CreateObjectOptions{
+		ObjectType:  ObjectTypePackage,
+		Name:        "$SYNTHETIC",
+		PackageName: "$SYNTHETIC",
+	}, createErr)
+	if !errors.Is(err, createErr) {
+		t.Fatalf("error = %v, want original already-exists error", err)
+	}
+	if len(mock.calls) != 0 {
+		t.Fatalf("reconciliation touched a pre-existing object: %#v", mock.calls)
+	}
+}
+
+func TestPackageExistsUsesDirectResource(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		wantExists bool
+		wantErr    bool
+	}{
+		{name: "existing empty package", status: http.StatusOK, wantExists: true},
+		{name: "missing package", status: http.StatusNotFound},
+		{name: "inconclusive server error", status: http.StatusInternalServerError, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &methodPathMock{routes: []routedResponse{
+				resp(http.MethodGet, "/packages/$SYNTHETIC", tt.status, "synthetic response"),
+			}}
+			client := newReconcileClient(t, mock)
+			exists, err := client.PackageExists(context.Background(), "$SYNTHETIC")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr=%t", err, tt.wantErr)
+			}
+			if exists != tt.wantExists {
+				t.Fatalf("exists = %t, want %t", exists, tt.wantExists)
+			}
+			if len(mock.calls) != 1 || mock.calls[0].method != http.MethodGet {
+				t.Fatalf("unexpected calls: %#v", mock.calls)
+			}
+		})
+	}
+}
+
 // TestCreateObject_PartialPersistenceCleanupOK covers the prod-incident
 // scenario: CreateObject POST returns 500 but SAP already persisted the
 // object. The existence probe returns 200, lock acquisition succeeds,
