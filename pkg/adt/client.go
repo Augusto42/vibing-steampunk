@@ -177,7 +177,11 @@ func (c *Client) getObjectPackage(ctx context.Context, objectURL string) (string
 func normalizeObjectURLForPackageCheck(objectURL string) string {
 	normalized := strings.TrimSuffix(objectURL, "/")
 
-	if idx := strings.Index(normalized, "/includes/"); idx >= 0 {
+	// Only OO class include URLs resolve to their parent class. Program includes
+	// are first-class PROG/I objects; trimming them to /programs would make the
+	// package gate search for the wrong object and fail closed on every write.
+	if isClassIncludeObjectURL(normalized) {
+		idx := strings.Index(strings.ToLower(normalized), "/includes/")
 		return normalized[:idx]
 	}
 	if strings.HasSuffix(normalized, "/source/main") {

@@ -60,7 +60,7 @@ type EnhancementRef struct {
 	PackageName string          `json:"packageName,omitempty"`
 	Description string          `json:"description,omitempty"`
 	// FullName is the XPath-style anchor location reported by ENHINCINX for
-	// HOOK_IMPL plug-ins, e.g. "\PR:SAPLVKMP\FO:BEDINGUNG_PRUEFEN_901\SE:BEGIN\EI".
+	// HOOK_IMPL plug-ins, e.g. "\PR:ZSYNTHETIC_PROGRAM\FO:SYNTHETIC_FORM\SE:BEGIN\EI".
 	// Empty unless the ENHO was discovered via the table-based fallback.
 	FullName string `json:"fullName,omitempty"`
 	// HostProgram is the main program (function-group main, executable program)
@@ -109,7 +109,7 @@ func (c *Client) GetEnhancement(ctx context.Context, name string) (string, error
 // The point of bypassing re-resolution: callers that obtained the ref via
 // ListEnhancementsForInclude's table fallback already have ref.EnhInclude
 // populated with the real REPOSRC entry name (e.g.
-// "ISM_SAPLVKMP==================E" with `=`-padding). Going back through
+// "ZSYNTHETIC_HOOK============E" with `=`-padding). Going back through
 // SearchObject would discard that and force the RFC step to fall back to
 // the <NAME>E convention, which doesn't exist as an entry on classic ECC for
 // most non-company HOOK_IMPL plug-ins.
@@ -670,7 +670,11 @@ func (c *Client) GetIncludeMerged(ctx context.Context, includeName string) (stri
 	}
 	enhanced := make([]enhWithSource, 0, len(refs))
 	for _, ref := range refs {
-		src, ferr := c.GetEnhancement(ctx, ref.Name)
+		// Preserve table-fallback metadata such as the exact REPOSRC include.
+		// Re-resolving by name would discard it and can make classic-system
+		// bridge reads fail for padded enhancement include names.
+		refCopy := ref
+		src, ferr := c.GetEnhancementByRef(ctx, &refCopy)
 		if ferr != nil {
 			// Record the failure inline but keep going.
 			enhanced = append(enhanced, enhWithSource{

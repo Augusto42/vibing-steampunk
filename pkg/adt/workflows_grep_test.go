@@ -16,23 +16,23 @@ func TestGrepObjectWithEnhancements_HitInsideEnhancementBody(t *testing.T) {
   WRITE 'no pattern here'.
 ENDFORM.
 `
-	enhSource := `ENHANCEMENT 2 Y3EI_TEST.
+	enhSource := `ENHANCEMENT 2 ZSYNTHETIC_ENH.
   LOOP AT lt_xfplt INTO DATA(ls_xfplt).
-    lv_sum = lv_sum + ls_xfplt-fakwr.
+    lv_sum = lv_sum + ls_item-amount.
   ENDLOOP.
 ENDENHANCEMENT.
 `
 	browserResp := `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/y3ei_test" adtcore:type="ENHO/XH" adtcore:name="Y3EI_TEST" adtcore:packageName="YSD"/>
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_enh" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_ENH" adtcore:packageName="$TMP"/>
 </adtcore:objectReferences>`
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
-			"/sap/bc/adt/programs/includes/RVKMP901/source/main":          newBody(baseSource),
-			"/sap/bc/adt/enhancements/enhoxhs":                            newBody(browserResp),
-			"/sap/bc/adt/enhancements/enhoxh/y3ei_test/source/main":       newBody(enhSource),
-			"/sap/bc/adt/discovery":                                       newBody("OK"),
+			"/sap/bc/adt/programs/includes/ZSYNTHETIC_INCLUDE/source/main": newBody(baseSource),
+			"/sap/bc/adt/enhancements/enhoxhs":                             newBody(browserResp),
+			"/sap/bc/adt/enhancements/enhoxh/zsynthetic_enh/source/main":   newBody(enhSource),
+			"/sap/bc/adt/discovery":                                        newBody("OK"),
 		},
 	}
 	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
@@ -41,8 +41,8 @@ ENDENHANCEMENT.
 
 	result, err := client.GrepObjectWithEnhancements(
 		context.Background(),
-		"/sap/bc/adt/programs/includes/RVKMP901",
-		`lv_sum\s*=\s*lv_sum\s*\+\s*ls_xfplt-fakwr`,
+		"/sap/bc/adt/programs/includes/ZSYNTHETIC_INCLUDE",
+		`lv_sum\s*=\s*lv_sum\s*\+\s*ls_item-amount`,
 		false, 0, nil,
 	)
 	if err != nil {
@@ -54,8 +54,8 @@ ENDENHANCEMENT.
 
 	found := false
 	for _, m := range result.Matches {
-		if strings.Contains(m.MatchedLine, "[ENHO Y3EI_TEST @ RVKMP901]") &&
-			strings.Contains(m.MatchedLine, "lv_sum = lv_sum + ls_xfplt-fakwr") {
+		if strings.Contains(m.MatchedLine, "[ENHO ZSYNTHETIC_ENH @ ZSYNTHETIC_INCLUDE]") &&
+			strings.Contains(m.MatchedLine, "lv_sum = lv_sum + ls_item-amount") {
 			found = true
 			break
 		}
@@ -77,15 +77,15 @@ ENDFORM.
 `
 	browserResp := `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/y_lost" adtcore:type="ENHO/XH" adtcore:name="Y_LOST" adtcore:packageName="YSD"/>
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_missing" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_MISSING" adtcore:packageName="$TMP"/>
 </adtcore:objectReferences>`
 
 	// No ENHO source endpoint registered → REST steps both 404.
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
-			"/sap/bc/adt/programs/includes/RVKMP901/source/main": newBody(baseSource),
-			"/sap/bc/adt/enhancements/enhoxhs":                   newBody(browserResp),
-			"/sap/bc/adt/discovery":                              newBody("OK"),
+			"/sap/bc/adt/programs/includes/ZSYNTHETIC_INCLUDE/source/main": newBody(baseSource),
+			"/sap/bc/adt/enhancements/enhoxhs":                             newBody(browserResp),
+			"/sap/bc/adt/discovery":                                        newBody("OK"),
 		},
 	}
 	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
@@ -99,7 +99,7 @@ ENDFORM.
 
 	result, err := client.GrepObjectWithEnhancements(
 		context.Background(),
-		"/sap/bc/adt/programs/includes/RVKMP901",
+		"/sap/bc/adt/programs/includes/ZSYNTHETIC_INCLUDE",
 		`lv_sum`,
 		false, 0, nil,
 	)
@@ -109,7 +109,7 @@ ENDFORM.
 
 	foundWarning := false
 	for _, m := range result.Matches {
-		if strings.Contains(m.MatchedLine, "ENHO/XH Y_LOST @ RVKMP901") &&
+		if strings.Contains(m.MatchedLine, "ENHO/XH ZSYNTHETIC_MISSING @ ZSYNTHETIC_INCLUDE") &&
 			strings.Contains(m.MatchedLine, "body unavailable") {
 			foundWarning = true
 			break
@@ -130,7 +130,7 @@ func TestGrepObjectWithEnhancements_DedupesViaWalkState(t *testing.T) {
 	baseSource := `FORM foo.
 ENDFORM.
 `
-	enhSource := `ENHANCEMENT 2 Y_SHARED.
+	enhSource := `ENHANCEMENT 2 ZSYNTHETIC_SHARED.
   WRITE 'shared'.
 ENDENHANCEMENT.
 `
@@ -138,7 +138,7 @@ ENDENHANCEMENT.
 	// CXX/EXX/F0X includes all sharing one HOOK_IMPL plug-in.
 	browserResp := `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/y_shared" adtcore:type="ENHO/XH" adtcore:name="Y_SHARED" adtcore:packageName="YSD"/>
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_shared" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_SHARED" adtcore:packageName="$TMP"/>
 </adtcore:objectReferences>`
 
 	// Counter to assert how many times the ENHO body was fetched.
@@ -154,7 +154,7 @@ ENDENHANCEMENT.
 	// Wrap the mock to count source/main fetches on the ENHO URL.
 	countingMock := &countingTransportClient{
 		inner:    mock,
-		matchURL: "/sap/bc/adt/enhancements/enhoxh/y_shared/source/main",
+		matchURL: "/sap/bc/adt/enhancements/enhoxh/zsynthetic_shared/source/main",
 		body:     enhSource,
 		count:    &fetchCount,
 	}

@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Features
+
+- Add read-only Enhancement Framework (`ENHO`) source discovery, include
+  attachment lookup, and annotated merged include views.
+- Add first-class program include (`INCL` / `PROG/I`) create and update support
+  through the unified source workflow.
+- Add read-only Dynpro (`DYNP`) metadata, layout, and flow-logic retrieval
+  through the optional ZADT_VSP bridge.
+
+### Bug Fixes
+
+- Distinguish program include URLs from OO class include URLs during package
+  resolution, syntax checks, and surgical edits.
+- Correct the synthetic enhancement anchor fixture so the merged-view
+  regression exercises a real SAP anchor marker.
+
 ## [2.38.1] - 2026-04-07
 ### Bug Fixes
 

@@ -194,7 +194,7 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 	}
 
 	// Detect if this is a class include (e.g., /sap/bc/adt/oo/classes/ZCL_FOO/includes/testclasses)
-	isClassInclude := strings.Contains(objectURL, "/includes/")
+	isClassInclude := isClassIncludeObjectURL(objectURL)
 	var className string
 	var includeType ClassIncludeType
 	var parentClassURL string

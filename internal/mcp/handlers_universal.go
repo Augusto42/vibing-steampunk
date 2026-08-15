@@ -24,12 +24,12 @@ some actions (analyze, test, debug, system, help) use params only — no target 
 
 SAP(action="read", target="CLAS ZCL_TEST")  — source + dependency context
 SAP(action="read", target="CLAS ZCL_TEST", params={"method": "GET_DATA"})  — one method + context
-SAP(action="read", target="INCL RVKMP901")  — include source + "Enhancements attached" footer (ENHOs that target this include)
+SAP(action="read", target="INCL ZSYNTHETIC_INCLUDE")  — include source + "Enhancements attached" footer (ENHOs that target this include)
 SAP(action="read", target="ENHO Y_MY_ENHANCEMENT")  — enhancement source / metadata
 SAP(action="edit", target="CLAS ZCL_TEST", params={"source": "..."})  — auto lock/activate
 SAP(action="edit", target="CLAS ZCL_TEST", params={"method": "X", "source": "METHOD x.\nENDMETHOD."})
 SAP(action="search", target="ZCL_*")
-SAP(action="analyze", params={"type": "enhancements_on", "target": "INCL RVKMP901"})  — reverse-lookup ENHOs targeting an include
+SAP(action="analyze", params={"type": "enhancements_on", "target": "INCL ZSYNTHETIC_INCLUDE"})  — reverse-lookup ENHOs targeting an include
 SAP(action="analyze", params={"type": "check_boundaries", "package": "$ZDEV"})
 SAP(action="help") — full docs; SAP(action="help", target="tips") — best practices`),
 		mcp.WithString("action",

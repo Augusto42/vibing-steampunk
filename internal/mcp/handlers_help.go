@@ -35,9 +35,9 @@ Read with options:
 
 Read enhancements:
   SAP(action="read", target="ENHO Y_MY_ENHANCEMENT")        - Enhancement source (returns metadata + body when ADT exposes it)
-  SAP(action="read", target="INCL RVKMP901")                - INCL reads append a "* === Enhancements attached ===" footer listing each ENHO that targets this include
-  SAP(action="read", target="INCL RVKMP901", params={"merged": true})  - SE80-style spliced view (anchors + ENHO bodies inline)
-  SAP(action="analyze", params={"type": "enhancements_on", "target": "INCL RVKMP901"})  - Reverse lookup, JSON
+  SAP(action="read", target="INCL ZSYNTHETIC_INCLUDE")                - INCL reads append a "* === Enhancements attached ===" footer listing each ENHO that targets this include
+  SAP(action="read", target="INCL ZSYNTHETIC_INCLUDE", params={"merged": true})  - SE80-style spliced view (anchors + ENHO bodies inline)
+  SAP(action="analyze", params={"type": "enhancements_on", "target": "INCL ZSYNTHETIC_INCLUDE"})  - Reverse lookup, JSON
 
 Read metadata:
   SAP(action="read", target="TABL ZTABLE")          - Table definition

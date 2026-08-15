@@ -134,15 +134,59 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_move_to_package.
-*   Stub on classic ECC: requires ZADT_CL_TADIR_MOVE which is not installed
-*   on this system. The moveToPackage action returns a graceful error. The
-*   RPY_PROGRAM_READ path used by vsp's ENHO source bridge does NOT route
-*   through here, so the bridge still works.
-    rs_response = build_error(
-      iv_id      = is_message-id
-      iv_code    = 'NOT_AVAILABLE'
-      iv_message = 'moveToPackage requires ZADT_CL_TADIR_MOVE; not installed on this system'
-    ).
+    " Extract parameters: pgmid, object, obj_name, new_package
+    DATA(lv_pgmid) = extract_param( iv_params = is_message-params iv_name = 'pgmid' ).
+    DATA(lv_object) = extract_param( iv_params = is_message-params iv_name = 'object' ).
+    DATA(lv_obj_name) = extract_param( iv_params = is_message-params iv_name = 'obj_name' ).
+    DATA(lv_new_pkg) = extract_param( iv_params = is_message-params iv_name = 'new_package' ).
+
+    " Validate required params
+    IF lv_object IS INITIAL.
+      rs_response = build_error( iv_id = is_message-id iv_code = 'MISSING_PARAM' iv_message = 'Parameter object is required (e.g., CLAS, PROG, INTF, SAPC)' ).
+      RETURN.
+    ENDIF.
+    IF lv_obj_name IS INITIAL.
+      rs_response = build_error( iv_id = is_message-id iv_code = 'MISSING_PARAM' iv_message = 'Parameter obj_name is required' ).
+      RETURN.
+    ENDIF.
+    IF lv_new_pkg IS INITIAL.
+      rs_response = build_error( iv_id = is_message-id iv_code = 'MISSING_PARAM' iv_message = 'Parameter new_package is required' ).
+      RETURN.
+    ENDIF.
+
+    " Default pgmid to R3TR
+    IF lv_pgmid IS INITIAL.
+      lv_pgmid = 'R3TR'.
+    ENDIF.
+
+    " Uppercase all values
+    TRANSLATE lv_pgmid TO UPPER CASE.
+    TRANSLATE lv_object TO UPPER CASE.
+    TRANSLATE lv_obj_name TO UPPER CASE.
+    TRANSLATE lv_new_pkg TO UPPER CASE.
+
+    " Call ZADT_CL_TADIR_MOVE to perform the move
+    DATA lv_result TYPE string.
+    TRY.
+        lv_result = zadt_cl_tadir_move=>move_object_and_commit(
+          iv_pgmid    = CONV #( lv_pgmid )
+          iv_object   = CONV #( lv_object )
+          iv_obj_name = CONV #( lv_obj_name )
+          iv_new_pkg  = CONV #( lv_new_pkg )
+        ).
+      CATCH cx_root INTO DATA(lx_error).
+        rs_response = build_error( iv_id = is_message-id iv_code = 'MOVE_ERROR' iv_message = lx_error->get_text( ) ).
+        RETURN.
+    ENDTRY.
+
+    " Build response
+    DATA(lv_o) = '{'.
+    DATA(lv_c) = '}'.
+    DATA(lv_success) = COND string( WHEN lv_result CP 'SUCCESS*' THEN 'true' ELSE 'false' ).
+    DATA lv_json TYPE string.
+    lv_json = |{ lv_o }"success":{ lv_success },"pgmid":"{ lv_pgmid }","object":"{ lv_object }","obj_name":"{ lv_obj_name }","new_package":"{ lv_new_pkg }","message":"{ escape_json( lv_result ) }"{ lv_c }|.
+
+    rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
   ENDMETHOD.
 
   METHOD handle_call.

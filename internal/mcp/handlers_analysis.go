@@ -61,7 +61,7 @@ func (s *Server) routeAnalysisAction(ctx context.Context, action, objectType, ob
 
 // handleEnhancementsOn lists ENHO implementations that target a given object.
 // Today supports INCL targets. The target is expressed as "TYPE NAME" (e.g.
-// "INCL RVKMP901") either via the universal handler's target param or via
+// "INCL ZSYNTHETIC_INCLUDE") either via the universal handler's target param or via
 // separate object_type/object_name params.
 func (s *Server) handleEnhancementsOn(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
@@ -75,7 +75,7 @@ func (s *Server) handleEnhancementsOn(ctx context.Context, request mcp.CallToolR
 	}
 
 	if typeName == "" || objectName == "" {
-		return newToolResultError("enhancements_on requires target (e.g. \"INCL RVKMP901\") or object_type + object_name"), nil
+		return newToolResultError("enhancements_on requires target (e.g. \"INCL ZSYNTHETIC_INCLUDE\") or object_type + object_name"), nil
 	}
 
 	switch typeName {
@@ -85,9 +85,9 @@ func (s *Server) handleEnhancementsOn(ctx context.Context, request mcp.CallToolR
 			return newToolResultError(fmt.Sprintf("ListEnhancementsForInclude failed: %v", err)), nil
 		}
 		payload := map[string]any{
-			"target":        fmt.Sprintf("INCL %s", strings.ToUpper(objectName)),
-			"matches":       refs,
-			"matchCount":    len(refs),
+			"target":     fmt.Sprintf("INCL %s", strings.ToUpper(objectName)),
+			"matches":    refs,
+			"matchCount": len(refs),
 		}
 		if len(refs) == 0 {
 			payload["message"] = "No enhancements target this include."

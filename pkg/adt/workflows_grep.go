@@ -30,11 +30,11 @@ type GrepObjectResult struct {
 
 // GrepPackageResult represents the result of grepping an ABAP package.
 type GrepPackageResult struct {
-	Success     bool               `json:"success"`
-	PackageName string             `json:"packageName"`
-	Objects     []GrepObjectResult `json:"objects"`
-	TotalMatches int               `json:"totalMatches"`
-	Message     string             `json:"message,omitempty"`
+	Success      bool               `json:"success"`
+	PackageName  string             `json:"packageName"`
+	Objects      []GrepObjectResult `json:"objects"`
+	TotalMatches int                `json:"totalMatches"`
+	Message      string             `json:"message,omitempty"`
 }
 
 // GrepObject searches for a regex pattern in a single ABAP object's source code.
@@ -406,7 +406,7 @@ func NewGrepEnhancementsState(cap int) *GrepEnhancementsState {
 }
 
 // extractObjectNameFromURL pulls the object name from an ADT URL such as
-// `/sap/bc/adt/programs/includes/RVKMP901` or `.../programs/programs/ZTEST`.
+// `/sap/bc/adt/programs/includes/ZSYNTHETIC_INCLUDE` or `.../programs/programs/ZTEST`.
 // Returns "" for URLs that don't fit the expected shape.
 func extractObjectNameFromURL(objectURL string) string {
 	u := strings.TrimRight(objectURL, "/")

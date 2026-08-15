@@ -65,14 +65,10 @@ CLASS zcl_vsp_apc_handler IMPLEMENTATION.
     ENDTRY.
 
     APPEND NEW zcl_vsp_rfc_service( ) TO gt_services.
-*   Skipped on classic ECC: debug/amdp/git/report services depend on
-*   types/classes (if_amdp_dbg_main, ZCL_ABAPGIT_*, S/4 RAP runtime) that
-*   are absent on this release. The RFC service is sufficient for vsp's
-*   enhancement-source bridge (RPY_PROGRAM_READ via the rfc domain).
-*    APPEND NEW zcl_vsp_debug_service( ) TO gt_services.
-*    APPEND NEW zcl_vsp_amdp_service( ) TO gt_services.
-*    APPEND NEW zcl_vsp_git_service( ) TO gt_services.
-*    APPEND NEW zcl_vsp_report_service( ) TO gt_services.
+    APPEND NEW zcl_vsp_debug_service( ) TO gt_services.
+    APPEND NEW zcl_vsp_amdp_service( ) TO gt_services.
+    APPEND NEW zcl_vsp_git_service( ) TO gt_services.
+    APPEND NEW zcl_vsp_report_service( ) TO gt_services.
   ENDMETHOD.
 
   METHOD if_apc_wsp_extension~on_start.

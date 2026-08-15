@@ -20,7 +20,7 @@ var _ = time.Now
 
 // GetSourceOptions configures GetSource behavior
 type GetSourceOptions struct {
-	Parent  string // Function group name (required for FUNC type)
+	Parent  string // Function group for FUNC; parent program for DYNP
 	Include string // Class include type: definitions, implementations, macros, testclasses (optional for CLAS type)
 	Method  string // Method name for method-level source extraction (optional for CLAS type)
 	Merged  bool   // INCL only: splice referenced ENHO enhancements into the output (SE80-style merged view)
@@ -42,6 +42,7 @@ type GetSourceOptions struct {
 //   - SRVD: Service Definitions (name = SRVD name) - RAP service exposure
 //   - SRVB: Service Bindings (name = SRVB name) - RAP protocol binding (returns JSON metadata)
 //   - MSAG: Message classes (name = message class name) - returns JSON with all messages
+//   - DYNP: Screens (name = screen number and parent = program, or name = PROGRAM/0100) - returns JSON metadata
 func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *GetSourceOptions) (string, error) {
 	// Safety check for read operations
 	if err := c.checkSafety(OpRead, "GetSource"); err != nil {
@@ -101,6 +102,21 @@ func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *G
 	case "ENHO":
 		return c.GetEnhancement(ctx, name)
 
+	case "DYNP":
+		program, screen, err := parseDynproReference(name, opts.Parent)
+		if err != nil {
+			return "", err
+		}
+		dynpro, err := c.GetDynpro(ctx, program, screen)
+		if err != nil {
+			return "", err
+		}
+		data, err := json.MarshalIndent(dynpro, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("failed to serialize dynpro: %w", err)
+		}
+		return string(data), nil
+
 	case "DDLS":
 		return c.GetDDLS(ctx, name)
 
@@ -139,7 +155,7 @@ func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *G
 		return string(data), nil
 
 	default:
-		return "", fmt.Errorf("unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, VIEW, BDEF, SRVD, SRVB, MSAG, ENHO)", objectType)
+		return "", fmt.Errorf("unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, FUGR, INCL, DYNP, DDLS, VIEW, BDEF, SRVD, SRVB, MSAG, ENHO)", objectType)
 	}
 }
 
@@ -183,6 +199,7 @@ type WriteSourceResult struct {
 //   - PROG: Programs
 //   - CLAS: Classes (optionally with test source)
 //   - INTF: Interfaces
+//   - INCL: Program includes
 //
 // Mode:
 //   - upsert (default): Auto-detect if object exists, create or update accordingly
@@ -215,10 +232,10 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 
 	// Validate object type
 	switch objectType {
-	case "PROG", "CLAS", "INTF", "DDLS", "BDEF", "SRVD", "SRVB":
+	case "PROG", "CLAS", "INTF", "INCL", "DDLS", "BDEF", "SRVD", "SRVB":
 		// Supported types
 	default:
-		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, DDLS, BDEF, SRVD, SRVB)", objectType)
+		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, INCL, DDLS, BDEF, SRVD, SRVB)", objectType)
 		return result, nil
 	}
 
@@ -284,6 +301,8 @@ func writeSourceObjectURL(objectType, name string) string {
 		creatableType = ObjectTypeClass
 	case "INTF":
 		creatableType = ObjectTypeInterface
+	case "INCL":
+		creatableType = ObjectTypeInclude
 	case "DDLS":
 		creatableType = ObjectTypeDDLS
 	case "BDEF":
@@ -465,6 +484,30 @@ func (c *Client) writeSourceCreate(ctx context.Context, objectType, name, source
 			result.Message = "Activation failed - check activation messages"
 		}
 
+		return result, nil
+
+	case "INCL":
+		if err := c.CreateObject(ctx, CreateObjectOptions{
+			ObjectType:  ObjectTypeInclude,
+			Name:        name,
+			Description: opts.Description,
+			PackageName: opts.Package,
+			Transport:   opts.Transport,
+		}); err != nil {
+			result.Message = fmt.Sprintf("Failed to create include: %v", err)
+			return result, nil
+		}
+
+		includeResult, err := c.WriteInclude(ctx, name, source, opts.Transport)
+		if err != nil {
+			result.Message = fmt.Sprintf("Failed to write include source: %v", err)
+			return result, nil
+		}
+		result.Success = includeResult.Success
+		result.ObjectURL = includeResult.ObjectURL
+		result.SyntaxErrors = includeResult.SyntaxErrors
+		result.Activation = includeResult.Activation
+		result.Message = includeResult.Message
 		return result, nil
 
 	case "DDLS", "BDEF", "SRVD":
@@ -703,6 +746,19 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 		result.SyntaxErrors = progResult.SyntaxErrors
 		result.Activation = progResult.Activation
 		result.Message = progResult.Message
+		return result, nil
+
+	case "INCL":
+		includeResult, err := c.WriteInclude(ctx, name, source, opts.Transport)
+		if err != nil {
+			result.Message = fmt.Sprintf("Failed to update include: %v", err)
+			return result, nil
+		}
+		result.Success = includeResult.Success
+		result.ObjectURL = includeResult.ObjectURL
+		result.SyntaxErrors = includeResult.SyntaxErrors
+		result.Activation = includeResult.Activation
+		result.Message = includeResult.Message
 		return result, nil
 
 	case "CLAS":

@@ -107,6 +107,91 @@ func (c *Client) WriteProgram(ctx context.Context, programName string, source st
 	return result, nil
 }
 
+// WriteIncludeResult represents the result of writing an ABAP program include.
+type WriteIncludeResult struct {
+	Success      bool                `json:"success"`
+	IncludeName  string              `json:"includeName"`
+	ObjectURL    string              `json:"objectUrl"`
+	SyntaxErrors []SyntaxCheckResult `json:"syntaxErrors,omitempty"`
+	Activation   *ActivationResult   `json:"activation,omitempty"`
+	Message      string              `json:"message,omitempty"`
+}
+
+// WriteInclude performs SyntaxCheck -> Lock -> UpdateSource -> Unlock ->
+// Activate for a first-class PROG/I object. SyntaxCheck deliberately runs
+// before the stateful lock so no stateless request can invalidate the SAP
+// session between LOCK and PUT.
+func (c *Client) WriteInclude(ctx context.Context, includeName, source, transport string) (*WriteIncludeResult, error) {
+	includeName = strings.ToUpper(strings.TrimSpace(includeName))
+	if includeName == "" {
+		return nil, fmt.Errorf("include name is required")
+	}
+
+	objectURL := GetObjectURL(ObjectTypeInclude, includeName, "")
+	sourceURL := objectURL + "/source/main"
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:        OpWorkflow,
+		OpName:    "WriteInclude",
+		ObjectURL: objectURL,
+		Transport: transport,
+	}); err != nil {
+		return nil, err
+	}
+	ctx = withMutationPackageChecked(ctx)
+
+	result := &WriteIncludeResult{IncludeName: includeName, ObjectURL: objectURL}
+
+	syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
+	if err != nil {
+		result.Message = fmt.Sprintf("Syntax check failed: %v", err)
+		return result, nil
+	}
+	result.SyntaxErrors = syntaxErrors
+	for _, diagnostic := range syntaxErrors {
+		if diagnostic.Severity == "E" || diagnostic.Severity == "A" || diagnostic.Severity == "X" {
+			result.Message = "Source has syntax errors - not saved"
+			return result, nil
+		}
+	}
+
+	lock, err := c.LockObject(ctx, objectURL, "MODIFY")
+	if err != nil {
+		result.Message = fmt.Sprintf("Failed to lock object: %v", err)
+		return result, nil
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			_ = c.UnlockObject(ctx, objectURL, lock.LockHandle)
+		}
+	}()
+
+	if err = c.UpdateSource(ctx, sourceURL, source, lock.LockHandle, transport); err != nil {
+		result.Message = fmt.Sprintf("Failed to update source: %v", err)
+		return result, nil
+	}
+	if err = c.UnlockObject(ctx, objectURL, lock.LockHandle); err != nil {
+		result.Message = fmt.Sprintf("Failed to unlock object: %v", err)
+		return result, nil
+	}
+	unlocked = true
+
+	activation, err := c.Activate(ctx, objectURL, includeName)
+	result.Activation = activation
+	if err != nil {
+		result.Message = fmt.Sprintf("Failed to activate: %v", err)
+		return result, nil
+	}
+	if activation.Success {
+		result.Success = true
+		result.Message = "Include updated and activated successfully"
+	} else {
+		result.Message = "Activation failed - check activation messages"
+	}
+
+	return result, nil
+}
+
 // WriteClassResult represents the result of writing a class.
 type WriteClassResult struct {
 	Success      bool                `json:"success"`
