@@ -21,9 +21,9 @@ Data da auditoria: 2026-08-15
 | Plataforma | Windows/amd64 |
 | Go | `go1.25.0` |
 | CGO | desabilitado no runtime de auditoria |
-| Commit de código auditado | `596b8cce0a10da847b877f1677e4e1c026cf669a` |
-| Árvore Git do código auditado | `229172f779898e605cc90ed851da65a63fb2680d` |
-| Descrição do código auditado | `v2.38.1-85-g596b8cc` |
+| Commit de código auditado | `064ad714f5b8c7facae70e5cc691c8acb09f0147` |
+| Árvore Git do código auditado | `dddb6ed63ba1d19e1080b60a04cde2a69796e81e` |
+| Descrição do código auditado | `v2.38.1-90-g064ad71` |
 
 ## Matriz de diagnóstico e correção
 
@@ -36,6 +36,9 @@ Data da auditoria: 2026-08-15
 | E. Lock, sessão, CSRF e transporte | Descoberta CSRF podia abrir contexto stateless; havia busca de pacote entre lock e escrita; `NoModification` era interpretado como proibição; `corrNr` do lock era descartado. | CSRF usa o mesmo modo stateful, com fallback HEAD→GET; pacote é validado antes do lock; somente a busca redundante é suprimida, mantendo gates de operação/transporte; `NoModification` é preservado como metadado; `corrNr` é reutilizado com whitelist e preferência ao transporte explícito; erros 400/409/423 não recebem retry cego. | Mocks de cookie, renovação 403, ordem LOCK→PUT→UNLOCK, unlock após falha, fallback/override de transporte e bloqueio fail-closed. | Corrigido |
 | F. IDs de gravação | A resolução do relógio no Windows permitia IDs idênticos em gravações criadas em rajada, sobrescrevendo arquivo e índice. | O timestamp usado no ID avança atomicamente quando o relógio não progride, preservando ordenação e formato. | Teste concorrente de 4.000 IDs e 50 repetições da suíte de histórico. | Corrigido |
 | G. Oracle JavaScript no Windows | O teste gravava o script em `/tmp`, caminho não portável, e ignorava erro de escrita. | `t.TempDir`, escrita verificada, `CommandContext` e skip explícito quando Node.js não está disponível. | `pkg/jseval` e `TestOracleComparison` passam no Windows. | Corrigido |
+| H. Falsos sucessos em `copy` e MCP | `copy` ignorava `Success=false` em cinco tipos, terminava com código zero após falhas, criava pacote após qualquer erro de consulta e anunciava deploy WebSocket/includes ainda não implementado; o MCP serializava falha lógica de `WriteSource` como resposta normal. | Resultado nulo/lógico agora falha; erro agregado gera saída não zero; pacote só é criado após ausência conclusiva; objetos incompletos são pulados antes da escrita; MCP retorna erro de ferramenta. | Testes de resultado, resumo, pacote existente/ausente/inconclusivo, matriz de suporte e validação MCP. | Corrigido |
+| I. Ativação e rename destrutivo | Vários workflows verificavam apenas erro HTTP de `Activate`; `RenameObject` escrevia no endpoint do objeto, ignorava unlock e podia excluir o objeto antigo após `Success=false`. | Validador comum converte falha lógica em erro; deploy, tabela, lote, DSL e MCP o utilizam; rename escreve em `/source/main`, exige unlock/ativação e não toca no objeto antigo após falha. | Teste sintético confirma diagnóstico, classificação em lote, endpoint correto e interrupção antes do lock/delete antigo, repetido 20 vezes. | Corrigido |
+| J. Existência inconclusiva em deploy de arquivo | `DeployFromFile` tratava somente 404 como ausência, mas seguia para update após erro de autenticação, rede ou servidor. | Falhas inconclusivas encerram o fluxo antes de lock ou escrita. | Teste com erro 500 confirma uma única requisição de leitura e nenhuma mutação. | Corrigido |
 
 ## Histórico e correlação pública
 
@@ -53,6 +56,9 @@ O histórico da branch principal já continha correções parciais de sessão (`
 6. `8bd5c63c470ef6b688880071e4cd8ac9d4362d5e` — `style(go): format audited files`
 7. `cc9690bdf3c846f98fa7aec0437268b2856178bc` — `fix(adt): guarantee unique recording IDs`
 8. `596b8cce0a10da847b877f1677e4e1c026cf669a` — `test(jseval): use portable oracle temp files`
+9. `c2bb35c2fd875e6f8706ff8b78e16ad0738ccbcc` — `fix(copy): reject partial and inconclusive deployments`
+10. `e9fe44d99a37be938c9bc1cd7203994e6879bcf9` — `fix(mcp): surface logical write failures`
+11. `064ad714f5b8c7facae70e5cc691c8acb09f0147` — `fix(adt): stop workflows on activation failure`
 
 ## Arquivos modificados
 
@@ -62,6 +68,7 @@ O histórico da branch principal já continha correções parciais de sessão (`
 - Instaladores: `internal/install/install.go`, `internal/install/install_test.go`, `internal/mcp/handlers_install.go`, `pkg/adt/client.go`, `pkg/adt/crud.go`, `pkg/adt/crud_reconcile_test.go`.
 - Sessão e mutações: `pkg/adt/http.go`, `pkg/adt/http_test.go`, `pkg/adt/mutation_gate.go`, `pkg/adt/saml_auth_test.go`, `pkg/adt/workflows.go`, `pkg/adt/workflows_deploy.go`, `pkg/adt/workflows_deploy_order_test.go`, `pkg/adt/workflows_edit.go`, `pkg/adt/workflows_fileio.go`.
 - Portabilidade e histórico: `pkg/adt/recorder.go`, `pkg/adt/recorder_test.go`, `pkg/jseval/oracle_test.go`.
+- Segunda passada fail-closed: `cmd/vsp/copy_cmd.go`, `cmd/vsp/copy_cmd_test.go`, `internal/mcp/handlers_source.go`, `internal/mcp/handlers_source_test.go`, `internal/mcp/handlers_devtools.go`, `pkg/adt/devtools.go`, `pkg/adt/devtools_activation_test.go`, `pkg/adt/workflows_deploy_exists_test.go`, `pkg/dsl/workflow.go`.
 
 ## Verificação
 
@@ -75,6 +82,7 @@ Passaram:
 - inspeção do delta para dados de cliente, usando somente fixtures sintéticas.
 - 50 repetições dos testes de histórico que falhavam intermitentemente;
 - teste oracle de `pkg/jseval` com diretório temporário nativo do sistema.
+- 20 repetições dos cenários de ativação lógica, rename protegido, existência inconclusiva e contratos de `copy`/MCP.
 
 A suíte `go test ./...` agora passa em todos os pacotes que não dependem de SQLite com CGO. No ambiente atual, restam somente falhas já presentes na base:
 
@@ -89,6 +97,7 @@ O problema de `/tmp` em `pkg/jseval` e a intermitência do histórico foram corr
 - O transporte herdado do lock continua sujeito ao opt-in de edição transportável e à whitelist; por projeto, ele falha fechado.
 - A associação lock→transporte existe somente na memória do processo. Reiniciar o processo invalida essa associação, assim como o próprio contexto de sessão.
 - `ExecuteABAP` continua sendo uma operação sensível e não deve ser usado como executor genérico em ambiente produtivo.
+- O comando `copy` pula classes com includes e tipos fora da implementação ADT atual; o caminho WebSocket permanece explicitamente não implementado, sem anunciar sucesso parcial.
 
 ## Plano manual seguro em SAP
 
@@ -107,7 +116,7 @@ Executar apenas em sandbox descartável e autorizada, nunca com dados de cliente
 
 ## Rascunhos de pull request
 
-Os cinco blocos abaixo foram preservados como unidades lógicas de revisão. Para reduzir conflito e manter as dependências entre os fixes, eles foram publicados juntos no draft PR [#156](https://github.com/oisee/vibing-steampunk/pull/156).
+Os oito blocos abaixo foram preservados como unidades lógicas de revisão. Para reduzir conflito e manter as dependências entre os fixes, eles foram publicados juntos no draft PR [#156](https://github.com/oisee/vibing-steampunk/pull/156).
 
 ### PR 1 — Propagação de segurança na CLI
 
@@ -138,5 +147,23 @@ Os cinco blocos abaixo foram preservados como unidades lógicas de revisão. Par
 **Título:** `fix(adt): preserve lock session and transport context`
 
 **Resumo:** mantém CSRF/cookie stateful, move validações de pacote para antes do lock, preserva gates locais, corrige o uso de `MODIFICATION_SUPPORT` e reutiliza `corrNr` com whitelist. Relaciona-se a #88, #92, #141, #143 e #144 e às PRs #108, #120 e #125.
+
+### PR 6 — `copy` fail-closed
+
+**Título:** `fix(copy): reject partial and inconclusive deployments`
+
+**Resumo:** cria pacote somente após ausência conclusiva, propaga falhas lógicas e agregadas, e não anuncia ou executa parcialmente tipos/includes ainda sem implementação.
+
+### PR 7 — Falhas lógicas no MCP
+
+**Título:** `fix(mcp): surface logical write failures`
+
+**Resumo:** converte resultados nulos ou `Success=false` de `WriteSource` em erro MCP com diagnóstico.
+
+### PR 8 — Ativação e rename verificáveis
+
+**Título:** `fix(adt): stop workflows on activation failure`
+
+**Resumo:** propaga falha lógica de ativação e impede que rename/deploy/tabela/lote avancem após resultado inconclusivo ou sem sucesso.
 
 O PR consolidado permanece em rascunho para revisão dos mantenedores. A branch publicada permite modificações por mantenedores.
