@@ -131,8 +131,8 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
 		token := t.getCSRFToken()
 		if token == "" {
 			// Fetch CSRF token first
-			if err := t.fetchCSRFToken(ctx, opts.Stateful); err != nil {
-				return nil, fmt.Errorf("fetching CSRF token: %w", err)
+			if fetchErr := t.fetchCSRFToken(ctx, opts.Stateful); fetchErr != nil {
+				return nil, fmt.Errorf("fetching CSRF token: %w", fetchErr)
 			}
 			token = t.getCSRFToken()
 		}
@@ -155,8 +155,8 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
 	// Handle CSRF token refresh on 403
 	if resp.StatusCode == http.StatusForbidden && isModifyingMethod(opts.Method) {
 		// Try to refresh CSRF token and retry once
-		if err := t.fetchCSRFToken(ctx, opts.Stateful); err != nil {
-			return nil, fmt.Errorf("refreshing CSRF token: %w", err)
+		if fetchErr := t.fetchCSRFToken(ctx, opts.Stateful); fetchErr != nil {
+			return nil, fmt.Errorf("refreshing CSRF token: %w", fetchErr)
 		}
 
 		// Retry the request
@@ -187,8 +187,8 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
 			t.setCSRFToken("")
 			t.setSessionID("")
 			// Fetch new CSRF token (this establishes a new session)
-			if err := t.fetchCSRFToken(ctx, opts.Stateful); err != nil {
-				return nil, fmt.Errorf("refreshing session after timeout: %w", err)
+			if fetchErr := t.fetchCSRFToken(ctx, opts.Stateful); fetchErr != nil {
+				return nil, fmt.Errorf("refreshing session after timeout: %w", fetchErr)
 			}
 			// Retry the request
 			return t.retryRequest(ctx, path, opts)
@@ -203,13 +203,13 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
 
 			if !t.config.HasBasicAuth() && t.config.ReauthFunc != nil {
 				// Cookie/SAML auth: re-run full auth dance to get fresh cookies.
-				if err := t.callReauthFunc(ctx, opts.Stateful); err != nil {
-					return nil, fmt.Errorf("re-authenticating after 401 on %s: %w (original error: %v)", path, err, apiErr)
+				if reauthErr := t.callReauthFunc(ctx, opts.Stateful); reauthErr != nil {
+					return nil, fmt.Errorf("re-authenticating after 401 on %s: %w (original error: %v)", path, reauthErr, apiErr)
 				}
 			} else {
 				// Basic auth: just refresh CSRF token.
-				if err := t.fetchCSRFToken(ctx, opts.Stateful); err != nil {
-					return nil, fmt.Errorf("re-authenticating after 401 on %s: %w (original error: %v)", path, err, apiErr)
+				if fetchErr := t.fetchCSRFToken(ctx, opts.Stateful); fetchErr != nil {
+					return nil, fmt.Errorf("re-authenticating after 401 on %s: %w (original error: %v)", path, fetchErr, apiErr)
 				}
 			}
 			return t.retryRequest(ctx, path, opts)

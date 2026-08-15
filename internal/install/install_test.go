@@ -81,6 +81,7 @@ func TestEnsurePackage(t *testing.T) {
 	}
 }
 
+//nolint:misspell // CLAS is the SAP ADT object type.
 func TestDeploySource(t *testing.T) {
 	tests := []struct {
 		name    string

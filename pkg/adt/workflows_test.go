@@ -1,3 +1,4 @@
+//nolint:bodyclose // Mock responses are closed by the transport under test.
 package adt
 
 import (
@@ -159,6 +160,8 @@ func TestClient_GetSource_InvalidType(t *testing.T) {
 }
 
 // TestClient_WriteSource_Create tests WriteSource in create mode
+//
+//nolint:bodyclose // The client transport owns and closes all synthetic responses.
 func TestClient_WriteSource_Create(t *testing.T) {
 	sourceCode := `REPORT ztest.
 WRITE: 'Hello, World!'.`
@@ -229,6 +232,7 @@ WRITE: 'Updated!'.`
 	}
 }
 
+//nolint:bodyclose // The client transport owns and closes all synthetic responses.
 func TestClient_WriteSource_CreateRejectsExistingObject(t *testing.T) {
 	mock := &mockWorkflowTransport{responses: map[string]*http.Response{
 		"GET /sap/bc/adt/programs/programs/ZEXISTS/source/main": newWorkflowTestResponse("REPORT zexists."),
@@ -254,6 +258,7 @@ func TestClient_WriteSource_CreateRejectsExistingObject(t *testing.T) {
 	}
 }
 
+//nolint:bodyclose // The client transport owns and closes all synthetic responses.
 func TestClient_WriteSourceExistenceCheckFailsClosed(t *testing.T) {
 	mock := &mockWorkflowTransport{responses: map[string]*http.Response{
 		"GET /sap/bc/adt/programs/programs/ZUNKNOWN/source/main": newWorkflowStatusResponse(http.StatusInternalServerError, "synthetic failure"),
@@ -343,6 +348,8 @@ WRITE: 'Hello, World!'.`
 }
 
 // TestClient_GrepPackages tests GrepPackages with single package
+//
+//nolint:bodyclose // The client transport owns and closes all synthetic responses.
 func TestClient_GrepPackages(t *testing.T) {
 	packageContents := `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.sap.com/adt/packages" name="$TMP">
@@ -356,7 +363,7 @@ func TestClient_GrepPackages(t *testing.T) {
 
 	mock := &mockWorkflowTransport{
 		responses: map[string]*http.Response{
-			"/sap/bc/adt/packages/$TMP": newWorkflowTestResponse(packageContents),
+			"/sap/bc/adt/packages/$TMP":                        newWorkflowTestResponse(packageContents),
 			"/sap/bc/adt/programs/programs/ZTEST1/source/main": newWorkflowTestResponse(sourceCode),
 			"discovery": newWorkflowTestResponse("OK"),
 		},
@@ -403,8 +410,8 @@ func TestClient_GrepPackages_Recursive(t *testing.T) {
 
 	mock := &mockWorkflowTransport{
 		responses: map[string]*http.Response{
-			"/sap/bc/adt/packages/ZMAIN":       newWorkflowTestResponse(mainPackageContents),
-			"/sap/bc/adt/packages/ZSUB1":       newWorkflowTestResponse(subPackageContents),
+			"/sap/bc/adt/packages/ZMAIN":                          newWorkflowTestResponse(mainPackageContents),
+			"/sap/bc/adt/packages/ZSUB1":                          newWorkflowTestResponse(subPackageContents),
 			"/sap/bc/adt/programs/programs/ZTEST_SUB/source/main": newWorkflowTestResponse(sourceCode),
 			"discovery": newWorkflowTestResponse("OK"),
 		},
@@ -440,8 +447,8 @@ func TestClient_GrepPackages_MultiplePackages(t *testing.T) {
 
 	mock := &mockWorkflowTransport{
 		responses: map[string]*http.Response{
-			"/sap/bc/adt/packages/$TMP":  newWorkflowTestResponse(packageContents),
-			"/sap/bc/adt/packages/$LOCAL": newWorkflowTestResponse(packageContents),
+			"/sap/bc/adt/packages/$TMP":                        newWorkflowTestResponse(packageContents),
+			"/sap/bc/adt/packages/$LOCAL":                      newWorkflowTestResponse(packageContents),
 			"/sap/bc/adt/programs/programs/ZTEST1/source/main": newWorkflowTestResponse(sourceCode),
 			"discovery": newWorkflowTestResponse("OK"),
 		},

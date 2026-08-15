@@ -165,7 +165,7 @@ type WriteSourceResult struct {
 	Method       string              `json:"method,omitempty"` // Method name if method-level update
 	SyntaxErrors []SyntaxCheckResult `json:"syntaxErrors,omitempty"`
 	Activation   *ActivationResult   `json:"activation,omitempty"`
-	TestResults  *UnitTestResult     `json:"testResults,omitempty"` // For CLAS with TestSource
+	TestResults  *UnitTestResult     `json:"testResults,omitempty"` //nolint:misspell // CLAS is the SAP ADT object type.
 	Message      string              `json:"message,omitempty"`
 }
 
@@ -273,7 +273,7 @@ func writeSourceObjectURL(objectType, name string) string {
 	switch objectType {
 	case "PROG":
 		creatableType = ObjectTypeProgram
-	case "CLAS":
+	case "CLAS": //nolint:misspell // CLAS is the SAP ADT object type.
 		creatableType = ObjectTypeClass
 	case "INTF":
 		creatableType = ObjectTypeInterface

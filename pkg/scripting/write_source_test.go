@@ -34,6 +34,7 @@ func TestLuaWriteSourceLegacyCallPreservesNilOptions(t *testing.T) {
 	}
 }
 
+//nolint:misspell // CLAS is the SAP ADT object type used by the Lua API.
 func TestLuaWriteSourceForwardsOptions(t *testing.T) {
 	engine := NewLuaEngine(nil)
 	defer engine.Close()

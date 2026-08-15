@@ -1703,12 +1703,12 @@ type cliHealthSignal struct {
 }
 
 type cliHealthResult struct {
-	Scope            cliHealthScope              `json:"scope"`
-	Summary          cliHealthSummary            `json:"summary"`
-	Signals          map[string]cliHealthSignal  `json:"signals"`
-	TestDetails      *adt.UnitTestResult         `json:"testDetails,omitempty"`
-	ATCDetails       *adt.ATCWorklist            `json:"atcDetails,omitempty"`
-	CrossingDetails  *graph.CrossingReport       `json:"crossingDetails,omitempty"`
+	Scope           cliHealthScope             `json:"scope"`
+	Summary         cliHealthSummary           `json:"summary"`
+	Signals         map[string]cliHealthSignal `json:"signals"`
+	TestDetails     *adt.UnitTestResult        `json:"testDetails,omitempty"`
+	ATCDetails      *adt.ATCWorklist           `json:"atcDetails,omitempty"`
+	CrossingDetails *graph.CrossingReport      `json:"crossingDetails,omitempty"`
 }
 
 func runHealth(cmd *cobra.Command, args []string) error {

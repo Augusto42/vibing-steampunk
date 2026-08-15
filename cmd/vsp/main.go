@@ -117,7 +117,6 @@ func init() {
 	rootCmd.Flags().String("saml-password", "", "SAML/IAS password")
 	rootCmd.Flags().String("credential-cmd", "", "External command returning JSON {\"username\":...,\"password\":...} (space-separated argv, no shell quoting — use a wrapper script for paths with spaces)")
 
-
 	// Session keep-alive
 	rootCmd.Flags().Duration("keepalive", 5*time.Minute, "Session keep-alive interval (e.g., 60s, 5m). Prevents session timeout during idle periods. 0 = disabled")
 
@@ -173,15 +172,15 @@ func init() {
 	viper.BindPFlag("browser-exec", rootCmd.Flags().Lookup("browser-exec"))
 	viper.BindPFlag("cookie-save", rootCmd.Flags().Lookup("cookie-save"))
 	viper.BindPFlag("keepalive", rootCmd.Flags().Lookup("keepalive"))
-	viper.BindPFlag("read-only", rootCmd.PersistentFlags().Lookup("read-only"))
-	viper.BindPFlag("block-free-sql", rootCmd.PersistentFlags().Lookup("block-free-sql"))
-	viper.BindPFlag("allowed-ops", rootCmd.PersistentFlags().Lookup("allowed-ops"))
-	viper.BindPFlag("disallowed-ops", rootCmd.PersistentFlags().Lookup("disallowed-ops"))
-	viper.BindPFlag("allowed-packages", rootCmd.PersistentFlags().Lookup("allowed-packages"))
-	viper.BindPFlag("enable-transports", rootCmd.PersistentFlags().Lookup("enable-transports"))
-	viper.BindPFlag("transport-read-only", rootCmd.PersistentFlags().Lookup("transport-read-only"))
-	viper.BindPFlag("allowed-transports", rootCmd.PersistentFlags().Lookup("allowed-transports"))
-	viper.BindPFlag("allow-transportable-edits", rootCmd.PersistentFlags().Lookup("allow-transportable-edits"))
+	_ = viper.BindPFlag("read-only", rootCmd.PersistentFlags().Lookup("read-only"))
+	_ = viper.BindPFlag("block-free-sql", rootCmd.PersistentFlags().Lookup("block-free-sql"))
+	_ = viper.BindPFlag("allowed-ops", rootCmd.PersistentFlags().Lookup("allowed-ops"))
+	_ = viper.BindPFlag("disallowed-ops", rootCmd.PersistentFlags().Lookup("disallowed-ops"))
+	_ = viper.BindPFlag("allowed-packages", rootCmd.PersistentFlags().Lookup("allowed-packages"))
+	_ = viper.BindPFlag("enable-transports", rootCmd.PersistentFlags().Lookup("enable-transports"))
+	_ = viper.BindPFlag("transport-read-only", rootCmd.PersistentFlags().Lookup("transport-read-only"))
+	_ = viper.BindPFlag("allowed-transports", rootCmd.PersistentFlags().Lookup("allowed-transports"))
+	_ = viper.BindPFlag("allow-transportable-edits", rootCmd.PersistentFlags().Lookup("allow-transportable-edits"))
 	viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	viper.BindPFlag("disabled-groups", rootCmd.Flags().Lookup("disabled-groups"))
 	viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))

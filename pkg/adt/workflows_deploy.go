@@ -31,7 +31,8 @@ type DeployResult struct {
 // and content. Supported file extensions: .clas.abap, .prog.abap, .intf.abap
 //
 // Example:
-//   result, err := client.CreateFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
+//
+//	result, err := client.CreateFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
 func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, transport string) (*DeployResult, error) {
 	// Validate the complete mutation policy before opening a stateful lock session.
 	if err := c.checkMutation(ctx, MutationContext{
@@ -200,7 +201,8 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 // Workflow: Parse → SyntaxCheck → Lock → Write → Unlock → Activate
 //
 // Example:
-//   result, err := client.UpdateFromFile(ctx, "/path/to/zcl_test.clas.abap", "")
+//
+//	result, err := client.UpdateFromFile(ctx, "/path/to/zcl_test.clas.abap", "")
 func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string) (*DeployResult, error) {
 	// 1. Parse file to detect type and name
 	info, err := ParseABAPFile(filePath)
@@ -229,13 +231,13 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	// Validate package scope before locking. The context marker suppresses only
 	// the redundant package lookup in the low-level writer; operation and
 	// transport checks still run there.
-	if err := c.checkMutation(ctx, MutationContext{
+	if gateErr := c.checkMutation(ctx, MutationContext{
 		Op:        OpUpdate,
 		OpName:    "UpdateFromFile",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
-		return nil, err
+	}); gateErr != nil {
+		return nil, gateErr
 	}
 	ctx = withMutationPackageChecked(ctx)
 
@@ -397,8 +399,9 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 // For class includes, the parent class must already exist.
 //
 // Example:
-//   result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
-//   result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.testclasses.abap", "$TMP", "")
+//
+//	result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
+//	result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.testclasses.abap", "$TMP", "")
 func (c *Client) DeployFromFile(ctx context.Context, filePath, packageName, transport string) (*DeployResult, error) {
 	// 1. Parse file
 	info, err := ParseABAPFile(filePath)

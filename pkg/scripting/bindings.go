@@ -364,8 +364,8 @@ func (e *LuaEngine) luaSetExceptionBreakpoint(L *lua.LState) int {
 
 // setMessageBP(msgClass, msgNumber, [msgType]) - Break on message
 func (e *LuaEngine) luaSetMessageBreakpoint(L *lua.LState) int {
-	msgArea := getString(L, 1)   // Message class e.g. "00", "SY"
-	msgID := getString(L, 2)     // Message number e.g. "001"
+	msgArea := getString(L, 1)        // Message class e.g. "00", "SY"
+	msgID := getString(L, 2)          // Message number e.g. "001"
 	msgType := getOptString(L, 3, "") // Optional: E, W, I, S, A
 
 	req := &adt.BreakpointRequest{

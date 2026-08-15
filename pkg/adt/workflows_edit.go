@@ -135,14 +135,16 @@ func (c *Client) EditSource(ctx context.Context, objectURL, oldString, newString
 //   - opts: Optional parameters (ReplaceAll, SyntaxCheck, CaseInsensitive, Method)
 //
 // Method-level isolation (CLAS only):
-//   When opts.Method is set, the search is constrained to the specified method only.
-//   This prevents accidental edits in other methods when the same pattern exists elsewhere.
+//
+//	When opts.Method is set, the search is constrained to the specified method only.
+//	This prevents accidental edits in other methods when the same pattern exists elsewhere.
 //
 // Example:
-//   EditSourceWithOptions(ctx, "/sap/bc/adt/oo/classes/ZCL_TEST",
-//     "METHOD foo.\n  ENDMETHOD.",
-//     "METHOD foo.\n  rv_result = 42.\n  ENDMETHOD.",
-//     &EditSourceOptions{Method: "FOO"})
+//
+//	EditSourceWithOptions(ctx, "/sap/bc/adt/oo/classes/ZCL_TEST",
+//	  "METHOD foo.\n  ENDMETHOD.",
+//	  "METHOD foo.\n  rv_result = 42.\n  ENDMETHOD.",
+//	  &EditSourceOptions{Method: "FOO"})
 func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString, newString string, opts *EditSourceOptions) (*EditSourceResult, error) {
 	// Default options
 	if opts == nil {

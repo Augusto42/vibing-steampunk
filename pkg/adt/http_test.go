@@ -153,6 +153,7 @@ func TestTransport_Request_CSRFToken(t *testing.T) {
 	}
 }
 
+//nolint:bodyclose // Transport.Request owns and closes every synthetic response body.
 func TestTransport_Request_StatefulCSRFFetch(t *testing.T) {
 	mock := &mockHTTPClient{responses: []*http.Response{
 		newMockResponse(http.StatusOK, "", map[string]string{"X-CSRF-Token": "synthetic-token"}),
@@ -180,6 +181,7 @@ func TestTransport_Request_StatefulCSRFFetch(t *testing.T) {
 	}
 }
 
+//nolint:bodyclose // Transport.Request owns and closes every synthetic response body.
 func TestTransport_Request_CSRFHeadFallsBackToGET(t *testing.T) {
 	mock := &mockHTTPClient{responses: []*http.Response{
 		newMockResponse(http.StatusMethodNotAllowed, "", nil),
