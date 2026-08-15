@@ -7,7 +7,7 @@ Data da auditoria: 2026-08-15
 - A investigação e os testes foram executados somente no repositório local, com mocks, nomes sintéticos e endpoints de exemplo.
 - Nenhuma chamada foi feita a um sistema SAP, nenhuma credencial foi usada e nenhuma alteração SAP foi executada.
 - Os documentos fornecidos serviram apenas como evidência funcional. Seu conteúdo e quaisquer dados de cliente não foram copiados para código, testes, commits ou este relatório.
-- Não houve push, abertura de pull request nem escrita externa.
+- A publicação posterior foi limitada à branch `codex/vsp-bug-audit` no fork `Augusto42/vibing-steampunk` e ao draft PR [#156](https://github.com/oisee/vibing-steampunk/pull/156) contra o projeto original.
 
 ## Baseline reproduzível
 
@@ -107,6 +107,8 @@ Executar apenas em sandbox descartável e autorizada, nunca com dados de cliente
 
 ## Rascunhos de pull request
 
+Os cinco blocos abaixo foram preservados como unidades lógicas de revisão. Para reduzir conflito e manter as dependências entre os fixes, eles foram publicados juntos no draft PR [#156](https://github.com/oisee/vibing-steampunk/pull/156).
+
 ### PR 1 — Propagação de segurança na CLI
 
 **Título:** `fix(cli): propagate safety policy to subcommands`
@@ -137,4 +139,4 @@ Executar apenas em sandbox descartável e autorizada, nunca com dados de cliente
 
 **Resumo:** mantém CSRF/cookie stateful, move validações de pacote para antes do lock, preserva gates locais, corrige o uso de `MODIFICATION_SUPPORT` e reutiliza `corrNr` com whitelist. Relaciona-se a #88, #92, #141, #143 e #144 e às PRs #108, #120 e #125.
 
-Nenhuma PR foi criada; estes textos são somente rascunhos para revisão.
+O PR consolidado permanece em rascunho para revisão dos mantenedores. A branch publicada permite modificações por mantenedores.
