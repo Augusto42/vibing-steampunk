@@ -172,7 +172,10 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 	}
 
 	// 9. Activate
-	_, err = c.Activate(ctx, objectURL, info.ObjectName)
+	activation, err := c.Activate(ctx, objectURL, info.ObjectName)
+	if err == nil {
+		err = ActivationResultError(activation)
+	}
 	if err != nil {
 		return &DeployResult{
 			FilePath:   filePath,
@@ -358,7 +361,10 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	}
 
 	// 8. Activate
-	_, err = c.Activate(ctx, objectURL, info.ObjectName)
+	activation, err := c.Activate(ctx, objectURL, info.ObjectName)
+	if err == nil {
+		err = ActivationResultError(activation)
+	}
 	if err != nil {
 		return &DeployResult{
 			FilePath:   filePath,
@@ -451,8 +457,9 @@ func (c *Client) DeployFromFile(ctx context.Context, filePath, packageName, tran
 			// Regular object - create it
 			return c.CreateFromFile(ctx, filePath, packageName, transport)
 		}
-		// For other errors (session timeout, network issues, etc.), proceed with update
-		// The parent class might still exist - let UpdateFromFile handle it
+		// Authentication, network and server failures are inconclusive. Do not
+		// turn them into an update attempt; fail closed before locking or writing.
+		return nil, fmt.Errorf("checking whether %s %s exists: %w", info.ObjectType, info.ObjectName, err)
 	}
 
 	// Object exists - update it (handles both regular objects and class includes)

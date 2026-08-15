@@ -104,10 +104,10 @@ func TestCopyObjectSupported(t *testing.T) {
 		wantReason string
 	}{
 		{name: "program", object: deps.DeploymentObject{Type: "PROG"}, want: true},
-		{name: "class main", object: deps.DeploymentObject{Type: "CLAS"}, want: true},
+		{name: "class main", object: deps.DeploymentObject{Type: "CLAS"}, want: true}, //nolint:misspell // CLAS is the SAP object type.
 		{
 			name:       "class includes",
-			object:     deps.DeploymentObject{Type: "CLAS", Includes: map[string]string{"testclasses": "synthetic"}},
+			object:     deps.DeploymentObject{Type: "CLAS", Includes: map[string]string{"testclasses": "synthetic"}}, //nolint:misspell // CLAS is the SAP object type.
 			wantReason: "include deployment",
 		},
 		{name: "unsupported type", object: deps.DeploymentObject{Type: "TABL"}, wantReason: "not supported"},

@@ -1269,10 +1269,18 @@ func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error
 	}
 
 	// Unlock BEFORE activation
-	c.UnlockObject(ctx, tableURL, lock.LockHandle)
+	err = c.UnlockObject(ctx, tableURL, lock.LockHandle)
+	if err != nil {
+		return fmt.Errorf("unlocking table before activation: %w", err)
+	}
 
 	// Step 3: Activate
-	if _, err := c.Activate(ctx, tableURL, opts.Name); err != nil {
+	activation, err := c.Activate(ctx, tableURL, opts.Name)
+	if err != nil {
+		return fmt.Errorf("activating table: %w", err)
+	}
+	err = ActivationResultError(activation)
+	if err != nil {
 		return fmt.Errorf("activating table: %w", err)
 	}
 
