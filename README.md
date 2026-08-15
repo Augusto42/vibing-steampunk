@@ -1,5 +1,17 @@
 # Vibing Steampunk (vsp)
 
+> [!IMPORTANT]
+> **Augusto42 Community Distribution** — this repository is an independently maintained,
+> community-oriented distribution of VSP. It can ship fixes and releases without waiting
+> for the upstream project, while continuing to credit and selectively synchronize with
+> [oisee/vibing-steampunk](https://github.com/oisee/vibing-steampunk).
+>
+> This public repository accepts only generic code, documentation, and synthetic fixtures.
+> Never submit credentials, private SAP endpoints, customer source code, production logs,
+> personal data, or other confidential operational information.
+
+[Community contribution guide](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Upstream synchronization policy](UPSTREAM.md)
+
 **AI-Agentic Development Unlocked for ABAP** — ECC, S/4HANA, everywhere ADT is available.
 
 > **ADT ↔ MCP Bridge**: Gives Claude (and other AI assistants) full access to SAP ADT APIs.

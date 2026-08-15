@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/Augusto42/vibing-steampunk/security/advisories/new
+    about: Report vulnerabilities privately. Never include secrets or confidential operational data.
+  - name: Upstream project
+    url: https://github.com/oisee/vibing-steampunk
+    about: Consult the original project when the question concerns upstream behavior.
