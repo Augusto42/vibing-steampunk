@@ -1,0 +1,71 @@
+name: Propose upstream sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 1 * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    if: github.repository == 'Augusto42/vibing-steampunk'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out community main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Merge upstream into proposal branch
+        id: sync
+        env:
+          BRANCH: automation/upstream-sync
+          UPSTREAM_URL: https://github.com/oisee/vibing-steampunk.git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream main --tags
+          git fetch origin "$BRANCH" || true
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Community main already contains upstream main."
+            exit 0
+          fi
+
+          git switch -C "$BRANCH"
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort
+            echo "Upstream merge has conflicts; manual reconciliation is required." >&2
+            exit 1
+          fi
+
+          git push --force-with-lease origin "$BRANCH"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update synchronization pull request
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: automation/upstream-sync
+        run: |
+          if gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --repo "$GITHUB_REPOSITORY" \
+              --title "chore: review upstream synchronization" \
+              --body "Automated proposal to review changes from oisee/vibing-steampunk:main. This pull request never merges automatically."
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: review upstream synchronization" \
+              --body "Automated proposal to review changes from oisee/vibing-steampunk:main. This pull request never merges automatically."
+          fi
