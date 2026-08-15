@@ -71,10 +71,16 @@ type ExecuteABAPOptions struct {
 //
 // Security: This is gated by OpWorkflow safety check.
 func (c *Client) ExecuteABAP(ctx context.Context, code string, opts *ExecuteABAPOptions) (*ExecuteABAPResult, error) {
-	// Safety check for workflow operations
-	if err := c.checkSafety(OpWorkflow, "ExecuteABAP"); err != nil {
+	// The temporary program is always local. Resolve package policy before the
+	// stateful lock, then let inner mutators skip only that networked lookup.
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:      OpWorkflow,
+		OpName:  "ExecuteABAP",
+		Package: "$TMP",
+	}); err != nil {
 		return nil, err
 	}
+	ctx = withMutationPackageChecked(ctx)
 
 	if opts == nil {
 		opts = &ExecuteABAPOptions{}
@@ -94,7 +100,7 @@ func (c *Client) ExecuteABAP(ctx context.Context, code string, opts *ExecuteABAP
 	}
 
 	// Generate unique program name using timestamp
-	timestamp := fmt.Sprintf("%d", time.Now().UnixNano()/1000000) // milliseconds
+	timestamp := fmt.Sprintf("%d", time.Now().UnixNano()/1000000)                     // milliseconds
 	programName := strings.ToUpper(opts.ProgramPrefix + timestamp[len(timestamp)-8:]) // Last 8 digits
 	result.ProgramName = programName
 	objectURL := fmt.Sprintf("/sap/bc/adt/programs/programs/%s", url.PathEscape(programName))

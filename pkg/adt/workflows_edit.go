@@ -10,17 +10,17 @@ import (
 
 // EditSourceResult represents the result of editing source code.
 type EditSourceResult struct {
-	Success        bool                `json:"success"`
-	ObjectURL      string              `json:"objectUrl"`
-	ObjectName     string              `json:"objectName"`
-	MatchCount     int                 `json:"matchCount"`
-	OldString      string              `json:"oldString,omitempty"`
-	NewString      string              `json:"newString,omitempty"`
-	SyntaxErrors   []string            `json:"syntaxErrors,omitempty"`
-	SyntaxWarnings []string            `json:"syntaxWarnings,omitempty"`
-	Activation     *ActivationResult   `json:"activation,omitempty"`
-	Message        string              `json:"message,omitempty"`
-	Method         string              `json:"method,omitempty"` // Method name if method-level edit
+	Success        bool              `json:"success"`
+	ObjectURL      string            `json:"objectUrl"`
+	ObjectName     string            `json:"objectName"`
+	MatchCount     int               `json:"matchCount"`
+	OldString      string            `json:"oldString,omitempty"`
+	NewString      string            `json:"newString,omitempty"`
+	SyntaxErrors   []string          `json:"syntaxErrors,omitempty"`
+	SyntaxWarnings []string          `json:"syntaxWarnings,omitempty"`
+	Activation     *ActivationResult `json:"activation,omitempty"`
+	Message        string            `json:"message,omitempty"`
+	Method         string            `json:"method,omitempty"` // Method name if method-level edit
 }
 
 // EditSourceOptions provides optional parameters for EditSource.
@@ -158,6 +158,7 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 	}); err != nil {
 		return nil, err
 	}
+	ctx = withMutationPackageChecked(ctx)
 	// SyntaxCheck defaults to true if not explicitly set (zero value is false, so we need to handle this)
 	// Note: caller should explicitly set SyntaxCheck=false if they don't want it
 
@@ -418,4 +419,3 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 	}
 	return result, nil
 }
-

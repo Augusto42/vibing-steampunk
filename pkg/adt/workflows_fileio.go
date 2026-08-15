@@ -12,11 +12,11 @@ import (
 
 // RenameObjectResult contains the result of renaming an object.
 type RenameObjectResult struct {
-	OldName    string `json:"oldName"`
-	NewName    string `json:"newName"`
-	ObjectType string `json:"objectType"`
-	Success    bool   `json:"success"`
-	Message    string `json:"message,omitempty"`
+	OldName    string   `json:"oldName"`
+	NewName    string   `json:"newName"`
+	ObjectType string   `json:"objectType"`
+	Success    bool     `json:"success"`
+	Message    string   `json:"message,omitempty"`
 	Errors     []string `json:"errors,omitempty"`
 }
 
@@ -58,6 +58,7 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 			return nil, err
 		}
 	}
+	ctx = withMutationPackageChecked(ctx)
 
 	// 1. Get old object source
 	resp, err := c.transport.Request(ctx, oldURL+"/source/main", &RequestOptions{

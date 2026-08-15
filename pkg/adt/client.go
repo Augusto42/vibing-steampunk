@@ -24,6 +24,10 @@ type Client struct {
 	keepAliveCancel context.CancelFunc
 	keepAliveDone   chan struct{}
 	keepAliveMu     sync.Mutex
+
+	// Lock handles are session-bound and may carry the transport selected by
+	// SAP in the LOCK response. sync.Map keeps concurrent workflows isolated.
+	lockTransports sync.Map // map[lockHandle]corrNr
 }
 
 // NewClient creates a new ADT client with the given configuration.
