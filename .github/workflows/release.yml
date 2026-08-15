@@ -43,6 +43,8 @@ jobs:
       # 3. Run tests — abort the release if anything is red
       # ------------------------------------------------------------------ #
       - name: Run tests
+        env:
+          CGO_ENABLED: 0
         run: go test ./...
 
       # ------------------------------------------------------------------ #
