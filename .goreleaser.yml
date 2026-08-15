@@ -51,18 +51,15 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# git-cliff runs separately in the workflow and commits CHANGELOG.md.
+# git-cliff generates RELEASE_NOTES.md separately in the workflow.
 # GoReleaser v2.15+ dropped changelog.use: git-cliff, so we disable here.
 changelog:
   disable: true
 
 release:
-  github:
-    owner: oisee
-    name: vibing-steampunk
   draft: false
-  # Automatically mark as pre-release if version contains -rc, -beta, -alpha
+  # Let GoReleaser infer the authenticated repository from the checkout.
   prerelease: auto
   name_template: "v{{ .Version }}"
   footer: |
-    **Full Changelog**: https://github.com/oisee/vibing-steampunk/blob/main/CHANGELOG.md
+    Community-maintained distribution. Review the release notes and checksums before installation.
