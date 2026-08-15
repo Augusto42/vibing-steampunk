@@ -947,6 +947,10 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 
 See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tools).
 
+For operation-level coverage—including `INCL` writes, read-only `ENHO`, and
+read-only `DYNP` through ZADT_VSP—see the
+**[ABAP object support matrix](docs/object-support.md)**.
+
 <details>
 <summary><strong>Capability Matrix</strong></summary>
 

@@ -38,10 +38,7 @@ func (c *Client) SyntaxCheck(ctx context.Context, objectURL string, content stri
 	// Using objectURL (without /source/main) for checkObject avoids exceeding
 	// SAP's URI length limit for long namespaced classes.
 	checkObjectURI := objectURL
-	artifactURI := objectURL
-	if !strings.Contains(objectURL, "/includes/") {
-		artifactURI = objectURL + "/source/main"
-	}
+	artifactURI := sourceArtifactURIForSyntaxCheck(objectURL)
 	encodedContent := base64.StdEncoding.EncodeToString([]byte(content))
 
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -65,6 +62,23 @@ func (c *Client) SyntaxCheck(ctx context.Context, objectURL string, content stri
 	}
 
 	return parseSyntaxCheckResults(resp.Body)
+}
+
+// isClassIncludeObjectURL distinguishes class include endpoints from program
+// include endpoints. Both contain "/includes/", but only class includes use
+// the include URL itself as the source artifact and lock their parent class.
+func isClassIncludeObjectURL(objectURL string) bool {
+	normalized := strings.ToLower(objectURL)
+	return strings.Contains(normalized, "/sap/bc/adt/oo/classes/") &&
+		strings.Contains(normalized, "/includes/")
+}
+
+func sourceArtifactURIForSyntaxCheck(objectURL string) string {
+	objectURL = strings.TrimSuffix(objectURL, "/")
+	if isClassIncludeObjectURL(objectURL) || strings.HasSuffix(strings.ToLower(objectURL), "/source/main") {
+		return objectURL
+	}
+	return objectURL + "/source/main"
 }
 
 func parseSyntaxCheckResults(data []byte) ([]SyntaxCheckResult, error) {

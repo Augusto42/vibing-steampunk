@@ -17,9 +17,9 @@ import (
 // routeSourceAction routes "read" for GetSource and "edit" for WriteSource/EditSource.
 func (s *Server) routeSourceAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action == "read" {
-		// GetSource covers: CLAS, PROG, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, MSAG, VIEW
+		// GetSource covers: CLAS, PROG, INTF, FUNC, FUGR, INCL, DYNP, DDLS, BDEF, SRVD, MSAG, VIEW, ENHO
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "FUNC", "FUGR", "INCL", "DDLS", "BDEF", "SRVD", "MSAG", "VIEW":
+		case "CLAS", "PROG", "INTF", "FUNC", "FUGR", "INCL", "DYNP", "DDLS", "BDEF", "SRVD", "MSAG", "VIEW", "ENHO":
 			args := map[string]any{
 				"object_type": objectType,
 				"name":        objectName,
@@ -39,6 +39,9 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 			if v, ok := getFloatParam(params, "max_deps"); ok {
 				args["max_deps"] = v
 			}
+			if v, ok := getBoolParam(params, "merged"); ok {
+				args["merged"] = v
+			}
 			return s.callHandler(ctx, s.handleGetSource, args)
 		}
 	}
@@ -46,7 +49,7 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 	if action == "edit" {
 		// High-level WriteSource
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "DDLS", "BDEF", "SRVD":
+		case "CLAS", "PROG", "INTF", "INCL", "DDLS", "BDEF", "SRVD":
 			if src := getStringParam(params, "source"); src != "" {
 				args := map[string]any{
 					"object_type": objectType,
@@ -89,17 +92,17 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 // registerGetSource registers the unified GetSource tool
 func (s *Server) registerGetSource() {
 	s.mcpServer.AddTool(mcp.NewTool("GetSource",
-		mcp.WithDescription("Unified tool for reading ABAP source code across different object types. Replaces GetProgram, GetClass, GetInterface, GetFunction, GetInclude, GetFunctionGroup, GetClassInclude."),
+		mcp.WithDescription("Unified tool for reading ABAP source and metadata across supported object types, including enhancement implementations and merged include views."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
+			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation, read-only), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
-			mcp.Description("Object name (e.g., program name, class name, function module name)"),
+			mcp.Description("Object name. For DYNP, use the screen number with parent set, or PROGRAM/0100."),
 		),
 		mcp.WithString("parent",
-			mcp.Description("Function group name (required only for FUNC type)"),
+			mcp.Description("Function group name for FUNC, or parent program name for DYNP"),
 		),
 		mcp.WithString("include",
 			mcp.Description("Class include type for CLAS: definitions, implementations, macros, testclasses (optional)"),
@@ -113,16 +116,19 @@ func (s *Server) registerGetSource() {
 		mcp.WithNumber("max_deps",
 			mcp.Description("Maximum dependencies to resolve when include_context=true (default: 20)"),
 		),
+		mcp.WithBoolean("merged",
+			mcp.Description("INCL only: return an annotated SE80-style view with attached ENHO sources spliced at enhancement anchors. The result is read-only and must not be uploaded."),
+		),
 	), s.handleGetSource)
 }
 
 // registerWriteSource registers the unified WriteSource tool
 func (s *Server) registerWriteSource() {
 	s.mcpServer.AddTool(mcp.NewTool("WriteSource",
-		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, CLAS, INTF, and RAP types (DDLS, BDEF, SRVD)."),
+		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, INCL, CLAS, INTF, and RAP types (DDLS, BDEF, SRVD)."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
+			mcp.Description("Object type: PROG (program), INCL (program include), CLAS (class), INTF (interface), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -168,11 +174,13 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 	parent, _ := request.GetArguments()["parent"].(string)
 	include, _ := request.GetArguments()["include"].(string)
 	method, _ := request.GetArguments()["method"].(string)
+	merged, _ := request.GetArguments()["merged"].(bool)
 
 	opts := &adt.GetSourceOptions{
 		Parent:  parent,
 		Include: include,
 		Method:  method,
+		Merged:  merged,
 	}
 
 	source, err := s.adtClient.GetSource(ctx, objectType, name, opts)
@@ -185,7 +193,7 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 	if ic, ok := request.GetArguments()["include_context"].(bool); ok {
 		includeContext = ic
 	}
-	if includeContext {
+	if includeContext && strings.ToUpper(objectType) != "DYNP" {
 		maxDeps := 20
 		if md, ok := request.GetArguments()["max_deps"].(float64); ok && md > 0 {
 			maxDeps = int(md)
@@ -201,7 +209,101 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 		}
 	}
 
+	// Append "Enhancements attached" footer for INCL reads (and only when the
+	// caller did not opt out of contextual enrichment via include_context=false).
+	// Soft-fail: any lookup or fetch error stays a comment in the footer rather
+	// than replacing the source the caller already has.
+	if includeContext && strings.ToUpper(objectType) == "INCL" && !merged {
+		source = appendEnhancementsFooter(ctx, s, source, name)
+	}
+
 	return mcp.NewToolResultText(source), nil
+}
+
+// appendEnhancementsFooter appends a "* === Enhancements attached ===" block
+// listing each ENHO that targets the include. When source-body fetch succeeds,
+// the body is rendered inline (via renderEnhBlock). When it fails — common on
+// classic ECC where HOOK_IMPL bodies are not exposed via REST — a placeholder
+// pointing at SE80 is rendered instead.
+func appendEnhancementsFooter(ctx context.Context, s *Server, source, includeName string) string {
+	refs, err := s.adtClient.ListEnhancementsForInclude(ctx, includeName)
+	if err != nil || len(refs) == 0 {
+		return source
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n* === Enhancements attached to ")
+	b.WriteString(strings.ToUpper(includeName))
+	b.WriteString(fmt.Sprintf(" (%d) ===\n", len(refs)))
+	for _, r := range refs {
+		b.WriteString(fmt.Sprintf("* ENHO/%s %s", r.Kind, r.Name))
+		if r.PackageName != "" {
+			b.WriteString(fmt.Sprintf(" (package %s)", r.PackageName))
+		}
+		if r.Description != "" {
+			b.WriteString(" — ")
+			b.WriteString(r.Description)
+		}
+		b.WriteString("\n")
+		if r.HostProgram != "" {
+			b.WriteString("*   host: ")
+			b.WriteString(r.HostProgram)
+			if r.EnhInclude != "" {
+				b.WriteString("  (plugin source: ")
+				b.WriteString(r.EnhInclude)
+				b.WriteString(")")
+			}
+			b.WriteString("\n")
+		}
+		if r.FullName != "" {
+			b.WriteString("*   anchor: ")
+			b.WriteString(r.FullName)
+			b.WriteString("\n")
+		}
+
+		// Pass the ref by pointer so EnhInclude (populated by the ENHINCINX
+		// table fallback) survives the body fetch. GetEnhancement(name) would
+		// re-resolve via SearchObject and drop EnhInclude, forcing the RFC
+		// step to guess <NAME>E — which fails for HOOK_IMPL plug-ins whose
+		// REPOSRC names use `=`-padding (ZSYNTHETIC_HOOK============E).
+		refCopy := r
+		body, ferr := s.adtClient.GetEnhancementByRef(ctx, &refCopy)
+		if ferr != nil {
+			b.WriteString(fmt.Sprintf("*   [source body unavailable: %v]\n", ferr))
+			continue
+		}
+		b.WriteString(adtRenderEnhBlock(r, body))
+	}
+	return source + b.String()
+}
+
+// adtRenderEnhBlock renders an ENHO block in the same shape as the package-
+// internal renderEnhBlock helper. Inlined here because the helper is
+// unexported in pkg/adt; keeping a minimal copy avoids an export-only diff.
+func adtRenderEnhBlock(ref adt.EnhancementRef, source string) string {
+	var b strings.Builder
+	kind := string(ref.Kind)
+	if kind == "" {
+		kind = "?"
+	}
+	b.WriteString("\n* vvv ENHO/")
+	b.WriteString(kind)
+	b.WriteString(" ")
+	b.WriteString(ref.Name)
+	if ref.PackageName != "" {
+		b.WriteString(" (package ")
+		b.WriteString(ref.PackageName)
+		b.WriteString(")")
+	}
+	b.WriteString(" vvv\n")
+	b.WriteString(source)
+	if !strings.HasSuffix(source, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("* ^^^ end of ")
+	b.WriteString(ref.Name)
+	b.WriteString(" ^^^\n")
+	return b.String()
 }
 
 // handleWriteSource handles the unified WriteSource tool call
@@ -391,7 +493,18 @@ func (s *Server) handleGrepObjects(ctx context.Context, request mcp.CallToolRequ
 		contextLines = int(cl)
 	}
 
-	result, err := s.adtClient.GrepObjects(ctx, objectURLs, pattern, caseInsensitive, contextLines)
+	includeEnhancements := readIncludeEnhancementsFlag(request.GetArguments())
+	maxEnhancements := readMaxEnhancementsParam(request.GetArguments())
+
+	var (
+		result interface{}
+		err    error
+	)
+	if includeEnhancements {
+		result, err = s.adtClient.GrepObjectsWithEnhancements(ctx, objectURLs, pattern, caseInsensitive, contextLines, maxEnhancements)
+	} else {
+		result, err = s.adtClient.GrepObjects(ctx, objectURLs, pattern, caseInsensitive, contextLines)
+	}
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("GrepObjects failed: %v", err)), nil
 	}
@@ -447,7 +560,18 @@ func (s *Server) handleGrepPackages(ctx context.Context, request mcp.CallToolReq
 		maxResults = int(mr)
 	}
 
-	result, err := s.adtClient.GrepPackages(ctx, packages, includeSubpackages, pattern, caseInsensitive, objectTypes, maxResults)
+	includeEnhancements := readIncludeEnhancementsFlag(request.GetArguments())
+	maxEnhancements := readMaxEnhancementsParam(request.GetArguments())
+
+	var (
+		result interface{}
+		err    error
+	)
+	if includeEnhancements {
+		result, err = s.adtClient.GrepPackagesWithEnhancements(ctx, packages, includeSubpackages, pattern, caseInsensitive, objectTypes, maxResults, maxEnhancements)
+	} else {
+		result, err = s.adtClient.GrepPackages(ctx, packages, includeSubpackages, pattern, caseInsensitive, objectTypes, maxResults)
+	}
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("GrepPackages failed: %v", err)), nil
 	}

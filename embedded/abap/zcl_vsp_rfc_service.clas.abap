@@ -1,6 +1,6 @@
 "! <p class="shorttext synchronized">VSP RFC Service</p>
 "! Enables dynamic RFC/BAPI calls via WebSocket.
-"! Actions: call, search, getMetadata, ping, moveToPackage
+"! Actions: call, search, getMetadata, ping, moveToPackage, runReport, readSource
 CLASS zcl_vsp_rfc_service DEFINITION
   PUBLIC
   FINAL
@@ -8,6 +8,7 @@ CLASS zcl_vsp_rfc_service DEFINITION
 
   PUBLIC SECTION.
     INTERFACES zif_vsp_service.
+    CLASS-METHODS class_constructor.
 
   PRIVATE SECTION.
     TYPES:
@@ -44,6 +45,13 @@ CLASS zcl_vsp_rfc_service DEFINITION
       IMPORTING is_message         TYPE zif_vsp_service=>ty_message
       RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
 
+    "! Read source of any program/include using native READ REPORT.
+    "! Works for SUBC=I includes (e.g. enhancement plug-in source) where
+    "! RPY_PROGRAM_READ raises CANCELLED in RFC contexts.
+    METHODS handle_read_source
+      IMPORTING is_message         TYPE zif_vsp_service=>ty_message
+      RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
+
     METHODS get_func_interface
       IMPORTING iv_function       TYPE rs38l_fnam
       EXPORTING et_import         TYPE tt_param_info
@@ -75,10 +83,23 @@ CLASS zcl_vsp_rfc_service DEFINITION
                 iv_message       TYPE string
       RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
 
+    CLASS-DATA gv_pcre_supported TYPE abap_bool.
+
 ENDCLASS.
 
 
 CLASS zcl_vsp_rfc_service IMPLEMENTATION.
+
+  METHOD class_constructor.
+    " Probe for PCRE support: \d was introduced in ABAP 7.55 (POSIX ERE on older releases).
+    TRY.
+        DATA lv_pcre_probe TYPE string.
+        FIND REGEX '\d' IN '1' SUBMATCHES lv_pcre_probe.
+        gv_pcre_supported = xsdbool( sy-subrc = 0 AND lv_pcre_probe = '1' ).
+      CATCH cx_root.
+        gv_pcre_supported = abap_false.
+    ENDTRY.
+  ENDMETHOD.
 
   METHOD zif_vsp_service~get_domain.
     rv_domain = 'rfc'.
@@ -98,6 +119,8 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
         rs_response = handle_move_to_package( is_message ).
       WHEN 'runReport'.
         rs_response = handle_run_report( is_message ).
+      WHEN 'readSource'.
+        rs_response = handle_read_source( is_message ).
       WHEN OTHERS.
         rs_response = build_error(
           iv_id      = is_message-id
@@ -192,6 +215,14 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
     DATA lo_data TYPE REF TO data.
     DATA lv_val TYPE string.
     FIELD-SYMBOLS <fs_val> TYPE any.
+*   classic-ECC compat: inline FIELD-SYMBOL() decls type these as `any`,
+*   so LOOP AT <fs_tab> fails the syntax check. Pre-declare with explicit
+*   table/structure types so the compiler is happy.
+    FIELD-SYMBOLS <fs_tab> TYPE STANDARD TABLE.
+    FIELD-SYMBOLS <fs_row> TYPE any.
+    FIELD-SYMBOLS <fs_comp> TYPE any.
+    FIELD-SYMBOLS <fs_out> TYPE any.
+    FIELD-SYMBOLS <fs_exp_comp> TYPE any.
 
     " Function's IMPORT params: we EXPORT values TO the function
     LOOP AT lt_import INTO DATA(ls_imp).
@@ -259,7 +290,7 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
     DATA lv_first TYPE abap_bool VALUE abap_true.
     DATA lv_str TYPE string.
     LOOP AT lt_ptab INTO DATA(ls_out) WHERE kind = abap_func_importing.
-      ASSIGN ls_out-value->* TO FIELD-SYMBOL(<fs_out>).
+      ASSIGN ls_out-value->* TO <fs_out>.
       IF sy-subrc = 0.
         IF lv_first = abap_false.
           lv_json = |{ lv_json },|.
@@ -284,7 +315,7 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
             IF lv_exp_first = abap_false.
               lv_json = |{ lv_json },|.
             ENDIF.
-            ASSIGN COMPONENT ls_exp_comp-name OF STRUCTURE <fs_out> TO FIELD-SYMBOL(<fs_exp_comp>).
+            ASSIGN COMPONENT ls_exp_comp-name OF STRUCTURE <fs_out> TO <fs_exp_comp>.
             IF sy-subrc = 0.
               DATA(lo_comp_type) = cl_abap_typedescr=>describe_by_data( <fs_exp_comp> ).
               IF lo_comp_type->kind = cl_abap_typedescr=>kind_elem.
@@ -311,7 +342,7 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
 
     lv_first = abap_true.
     LOOP AT lt_ptab INTO ls_out WHERE kind = abap_func_tables.
-      ASSIGN ls_out-value->* TO FIELD-SYMBOL(<fs_tab>).
+      ASSIGN ls_out-value->* TO <fs_tab>.
       IF sy-subrc = 0.
         IF lv_first = abap_false.
           lv_json = |{ lv_json },|.
@@ -322,7 +353,7 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
         DATA lv_row_first TYPE abap_bool.
         lv_row_first = abap_true.
         TRY.
-            LOOP AT <fs_tab> ASSIGNING FIELD-SYMBOL(<fs_row>).
+            LOOP AT <fs_tab> ASSIGNING <fs_row>.
               IF lv_row_first = abap_false.
                 lv_json = |{ lv_json },|.
               ENDIF.
@@ -334,7 +365,7 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
                 IF lv_comp_first = abap_false.
                   lv_json = |{ lv_json },|.
                 ENDIF.
-                ASSIGN COMPONENT ls_comp-name OF STRUCTURE <fs_row> TO FIELD-SYMBOL(<fs_comp>).
+                ASSIGN COMPONENT ls_comp-name OF STRUCTURE <fs_row> TO <fs_comp>.
                 IF sy-subrc = 0.
                   DATA(lo_type) = cl_abap_typedescr=>describe_by_data( <fs_comp> ).
                   IF lo_type->kind = cl_abap_typedescr=>kind_elem.
@@ -568,7 +599,11 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
     IF sy-subrc = 0.
       DATA lv_rest TYPE string.
       lv_rest = iv_params+lv_pos.
-      FIND REGEX ':\s*"([^"]*)"' IN lv_rest SUBMATCHES rv_value.
+      IF gv_pcre_supported = abap_true.
+        FIND REGEX ':\s*"([^"]*)"' IN lv_rest SUBMATCHES rv_value.
+      ELSE.
+        FIND REGEX ':[[:space:]]*"([^"]*)"' IN lv_rest SUBMATCHES rv_value.
+      ENDIF.
     ENDIF.
   ENDMETHOD.
 
@@ -653,6 +688,53 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
     DATA lv_json TYPE string.
     lv_json = |{ lv_o }"status":"started","report":"{ lv_report }","task":"{ lv_task }","mode":"async_rfc"{ lv_c }|.
 
+    rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
+  ENDMETHOD.
+
+
+  METHOD handle_read_source.
+    " Native READ REPORT — reads source for any program/include, including
+    " SUBC=I (enhancement plug-in source). Bypasses RPY_PROGRAM_READ which
+    " raises CANCELLED in RFC contexts on classic ECC.
+    DATA(lv_progname_str) = extract_param( iv_params = is_message-params iv_name = 'program' ).
+    IF lv_progname_str IS INITIAL.
+      rs_response = build_error( iv_id = is_message-id iv_code = 'MISSING_PARAM' iv_message = 'Parameter program is required' ).
+      RETURN.
+    ENDIF.
+    TRANSLATE lv_progname_str TO UPPER CASE.
+
+    DATA lv_progname TYPE progname.
+    lv_progname = lv_progname_str.
+
+    DATA lt_source TYPE TABLE OF string.
+
+    TRY.
+        READ REPORT lv_progname INTO lt_source.
+      CATCH cx_root INTO DATA(lx_err).
+        rs_response = build_error( iv_id = is_message-id iv_code = 'READ_FAILED' iv_message = lx_err->get_text( ) ).
+        RETURN.
+    ENDTRY.
+
+    IF sy-subrc <> 0.
+      rs_response = build_error( iv_id = is_message-id iv_code = 'NOT_FOUND' iv_message = |Program { lv_progname } not found| ).
+      RETURN.
+    ENDIF.
+
+    DATA(lv_o) = '{'.
+    DATA(lv_c) = '}'.
+    DATA lv_json TYPE string.
+    lv_json = |{ lv_o }"program":"{ escape_json( lv_progname_str ) }","source":[|.
+
+    DATA lv_first TYPE abap_bool VALUE abap_true.
+    LOOP AT lt_source INTO DATA(lv_line).
+      IF lv_first = abap_false.
+        lv_json = |{ lv_json },|.
+      ENDIF.
+      lv_json = |{ lv_json }"{ escape_json( lv_line ) }"|.
+      lv_first = abap_false.
+    ENDLOOP.
+
+    lv_json = |{ lv_json }]{ lv_c }|.
     rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
   ENDMETHOD.
 
