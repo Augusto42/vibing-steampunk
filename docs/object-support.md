@@ -20,7 +20,7 @@ has a concrete backend path and automated tests for the relevant behavior.
 | `SRVD` | Yes | Yes | Yes | RAP service definition |
 | `SRVB` | Metadata | Yes | Yes | JSON configuration rather than ABAP source |
 | `MSAG` | Metadata | No | No | Message-class metadata; specialized message tools are separate |
-| `ENHO` | Yes | No | No | Read-only Enhancement Framework support, including `XH`, `XC`, `XFB`, `XD`, and `XBD` discovery |
+| `ENHO` | Yes | No | `XH` | Existing classic source-code plug-ins can be updated through ZADT_VSP; other subtypes remain read-only |
 | `DYNP` | Experimental | No | No | Read-only screen metadata, layout, and flow logic through ZADT_VSP and `RPY_DYNPRO_READ`; validate against your non-production SAP release |
 | `ENHC` / `ENHS` | No | No | No | Explicitly unsupported; VSP does not pretend a safe mutation path exists |
 
@@ -43,10 +43,18 @@ analysis only and must not be written back to SAP.
 ```text
 GetSource(object_type="ENHO", name="ZENH_SAMPLE")
 GetSource(object_type="INCL", name="ZPROGRAM_SAMPLE_F01", merged=true, include_context=false)
+WriteSource(object_type="ENHO", name="ZENH_SAMPLE", source="...", mode="update")
 ```
 
 If no source path is available, VSP returns a structured error with navigation
 metadata. It does not return empty source as a successful read.
+
+Updating an existing `ENHO/XH` requires the current ZADT_VSP bridge. The bridge
+uses SAP's Enhancement Framework API in an isolated worker so SAP owns locking,
+saving, activation, and transport assignment. VSP reports success only after
+the active generated include has been read back and matches the requested
+source. Creation remains unavailable because source text alone does not define
+the host object, enhancement anchor, subtype, or enhancement spot.
 
 ## Program includes (`INCL`)
 
@@ -74,6 +82,9 @@ WriteSource(
 
 For transportable packages, configure VSP's mutation policy and pass an
 allowed transport exactly as required for the other writable object types.
+VSP resolves package metadata before mutation and fails closed when a package
+records changes but no explicit transport was supplied. It also aborts when
+SAP locks the object in a request different from the caller's request.
 
 ## Screens (`DYNP`)
 

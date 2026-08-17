@@ -740,15 +740,14 @@ func TestUpdateSource_UsesLockCorrelationTransport(t *testing.T) {
 	t.Fatal("no PUT request was sent")
 }
 
-func TestUpdateSource_ExplicitTransportOverridesLockCorrelation(t *testing.T) {
+func TestUpdateSource_RejectsTransportThatDiffersFromLockCorrelation(t *testing.T) {
 	mock := &methodPathMock{routes: []routedResponse{
 		resp("", "discovery", http.StatusOK, ""),
 		resp(http.MethodPost, "/programs/programs/ZSYNTHETIC", http.StatusOK, syntheticTransportLockXML),
-		resp(http.MethodPut, "/source/main", http.StatusOK, ""),
 	}}
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass",
 		WithAllowTransportableEdits(),
-		WithAllowedTransports("REQ-EXPLICIT-*"),
+		WithAllowedTransports("REQ-EXPLICIT-*", "REQ-SYN-*"),
 	)
 	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
 
@@ -756,21 +755,18 @@ func TestUpdateSource_ExplicitTransportOverridesLockCorrelation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LockObject failed: %v", err)
 	}
-	if err := client.UpdateSource(context.Background(), "/sap/bc/adt/programs/programs/ZSYNTHETIC/source/main", "REPORT zsynthetic.", lock.LockHandle, "REQ-EXPLICIT-001"); err != nil {
-		t.Fatalf("UpdateSource failed: %v", err)
+	err = client.UpdateSource(context.Background(), "/sap/bc/adt/programs/programs/ZSYNTHETIC/source/main", "REPORT zsynthetic.", lock.LockHandle, "REQ-EXPLICIT-001")
+	if err == nil {
+		t.Fatal("UpdateSource should reject a transport that differs from the lock correlation")
+	}
+	if !strings.Contains(err.Error(), "REQ-EXPLICIT-001") || !strings.Contains(err.Error(), "REQ-SYN-001") {
+		t.Fatalf("mismatch error should identify both transports, got: %v", err)
 	}
 
-	foundPUT := false
 	for _, call := range mock.calls {
 		if call.method == http.MethodPut {
-			foundPUT = true
-			if call.query.Get("corrNr") != "REQ-EXPLICIT-001" {
-				t.Fatalf("PUT corrNr = %q, want explicit transport", call.query.Get("corrNr"))
-			}
+			t.Fatal("transport mismatch sent a PUT request")
 		}
-	}
-	if !foundPUT {
-		t.Fatal("no PUT request was sent")
 	}
 }
 

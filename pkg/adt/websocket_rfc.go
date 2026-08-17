@@ -2,8 +2,10 @@ package adt
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -180,6 +182,41 @@ func (c *DebugWebSocketClient) ReadSource(ctx context.Context, program string) (
 		return nil, err
 	}
 	return result.Source, nil
+}
+
+// WriteEnhancementSource updates an existing classic HOOK_IMPL enhancement
+// through the optional ZADT_VSP bridge. The ABAP side uses the Enhancement
+// Framework API (not a raw INSERT REPORT), so locking, transport assignment,
+// saving, and activation remain owned by SAP.
+func (c *DebugWebSocketClient) WriteEnhancementSource(ctx context.Context, enhancement, source, transport string) error {
+	if !c.IsConnected() {
+		return fmt.Errorf("not connected")
+	}
+
+	id := c.GenerateID("rfc_enho_write")
+	rawMsg := map[string]any{
+		"id":     id,
+		"domain": "rfc",
+		"action": "writeEnhancementSource",
+		"params": map[string]any{
+			"enhancement":   strings.ToUpper(strings.TrimSpace(enhancement)),
+			"source_base64": base64.StdEncoding.EncodeToString([]byte(source)),
+			"transport":     strings.ToUpper(strings.TrimSpace(transport)),
+		},
+		"timeout": 120000,
+	}
+
+	resp, err := c.SendRawRequest(ctx, id, rawMsg, 125*time.Second)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		if resp.Error != nil {
+			return fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return fmt.Errorf("writeEnhancementSource failed")
+	}
+	return nil
 }
 
 // --- Package Operations ---

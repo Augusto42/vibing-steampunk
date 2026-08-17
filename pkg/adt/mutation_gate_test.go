@@ -135,6 +135,75 @@ func TestCheckMutation_MissingObjectURLAndPackage_FailsClosed(t *testing.T) {
 	}
 }
 
+func TestPackageTransportRequirement_TransportablePackageWithoutRequestFailsClosed(t *testing.T) {
+	packageXML := `<?xml version="1.0" encoding="utf-8"?>
+<pak:package xmlns:pak="http://www.sap.com/adt/packages" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSYNTHETIC">
+  <pak:attributes pak:recordChanges="true"/>
+  <pak:transport><pak:softwareComponent pak:name="HOME"/></pak:transport>
+</pak:package>`
+	mock := &mockTransportClient{responses: map[string]*http.Response{
+		"/sap/bc/adt/packages/ZSYNTHETIC": newTestResponse(packageXML),
+		"discovery":                       newTestResponse("OK"),
+	}}
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
+
+	err := client.checkPackageTransportRequirement(context.Background(), "ZSYNTHETIC", "", "WriteSource")
+	if err == nil {
+		t.Fatal("transportable package without request should be blocked")
+	}
+	if !strings.Contains(err.Error(), "blocked before mutation") || !strings.Contains(err.Error(), "--transport") {
+		t.Fatalf("unexpected preflight error: %v", err)
+	}
+}
+
+func TestPackageTransportRequirement_NamedLocalPackageDoesNotRequireRequest(t *testing.T) {
+	packageXML := `<?xml version="1.0" encoding="utf-8"?>
+<pak:package xmlns:pak="http://www.sap.com/adt/packages" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZLOCAL">
+  <pak:attributes pak:recordChanges="false"/>
+  <pak:transport><pak:softwareComponent pak:name="LOCAL"/></pak:transport>
+</pak:package>`
+	mock := &mockTransportClient{responses: map[string]*http.Response{
+		"/sap/bc/adt/packages/ZLOCAL": newTestResponse(packageXML),
+		"discovery":                   newTestResponse("OK"),
+	}}
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
+
+	if err := client.checkPackageTransportRequirement(context.Background(), "ZLOCAL", "", "WriteSource"); err != nil {
+		t.Fatalf("named local package should not require a request: %v", err)
+	}
+}
+
+func TestWriteSource_TransportableCreateWithoutRequestSendsNoMutation(t *testing.T) {
+	packageXML := `<?xml version="1.0" encoding="utf-8"?>
+<pak:package xmlns:pak="http://www.sap.com/adt/packages" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZSYNTHETIC">
+  <pak:attributes pak:recordChanges="true"/>
+  <pak:transport><pak:softwareComponent pak:name="HOME"/></pak:transport>
+</pak:package>`
+	mock := &mockWorkflowTransport{responses: map[string]*http.Response{
+		"GET /sap/bc/adt/programs/programs/ZNO_REQUEST/source/main": newWorkflowStatusResponse(http.StatusNotFound, "not found"),
+		"/sap/bc/adt/packages/ZSYNTHETIC":                           newWorkflowTestResponse(packageXML),
+		"discovery":                                                 newWorkflowTestResponse("OK"),
+	}}
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
+
+	result, err := client.WriteSource(context.Background(), "PROG", "ZNO_REQUEST", "REPORT zno_request.", &WriteSourceOptions{
+		Mode:        WriteModeCreate,
+		Description: "Synthetic transport guard",
+		Package:     "ZSYNTHETIC",
+	})
+	if err == nil {
+		t.Fatalf("transportable create should fail before mutation, got result: %#v", result)
+	}
+	for _, req := range mock.requests {
+		if req.Method != http.MethodGet {
+			t.Fatalf("preflight failure sent a mutation: %s %s", req.Method, req.URL.Path)
+		}
+	}
+}
+
 func TestClient_UI5UploadFile_BlockedUnderAllowedPackages(t *testing.T) {
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass", WithAllowedPackages("$TMP"))
 	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, &mockTransportClient{

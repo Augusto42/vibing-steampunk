@@ -840,6 +840,71 @@ func (c *Client) GetMessageClass(ctx context.Context, msgClassName string) (*Mes
 
 // --- Package Operations ---
 
+// PackageMetadata contains the transport-relevant fields from the direct ADT
+// package resource. PackageContent intentionally represents the package tree;
+// this type represents the package itself.
+type PackageMetadata struct {
+	Name              string `json:"name"`
+	RecordChanges     bool   `json:"recordChanges"`
+	SoftwareComponent string `json:"softwareComponent,omitempty"`
+}
+
+// RequiresTransport reports whether SAP records changes for objects in this
+// package. The explicit LOCAL component and $ packages are local even when an
+// older server omits the recordChanges attribute.
+func (p PackageMetadata) RequiresTransport() bool {
+	name := strings.ToUpper(strings.TrimSpace(p.Name))
+	component := strings.ToUpper(strings.TrimSpace(p.SoftwareComponent))
+	if strings.HasPrefix(name, "$") || component == "LOCAL" {
+		return false
+	}
+	return p.RecordChanges || component != ""
+}
+
+// GetPackageMetadata retrieves the package resource used by ADT editors to
+// decide whether changes must be assigned to a transport request.
+func (c *Client) GetPackageMetadata(ctx context.Context, packageName string) (*PackageMetadata, error) {
+	packageName = strings.ToUpper(strings.TrimSpace(packageName))
+	if packageName == "" {
+		return nil, fmt.Errorf("package name is required")
+	}
+
+	packagePath := fmt.Sprintf("/sap/bc/adt/packages/%s", url.PathEscape(packageName))
+	resp, err := c.transport.Request(ctx, packagePath, &RequestOptions{
+		Method: http.MethodGet,
+		Accept: "application/vnd.sap.adt.packages.v1+xml, application/*",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting package %s metadata: %w", packageName, err)
+	}
+
+	type packageResource struct {
+		Name       string `xml:"name,attr"`
+		Attributes struct {
+			RecordChanges bool `xml:"recordChanges,attr"`
+		} `xml:"attributes"`
+		Transport struct {
+			SoftwareComponent struct {
+				Name string `xml:"name,attr"`
+			} `xml:"softwareComponent"`
+		} `xml:"transport"`
+	}
+
+	var resource packageResource
+	if err := xml.Unmarshal(resp.Body, &resource); err != nil {
+		return nil, fmt.Errorf("parsing package %s metadata: %w", packageName, err)
+	}
+	if strings.TrimSpace(resource.Name) == "" {
+		return nil, fmt.Errorf("parsing package %s metadata: response did not identify the package", packageName)
+	}
+
+	return &PackageMetadata{
+		Name:              strings.ToUpper(resource.Name),
+		RecordChanges:     resource.Attributes.RecordChanges,
+		SoftwareComponent: strings.ToUpper(resource.Transport.SoftwareComponent.Name),
+	}, nil
+}
+
 // PackageExists checks package identity through the direct package resource.
 // Unlike the nodestructure endpoint used by GetPackage, this endpoint can
 // distinguish an empty existing package (200) from a missing package (404).

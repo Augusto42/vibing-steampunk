@@ -95,7 +95,7 @@ func (s *Server) registerGetSource() {
 		mcp.WithDescription("Unified tool for reading ABAP source and metadata across supported object types, including enhancement implementations and merged include views."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation, read-only), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
+			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation; existing XH objects are writable), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -125,10 +125,10 @@ func (s *Server) registerGetSource() {
 // registerWriteSource registers the unified WriteSource tool
 func (s *Server) registerWriteSource() {
 	s.mcpServer.AddTool(mcp.NewTool("WriteSource",
-		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, INCL, CLAS, INTF, and RAP types (DDLS, BDEF, SRVD)."),
+		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, INCL, CLAS, INTF, existing ENHO/XH implementations, and RAP types (DDLS, BDEF, SRVD)."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), INCL (program include), CLAS (class), INTF (interface), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
+			mcp.Description("Object type: PROG (program), INCL (program include), CLAS (class), INTF (interface), ENHO (existing XH enhancement, update only), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),

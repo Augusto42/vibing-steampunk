@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- Add verified updates for existing classic source-code enhancements
+  (`ENHO/XH`) through the ZADT_VSP bridge and SAP Enhancement Framework.
 - Add read-only Enhancement Framework (`ENHO`) source discovery, include
   attachment lookup, and annotated merged include views.
 - Add first-class program include (`INCL` / `PROG/I`) create and update support
@@ -17,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- Fail closed before mutation when a transportable package has no explicit
+  transport request, and reject a request that differs from SAP's lock owner.
+- Preserve omitted RFC import parameters so SAP function-module defaults are
+  not accidentally replaced with initial values.
 - Distinguish program include URLs from OO class include URLs during package
   resolution, syntax checks, and surgical edits.
 - Correct the synthetic enhancement anchor fixture so the merged-view

@@ -232,10 +232,10 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 
 	// Validate object type
 	switch objectType {
-	case "PROG", "CLAS", "INTF", "INCL", "DDLS", "BDEF", "SRVD", "SRVB":
+	case "PROG", "CLAS", "INTF", "INCL", "DDLS", "BDEF", "SRVD", "SRVB", "ENHO":
 		// Supported types
 	default:
-		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, INCL, DDLS, BDEF, SRVD, SRVB)", objectType)
+		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, INCL, DDLS, BDEF, SRVD, SRVB, ENHO)", objectType)
 		return result, nil
 	}
 
@@ -268,18 +268,40 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		result.Message = fmt.Sprintf("Object %s does not exist (use mode=create or mode=upsert)", name)
 		return result, nil
 	}
+	if actualMode == WriteModeCreate && objectType == "ENHO" {
+		result.Message = "Creating ENHO from source alone is not supported: the enhancement host, anchor, subtype, and spot metadata are required; create it in ADT/SE80 first, then use mode=update"
+		return result, nil
+	}
 
 	mutation := MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteSource",
 		Transport: opts.Transport,
 	}
+	var targetPackage string
 	if actualMode == WriteModeCreate {
 		mutation.Package = opts.Package
+		targetPackage = opts.Package
+	} else if objectType == "ENHO" {
+		ref, resolveErr := c.resolveEnhancement(ctx, name)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		mutation.ObjectURL = ref.URI
+		mutation.Package = ref.PackageName
+		targetPackage = ref.PackageName
 	} else {
 		mutation.ObjectURL = writeSourceObjectURL(objectType, name)
+		packageName, packageErr := c.getObjectPackage(ctx, mutation.ObjectURL)
+		if packageErr != nil {
+			return nil, fmt.Errorf("resolving package before WriteSource: %w", packageErr)
+		}
+		targetPackage = packageName
 	}
 	if err := c.checkMutation(ctx, mutation); err != nil {
+		return nil, err
+	}
+	if err := c.checkPackageTransportRequirement(ctx, targetPackage, opts.Transport, "WriteSource"); err != nil {
 		return nil, err
 	}
 	ctx = withMutationPackageChecked(ctx)
@@ -760,6 +782,9 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 		result.Activation = includeResult.Activation
 		result.Message = includeResult.Message
 		return result, nil
+
+	case "ENHO":
+		return c.writeEnhancementUpdate(ctx, name, source, opts.Transport)
 
 	case "CLAS":
 		// Method-level update: replace only the specified method
