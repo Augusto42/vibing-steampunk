@@ -87,6 +87,14 @@ implementations return structured metadata.
 Enhancement Framework and is reported successful only after active repository
 read-back confirms the expected subtype.
 
+The initial class-enhancement contract supports an empty enhancement or one new
+parameterless instance method. The BAdI contract links an existing
+implementation class; it does not create the class, definition, spot, or filter
+values. `ENHC` and `ENHS` creation remain unsupported. For every flag, MCP
+equivalent, CTS behavior, validation rule, and troubleshooting procedure, see
+the [complete enhancement creation guide](enhancement-creation.md). A
+[Portuguese team guide](pt-BR/criacao-enhancements.md) is also available.
+
 ### Search & Discovery
 
 ```bash

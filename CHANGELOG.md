@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Add complete English and Portuguese guides for XH, class-enhancement, and
+  BAdI creation, including prerequisites, CTS safety, MCP parameters,
+  verification, limitations, troubleshooting, and synthetic validation
+  evidence.
+
+## [2.40.0-augusto.1] - 2026-08-17
+
 ### Features
 
 - Add explicit `CreateEnhancement` API, MCP tool, and

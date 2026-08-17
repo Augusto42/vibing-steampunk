@@ -25,6 +25,39 @@
 
 ## Hot Right Now
 
+### Classic Enhancement Creation (`v2.40.0-augusto.1`)
+
+The Augusto42 distribution can create and activate classic Enhancement
+Framework implementations through SAP's own framework APIs:
+
+[Download the Windows, Linux, or macOS release](https://github.com/Augusto42/vibing-steampunk/releases/tag/v2.40.0-augusto.1).
+
+```powershell
+# Source-code plug-in (exact FULL_NAME anchor required)
+Get-Content .\body.abap -Raw | vsp -s dev enhancement create xh ZSAMPLE_XH `
+  --host ZSAMPLE_HOST --anchor '\PR:ZSAMPLE_HOST\SE:END\EI' `
+  --package '$TMP' --description 'Synthetic source hook'
+
+# Class enhancement with one new method
+Get-Content .\method.abap -Raw | vsp -s dev enhancement create class ZSAMPLE_CLASS_ENH `
+  --class ZCL_SAMPLE_HOST --method SAMPLE_METHOD `
+  --package '$TMP' --description 'Synthetic class enhancement'
+
+# BAdI implementation linked to an existing implementation class
+vsp -s dev enhancement create badi ZSAMPLE_BADI_ENH `
+  --spot ZSAMPLE_SPOT --badi ZSAMPLE_BADI `
+  --implementation ZSAMPLE_IMPL --implementation-class ZCL_SAMPLE_IMPL `
+  --package '$TMP' --description 'Synthetic BAdI implementation'
+```
+
+Creation is available in both the CLI and focused-mode MCP tool
+`CreateEnhancement`. It supports local and explicitly authorized transportable
+packages, waits for active repository read-back, and fails closed on missing
+metadata or CTS mismatches.
+
+Read the [complete enhancement creation guide](docs/enhancement-creation.md) or
+the [Portuguese team guide](docs/pt-BR/criacao-enhancements.md).
+
 ### Package Analysis Suite
 
 Five analysis commands that answer real questions about your ABAP packages:
@@ -707,7 +740,7 @@ graph LR
 |--------|:-:|:-:|:-:|
 | **Tools** | 100 essential | 147 complete | 1 universal `SAP()` |
 | **Schema tokens** | ~14K | ~40K | **~200** |
-| **How AI calls it** | `GetSource(type, name)` | Same, + granular tools | `SAP(action, target, params)` |
+| **How AI calls it** | `GetSource(object_type, name)` | Same, + granular tools | `SAP(action, target, params)` |
 | **Documentation** | In tool schemas | In tool schemas | `SAP(action="help")` |
 | **Best for** | Legacy setups | Edge cases, debugging | **Most setups — any model, minimal overhead** |
 | **Safety controls** | All apply | All apply | All apply (same code path) |
@@ -993,7 +1026,19 @@ and read-only `DYNP` through ZADT_VSP—see the
 
 ## Optional: WebSocket Handler (ZADT_VSP)
 
-vsp can optionally deploy a WebSocket handler to SAP for enhanced functionality like RFC calls:
+VSP can deploy a WebSocket handler to SAP for advanced functionality such as
+RFC calls and Enhancement Framework creation. Install or update it from the
+same binary used by the CLI:
+
+```bash
+vsp -s dev install zadt-vsp --package '$ZADT_VSP'
+```
+
+The command deploys the embedded interface and service classes in dependency
+order. The classic enhancement creation flow requires the bridge version
+shipped with `v2.40.0-augusto.1` or newer.
+
+For manual or advanced deployment, the equivalent source sequence is:
 
 ```bash
 # 1. Create package
@@ -1023,9 +1068,12 @@ See [WebSocket Handler Report](reports/2025-12-18-002-websocket-rfc-handler.md) 
 | Document | Description |
 |----------|-------------|
 | [docs/architecture.md](docs/architecture.md) | Architecture diagrams (Mermaid) |
+| [docs/enhancement-creation.md](docs/enhancement-creation.md) | Complete XH, class-enhancement, BAdI, CTS, MCP, and troubleshooting guide |
+| [docs/pt-BR/criacao-enhancements.md](docs/pt-BR/criacao-enhancements.md) | Guia em português para criação e validação de enhancements |
 | [docs/object-support.md](docs/object-support.md) | Operation-level ABAP object support matrix |
 | [docs/mock-sap-testing.md](docs/mock-sap-testing.md) | Synthetic SAP protocol simulator and real-system validation ladder |
-| [README_TOOLS.md](README_TOOLS.md) | Complete tool reference (94 tools) |
+| [docs/cli-guide.md](docs/cli-guide.md) | CLI command and workflow reference |
+| [README_TOOLS.md](README_TOOLS.md) | MCP tool reference by capability and mode |
 | [MCP_USAGE.md](MCP_USAGE.md) | AI agent usage guide |
 | [docs/DSL.md](docs/DSL.md) | DSL & workflow documentation |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Technical architecture (detailed) |

@@ -36,16 +36,24 @@ SELECT carrid, COUNT(*) as cnt FROM sflight GROUP BY carrid ORDER BY cnt DESC
 
 ### Object Type Coverage
 
-| Object Type | GetSource | WriteSource | Notes |
-|-------------|:---------:|:-----------:|-------|
-| PROG (Program) | **Y** | **Y** | Full support |
-| CLAS (Class) | **Y** | **Y** | Includes: definitions, implementations, testclasses |
-| INTF (Interface) | **Y** | **Y** | Full support |
-| FUNC (Function Module) | **Y** | N | Requires `parent` (function group) |
-| FUGR (Function Group) | **Y** | N | Returns JSON metadata |
-| INCL (Include) | **Y** | N | Read-only |
-| DDLS (CDS DDL Source) | **Y** | N | CDS view definitions |
-| MSAG (Message Class) | **Y** | N | Returns JSON with all messages |
+| Object Type | GetSource | WriteSource | Dedicated creation | Notes |
+|-------------|:---------:|:-----------:|:------------------:|-------|
+| PROG (Program) | **Y** | **Y** | — | Full support |
+| CLAS (Class) | **Y** | **Y** | — | Includes and method-level operations |
+| INTF (Interface) | **Y** | **Y** | — | Full support |
+| FUNC (Function Module) | **Y** | N | Specialized tools | Requires `parent` (function group) |
+| FUGR (Function Group) | **Y** | N | Specialized tools | Returns JSON metadata |
+| INCL (Program Include) | **Y** | **Y** | — | First-class `PROG/I` create/update |
+| ENHO (Enhancement Implementation) | **Y** | Existing XH only | `CreateEnhancement` | Creates XH, class-enhancement, or BAdI ENHO |
+| DYNP (Screen) | **Y** | N | N | Experimental read-only path through ZADT_VSP |
+| DDLS/BDEF/SRVD | **Y** | **Y** | — | RAP source objects |
+| SRVB | **Y** | **Y** | — | Structured service-binding configuration |
+| VIEW/MSAG | **Y** | N | Specialized tools | Structured metadata |
+| ENHC/ENHS | N | N | N | Explicitly unsupported |
+
+Enhancement creation requires the current ZADT_VSP bridge and explicit
+kind-specific metadata. See
+[Creating enhancement implementations](docs/enhancement-creation.md).
 
 ### CDS Dependencies
 
@@ -60,10 +68,11 @@ SELECT carrid, COUNT(*) as cnt FROM sflight GROUP BY carrid ORDER BY cnt DESC
 
 ```mermaid
 flowchart TD
-    subgraph Focused["Focused Mode (Default) - 19 Tools"]
+    subgraph Focused["Focused Mode (Default)"]
         U[Unified Tools]
         U --> GS[GetSource]
         U --> WS[WriteSource]
+        U --> CE[CreateEnhancement]
 
         S[Search]
         S --> GO[GrepObjects]
@@ -87,7 +96,7 @@ flowchart TD
         T --> UT[RunUnitTests]
     end
 
-    subgraph Expert["Expert Mode - 45 Tools"]
+    subgraph Expert["Expert Mode"]
         direction TB
         F[All Focused Tools]
         A[+ Atomic Operations]
@@ -131,7 +140,7 @@ flowchart TD
     START --> READ{Read or Write?}
 
     READ -->|Read| RTYPE{What type?}
-    RTYPE -->|Source code| GS[GetSource type,name]
+    RTYPE -->|Source code| GS[GetSource object_type,name]
     RTYPE -->|Table data| TD{Need SQL?}
     TD -->|Simple| GTC[GetTableContents]
     TD -->|Complex| RQ[RunQuery]
@@ -142,7 +151,9 @@ flowchart TD
     RTYPE -->|Symbol location| FD[FindDefinition]
     RTYPE -->|All usages| FR[FindReferences]
 
-    READ -->|Write| WSIZE{Change size?}
+    READ -->|Write| WTYPE{Creating an ENHO?}
+    WTYPE -->|Yes| CE[CreateEnhancement with explicit host metadata]
+    WTYPE -->|No| WSIZE{Change size?}
     WSIZE -->|Small <50 lines| ES[EditSource]
     WSIZE -->|Large rewrite| WS[WriteSource]
     WSIZE -->|Huge >2000 lines| IF[ImportFromFile]
@@ -160,7 +171,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph "GetSource(type, name)"
+    subgraph "GetSource(object_type, name)"
         PROG[PROG] --> SRC1[ABAP Source]
         CLAS[CLAS] --> SRC2[Class Source]
         INTF[INTF] --> SRC3[Interface Source]
@@ -168,20 +179,25 @@ flowchart LR
         FUGR[FUGR] --> JSON1[JSON Metadata]
         DDLS[DDLS] --> SRC5[CDS Source]
         MSAG[MSAG] --> JSON2[JSON Messages]
+        ENHO[ENHO] --> SRC6[Subtype-specific source or metadata]
+        DYNP[DYNP + parent] --> JSON3[Screen metadata and flow logic]
     end
 ```
 
 | Task | Tool | Parameters | Returns |
 |------|------|------------|---------|
-| Read program | `GetSource` | `type=PROG, name=ZTEST` | ABAP source |
-| Read class | `GetSource` | `type=CLAS, name=ZCL_TEST` | Class source |
-| Read class definitions | `GetSource` | `type=CLAS, name=ZCL_TEST, include=definitions` | Definitions include |
-| Read class tests | `GetSource` | `type=CLAS, name=ZCL_TEST, include=testclasses` | Test classes |
-| Read interface | `GetSource` | `type=INTF, name=ZIF_TEST` | Interface source |
-| Read function module | `GetSource` | `type=FUNC, name=Z_FM, parent=ZFUGR` | FM source |
-| Read function group structure | `GetSource` | `type=FUGR, name=ZFUGR` | JSON (FM list) |
-| Read CDS view | `GetSource` | `type=DDLS, name=ZDDL_VIEW` | CDS source |
-| Read message class | `GetSource` | `type=MSAG, name=ZMSAG` | JSON (all messages) |
+| Read program | `GetSource` | `object_type=PROG, name=ZTEST` | ABAP source |
+| Read class | `GetSource` | `object_type=CLAS, name=ZCL_TEST` | Class source |
+| Read class definitions | `GetSource` | `object_type=CLAS, name=ZCL_TEST, include=definitions` | Definitions include |
+| Read class tests | `GetSource` | `object_type=CLAS, name=ZCL_TEST, include=testclasses` | Test classes |
+| Read interface | `GetSource` | `object_type=INTF, name=ZIF_TEST` | Interface source |
+| Read function module | `GetSource` | `object_type=FUNC, name=Z_FM, parent=ZFUGR` | FM source |
+| Read function group structure | `GetSource` | `object_type=FUGR, name=ZFUGR` | JSON (FM list) |
+| Read program include | `GetSource` | `object_type=INCL, name=ZTEST_F01` | ABAP source |
+| Read enhancement | `GetSource` | `object_type=ENHO, name=ZSAMPLE_ENH` | Subtype-specific source/metadata |
+| Read Dynpro | `GetSource` | `object_type=DYNP, name=0100, parent=ZSAMPLE_APP` | Screen metadata and flow logic |
+| Read CDS view | `GetSource` | `object_type=DDLS, name=ZDDL_VIEW` | CDS source |
+| Read message class | `GetSource` | `object_type=MSAG, name=ZMSAG` | JSON (all messages) |
 
 ### Writing Objects
 
@@ -191,6 +207,7 @@ flowchart LR
 | Full rewrite | `WriteSource` | Auto-detects create vs update |
 | Create new | `WriteSource(mode=create)` | Explicit create |
 | Update existing | `WriteSource(mode=update)` | Explicit update |
+| Create XH/class/BAdI ENHO | `CreateEnhancement` | Explicit Enhancement Framework metadata required |
 | Deploy large file | `ImportFromFile` | Bypasses token limits |
 
 ### Searching
@@ -214,10 +231,12 @@ flowchart LR
 **Parameters:**
 | Parameter | Required | Values | Description |
 |-----------|----------|--------|-------------|
-| `object_type` | Yes | PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, MSAG | Object type |
+| `object_type` | Yes | PROG, CLAS, INTF, FUNC, FUGR, INCL, DYNP, ENHO, DDLS, VIEW, BDEF, SRVD, SRVB, MSAG | Object type |
 | `name` | Yes | string | Object name (uppercase) |
-| `parent` | FUNC only | string | Function group name |
+| `parent` | FUNC or DYNP | string | Function group name or parent screen program |
 | `include` | CLAS only | definitions, implementations, macros, testclasses | Class include type |
+| `method` | CLAS only | string | Return one `METHOD...ENDMETHOD` block |
+| `merged` | INCL only | boolean | Return a read-only view with attached enhancements rendered at anchors |
 
 **Examples:**
 
@@ -236,7 +255,49 @@ flowchart LR
 
 // Read all messages in message class
 { "object_type": "MSAG", "name": "ZRAY_00" }
+
+// Read an enhancement implementation using its authoritative subtype
+{ "object_type": "ENHO", "name": "ZSAMPLE_ENH" }
 ```
+
+### CreateEnhancement - Explicit ENHO Creation
+
+**Purpose:** Create and activate an XH source-code plug-in, class enhancement,
+or BAdI implementation without inferring SAP relationships from source text.
+
+**Common required parameters:** `kind`, `name`, `description`, and `package`.
+A transportable package also requires `transport` and an enabled
+transportable-edit safety policy.
+
+```json
+{
+  "kind": "CLASS",
+  "name": "ZSAMPLE_CLASS_ENH",
+  "description": "Synthetic class enhancement",
+  "package": "$TMP",
+  "class_name": "ZCL_SAMPLE_HOST",
+  "method_name": "SAMPLE_METHOD",
+  "method_description": "Synthetic enhanced method",
+  "method_exposure": "PUBLIC",
+  "source": "DATA lv_sample TYPE string."
+}
+```
+
+Kind-specific fields:
+
+- `XH`: `host_object_type`, `host_object_name`, `host_program`,
+  `main_object_type`, `main_object_name`, `anchor`, `parent_anchor`, `spot`,
+  `enhancement_mode`, `overwrite`, `hook_method`, `source`;
+- `CLASS`: `class_name`, optional `method_name`, `method_description`,
+  `method_exposure`, and `source`;
+- `BADI`: `spot`, `badi_name`, `implementation_name`,
+  `implementation_class`, `implementation_description`, `inactive`, and
+  `default_implementation`.
+
+The BAdI implementation class and class-enhancement host must already exist.
+The initial class contract creates at most one parameterless instance method.
+For exact limits, CTS handling, result verification, and troubleshooting, see
+the [complete enhancement creation guide](docs/enhancement-creation.md).
 
 ### EditSource - Surgical Edit
 
@@ -368,7 +429,7 @@ sequenceDiagram
 ### 2. Read CDS View and Dependencies
 
 ```
-Step 1: GetSource(type=DDLS, name=ZRAY_00_I_DOC_NODE_00)
+Step 1: GetSource(object_type=DDLS, name=ZRAY_00_I_DOC_NODE_00)
         → Returns CDS source code
 
 Step 2: GetCDSDependencies(ddls_name=ZRAY_00_I_DOC_NODE_00)
@@ -396,7 +457,7 @@ Step 2: For each object:
 ### 4. Understand Error Messages
 
 ```
-Step 1: GetSource(type=MSAG, name=ZRAY_00)
+Step 1: GetSource(object_type=MSAG, name=ZRAY_00)
         → Returns JSON with all messages:
         {
           "messages": [

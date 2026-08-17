@@ -67,6 +67,33 @@ The server binds to localhost by default, requires synthetic Basic Auth for
 all SAP-shaped routes, enforces CSRF on modifications, and never logs
 Authorization headers or request bodies.
 
+## Classic-system enhancement validation
+
+The enhancement-creation backend uses SAP Enhancement Framework classes that a
+protocol simulator cannot faithfully reproduce. On 17 August 2026, the
+`v2.40.0-augusto.1` implementation was therefore validated separately on an
+isolated SAP NetWeaver 7.52 NPL lab, still using only synthetic objects.
+
+| Scenario | `$TMP` | Transportable package |
+|---|:---:|:---:|
+| XH creation, activation, and source read-back | Passed | Passed |
+| Class enhancement with one method and generated-include read-back | Passed | Passed |
+| BAdI ENHO creation and structured metadata read-back | Passed | Passed |
+| Approved CTS ownership retained by the created ENHO | N/A | Passed |
+
+The transportable-package pass specifically covers the classic background CTS
+failure fixed in this release: the approved task is propagated before SAP saves
+enhancement subobject texts, avoiding an interactive `TRINT_ORDER_CHOICE` call
+and `DYNPRO_SEND_IN_BACKGROUND` dump.
+
+Repository validation for the same release included `go test ./...`,
+`go vet ./...`, focused creation-contract tests, ABAP bridge syntax/activation,
+and GitHub Actions. No customer identifiers, source, credentials, endpoints,
+package names, transport numbers, or dumps were copied into the repository.
+
+For commands, supported fields, safety gates, and limitations, see
+[Creating enhancement implementations](enhancement-creation.md).
+
 ## Official SAP environments evaluated
 
 Status checked on 15 August 2026:
