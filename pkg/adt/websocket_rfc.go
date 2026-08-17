@@ -219,6 +219,115 @@ func (c *DebugWebSocketClient) WriteEnhancementSource(ctx context.Context, enhan
 	return nil
 }
 
+// CreateEnhancement schedules creation through SAP's Enhancement Framework.
+// The bridge deliberately receives every relationship explicitly; it never
+// tries to infer an anchor, host class, enhancement spot, or BAdI definition
+// from source text.
+func (c *DebugWebSocketClient) CreateEnhancement(ctx context.Context, opts CreateEnhancementOptions) error {
+	if !c.IsConnected() {
+		return fmt.Errorf("not connected")
+	}
+
+	active := "X"
+	if opts.Inactive {
+		active = ""
+	}
+	defaultImpl := ""
+	if opts.DefaultImplementation {
+		defaultImpl = "X"
+	}
+	overwrite := ""
+	if opts.Overwrite {
+		overwrite = "X"
+	}
+	hookMethod := ""
+	if opts.HookMethod {
+		hookMethod = "X"
+	}
+
+	id := c.GenerateID("rfc_enho_create")
+	rawMsg := map[string]any{
+		"id":     id,
+		"domain": "rfc",
+		"action": "createEnhancement",
+		"params": map[string]any{
+			"kind":                       string(opts.Kind),
+			"enhancement":                opts.Name,
+			"description_base64":         base64.StdEncoding.EncodeToString([]byte(opts.Description)),
+			"package":                    opts.Package,
+			"transport":                  opts.Transport,
+			"host_object_type":           opts.HostObjectType,
+			"host_object_name":           opts.HostObjectName,
+			"host_program":               opts.HostProgram,
+			"main_object_type":           opts.MainObjectType,
+			"main_object_name":           opts.MainObjectName,
+			"anchor_base64":              base64.StdEncoding.EncodeToString([]byte(opts.Anchor)),
+			"parent_anchor_base64":       base64.StdEncoding.EncodeToString([]byte(opts.ParentAnchor)),
+			"spot":                       opts.Spot,
+			"enhancement_mode":           opts.EnhancementMode,
+			"overwrite":                  overwrite,
+			"hook_method":                hookMethod,
+			"source_base64":              base64.StdEncoding.EncodeToString([]byte(opts.Source)),
+			"class_name":                 opts.ClassName,
+			"method_name":                opts.MethodName,
+			"method_description_base64":  base64.StdEncoding.EncodeToString([]byte(opts.MethodDescription)),
+			"method_exposure":            opts.MethodExposure,
+			"method_source_base64":       base64.StdEncoding.EncodeToString([]byte(opts.MethodSource)),
+			"spot_name":                  opts.SpotName,
+			"badi_name":                  opts.BAdIName,
+			"implementation_name":        opts.ImplementationName,
+			"implementation_class":       opts.ImplementationClass,
+			"implementation_desc_base64": base64.StdEncoding.EncodeToString([]byte(opts.ImplementationDescription)),
+			"active":                     active,
+			"default_implementation":     defaultImpl,
+		},
+		"timeout": 120000,
+	}
+
+	resp, err := c.SendRawRequest(ctx, id, rawMsg, 125*time.Second)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		if resp.Error != nil {
+			return fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return fmt.Errorf("createEnhancement failed")
+	}
+	return nil
+}
+
+// DescribeEnhancement returns tool-specific metadata from the Enhancement
+// Framework. This is especially useful for BAdI implementations, whose source
+// lives in a separate implementation class rather than in an ENHO include.
+func (c *DebugWebSocketClient) DescribeEnhancement(ctx context.Context, enhancement string) (string, error) {
+	if !c.IsConnected() {
+		return "", fmt.Errorf("not connected")
+	}
+
+	id := c.GenerateID("rfc_enho_describe")
+	rawMsg := map[string]any{
+		"id":     id,
+		"domain": "rfc",
+		"action": "describeEnhancement",
+		"params": map[string]any{
+			"enhancement": strings.ToUpper(strings.TrimSpace(enhancement)),
+		},
+		"timeout": 30000,
+	}
+	resp, err := c.SendRawRequest(ctx, id, rawMsg, 35*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success {
+		if resp.Error != nil {
+			return "", fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return "", fmt.Errorf("describeEnhancement failed")
+	}
+	return string(resp.Data), nil
+}
+
 // --- Package Operations ---
 
 // MoveObjectResult contains the result of a package reassignment.

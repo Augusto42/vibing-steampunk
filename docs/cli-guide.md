@@ -40,6 +40,53 @@ vsp source edit CLAS ZCL_MY_CLASS --old "ADD 1 TO lv_x" --new "lv_x = lv_x + 1" 
 
 **Requirements:** Standard ADT. No ZADT_VSP needed.
 
+### Enhancement Implementations
+
+```bash
+# Create a source-code plug-in; stdin is the raw enhancement body
+echo "WRITE 'sample'." | vsp enhancement create xh ZSAMPLE_XH \
+  --host ZSAMPLE_HOST \
+  --anchor '\PR:ZSAMPLE_HOST\SE:END\EI' \
+  --package '$TMP' \
+  --description "Sample XH"
+
+# Create a class enhancement and add one public method
+echo "DATA lv_sample TYPE string." | vsp enhancement create class ZSAMPLE_CLASS_ENH \
+  --class ZCL_SAMPLE_HOST \
+  --method SAMPLE_METHOD \
+  --method-description "Sample enhanced method" \
+  --package '$TMP' \
+  --description "Sample class enhancement"
+
+# Link an existing implementation class to a BAdI definition
+vsp enhancement create badi ZSAMPLE_BADI_ENH \
+  --spot ZSAMPLE_SPOT \
+  --badi ZSAMPLE_BADI \
+  --implementation ZSAMPLE_IMPL \
+  --implementation-class ZCL_SAMPLE_IMPL \
+  --package '$TMP' \
+  --description "Sample BAdI implementation"
+
+# Transportable packages require both the request and the explicit safety flag
+vsp enhancement create class ZSAMPLE_CLASS_ENH \
+  --class ZCL_SAMPLE_HOST \
+  --package ZSAMPLE \
+  --description "Sample transported enhancement" \
+  --transport SIDK900001 \
+  --allow-transportable-edits
+```
+
+`--anchor` must be the exact Enhancement Framework `FULL_NAME`; VSP does not
+guess injection points. A BAdI implementation class must already exist and
+implement the interface required by the selected definition. To inspect the
+result, use `vsp source ENHO <name>`: XH returns its wrapper, class
+enhancements return generated declaration/method includes, and BAdI
+implementations return structured metadata.
+
+**Requirements:** The current ZADT_VSP bridge. Creation is performed by SAP's
+Enhancement Framework and is reported successful only after active repository
+read-back confirms the expected subtype.
+
 ### Search & Discovery
 
 ```bash

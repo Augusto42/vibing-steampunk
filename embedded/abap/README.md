@@ -16,6 +16,8 @@ This directory contains optional ABAP objects that can be deployed to SAP system
 The WebSocket handler enables **stateful operations** not available through standard ADT REST APIs:
 
 - **RFC/BAPI execution** with full parameter support
+- **Enhancement Framework operations** for verified XH updates and explicit
+  XH, class-enhancement, and BAdI-implementation creation
 - **Real-time debugging** with step-into, step-over, step-return, continue
 - **Call stack inspection** during debug sessions
 - **Variable inspection** at breakpoints
@@ -160,6 +162,10 @@ Execute any RFC/BAPI function module with parameters, plus object management.
 | `search` | Search function modules |
 | `getMetadata` | Get function signature |
 | `moveToPackage` | Move object to different package (TADIR update) |
+| `readSource` | Read generated classic includes with native `READ REPORT` |
+| `writeEnhancementSource` | Update and activate an existing XH implementation |
+| `createEnhancement` | Create XH, class, or BAdI ENHO through SAP framework APIs |
+| `describeEnhancement` | Return authoritative tool-specific ENHO metadata |
 
 ### Examples
 

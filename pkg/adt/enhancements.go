@@ -10,6 +10,7 @@ package adt
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -39,6 +40,10 @@ type rfcEnhancementWriter interface {
 	WriteEnhancementSource(ctx context.Context, enhancement, source, transport string) error
 }
 
+type rfcEnhancementDescriber interface {
+	DescribeEnhancement(ctx context.Context, enhancement string) (string, error)
+}
+
 // EnhancementKind is the ENHO subtype code returned by ADT search (e.g. XH).
 type EnhancementKind string
 
@@ -59,11 +64,16 @@ var enhoSubtypePath = map[EnhancementKind]string{
 // known to be an ENHO entry. Carried separately so callers don't have to
 // re-parse the ADT type string.
 type EnhancementRef struct {
-	Name        string          `json:"name"`
-	Kind        EnhancementKind `json:"kind"` // XH / XC / XFB / XD / XBD
-	URI         string          `json:"uri"`
-	PackageName string          `json:"packageName,omitempty"`
-	Description string          `json:"description,omitempty"`
+	Name string          `json:"name"`
+	Kind EnhancementKind `json:"kind"` // XH / XC / XFB / XD / XBD
+	// ToolType is the authoritative ENHHEADER.ENHTOOLTYPE value. Older ADT
+	// search services sometimes report every ENHO as XH, including CLASENH
+	// and BADI_IMPL objects, so behavior must be selected from this field when
+	// it is available.
+	ToolType    string `json:"toolType,omitempty"`
+	URI         string `json:"uri"`
+	PackageName string `json:"packageName,omitempty"`
+	Description string `json:"description,omitempty"`
 	// FullName is the XPath-style anchor location reported by ENHINCINX for
 	// HOOK_IMPL plug-ins, e.g. "\PR:ZSYNTHETIC_PROGRAM\FO:SYNTHETIC_FORM\SE:BEGIN\EI".
 	// Empty unless the ENHO was discovered via the table-based fallback.
@@ -142,6 +152,26 @@ func (c *Client) GetEnhancementByRef(ctx context.Context, ref *EnhancementRef) (
 		}
 	}
 
+	// Class and BAdI enhancement implementations do not have the single hook
+	// source include used by XH objects. Returning their authoritative metadata
+	// is more useful (and safer) than guessing <ENHNAME>E and reading an
+	// unrelated program include.
+	if ref.Kind != EnhancementKind("XH") {
+		if ref.Kind == EnhancementKind("XC") {
+			if source, ok := c.tryFetchClassEnhancementSourcesViaRFC(ctx, ref); ok {
+				return source, nil
+			}
+		}
+		if metadata, ok := c.tryDescribeEnhancementViaRFC(ctx, ref.Name); ok {
+			return metadata, nil
+		}
+		metadata, err := json.MarshalIndent(ref, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("serializing enhancement metadata: %w", err)
+		}
+		return string(metadata), nil
+	}
+
 	// Classic systems store HOOK_IMPL source in an internal include whose
 	// name is often padded with '=' characters. Search results do not expose
 	// that include, so resolve it from ENHINCINX before falling back to the
@@ -172,6 +202,92 @@ func (c *Client) GetEnhancementByRef(ctx context.Context, ref *EnhancementRef) (
 			"(SE80: see include %s). Install ZADT_VSP or grant the vsp cookie write "+
 			"scope to enable inline retrieval.",
 		ref.Name, ref.Kind, ref.PackageName, hint)
+}
+
+func (c *Client) tryDescribeEnhancementViaRFC(ctx context.Context, name string) (string, bool) {
+	factory := c.rfcFetcherFactory
+	if factory == nil {
+		factory = c.defaultRFCSourceFetcher
+	}
+	fetcher, err := factory(ctx)
+	if err != nil {
+		return "", false
+	}
+	defer fetcher.Close()
+	describer, ok := fetcher.(rfcEnhancementDescriber)
+	if !ok {
+		return "", false
+	}
+	metadata, err := describer.DescribeEnhancement(ctx, name)
+	if err != nil || strings.TrimSpace(metadata) == "" {
+		return "", false
+	}
+	return metadata, true
+}
+
+// tryFetchClassEnhancementSourcesViaRFC resolves the generated declaration
+// and enhanced-method includes (E, EMnnn) used by classic CLASENH objects.
+// ADT 7.52 cannot read these as ordinary include resources, while native READ
+// REPORT through ZADT_VSP can.
+func (c *Client) tryFetchClassEnhancementSourcesViaRFC(ctx context.Context, ref *EnhancementRef) (string, bool) {
+	name := strings.ToUpper(strings.TrimSpace(ref.Name))
+	if name == "" {
+		return "", false
+	}
+	base := name
+	if len(base) > 30 {
+		base = base[:30]
+	}
+	if len(base) < 30 {
+		base += strings.Repeat("=", 30-len(base))
+	}
+	sql := fmt.Sprintf(
+		"SELECT NAME FROM PROGDIR WHERE NAME LIKE '%sE%%' AND STATE = 'A'",
+		strings.ReplaceAll(base, "'", "''"))
+	rows, err := c.GetTableContents(ctx, "PROGDIR", 100, sql)
+	if err != nil || rows == nil || len(rows.Rows) == 0 {
+		return "", false
+	}
+	includes := make([]string, 0, len(rows.Rows))
+	for _, row := range rows.Rows {
+		include := strings.ToUpper(strings.TrimSpace(asString(row["NAME"])))
+		if include != "" {
+			includes = append(includes, include)
+		}
+	}
+	if len(includes) == 0 {
+		return "", false
+	}
+	sort.Strings(includes)
+
+	factory := c.rfcFetcherFactory
+	if factory == nil {
+		factory = c.defaultRFCSourceFetcher
+	}
+	fetcher, err := factory(ctx)
+	if err != nil {
+		return "", false
+	}
+	defer fetcher.Close()
+
+	var rendered strings.Builder
+	for _, include := range includes {
+		lines, readErr := fetcher.ReadSource(ctx, include)
+		if readErr != nil || len(lines) == 0 {
+			continue
+		}
+		if rendered.Len() > 0 {
+			rendered.WriteString("\n\n")
+		}
+		rendered.WriteString("* generated enhancement include: ")
+		rendered.WriteString(include)
+		rendered.WriteString("\n")
+		rendered.WriteString(strings.Join(lines, "\n"))
+	}
+	if rendered.Len() == 0 {
+		return "", false
+	}
+	return rendered.String(), true
 }
 
 // writeEnhancementUpdate updates an existing classic source-code enhancement
@@ -507,6 +623,7 @@ func (c *Client) resolveEnhancement(ctx context.Context, name string) (*Enhancem
 	case 0:
 		return nil, fmt.Errorf("enhancement %s not found (no ENHO/* match)", name)
 	case 1:
+		c.enrichEnhancementRefFromHeader(ctx, &hits[0])
 		return &hits[0], nil
 	default:
 		kinds := make([]string, 0, len(hits))
@@ -515,6 +632,37 @@ func (c *Client) resolveEnhancement(ctx context.Context, name string) (*Enhancem
 		}
 		sort.Strings(kinds)
 		return nil, fmt.Errorf("enhancement %s is ambiguous across subtypes: %s", name, strings.Join(kinds, ", "))
+	}
+}
+
+func (c *Client) enrichEnhancementRefFromHeader(ctx context.Context, ref *EnhancementRef) {
+	if ref == nil || strings.TrimSpace(ref.Name) == "" {
+		return
+	}
+	toolType, packageName, _, err := c.getEnhancementRepositoryState(ctx, ref.Name)
+	if err != nil || toolType == "" {
+		return
+	}
+	ref.ToolType = toolType
+	if packageName != "" {
+		ref.PackageName = packageName
+	}
+	switch strings.ToUpper(toolType) {
+	case "HOOK_IMPL":
+		ref.Kind = EnhancementKind("XH")
+		ref.URI = "/sap/bc/adt/enhancements/enhoxh/" + strings.ToLower(ref.Name)
+	case "CLASENH":
+		ref.Kind = EnhancementKind("XC")
+		ref.URI = "/sap/bc/adt/enhancements/enhoxc/" + strings.ToLower(ref.Name)
+	case "BADI_IMPL":
+		ref.Kind = EnhancementKind("XBD")
+		ref.URI = "/sap/bc/adt/enhancements/enhoxbd/" + strings.ToLower(ref.Name)
+	case "FUGRENH":
+		ref.Kind = EnhancementKind("XFB")
+		ref.URI = "/sap/bc/adt/enhancements/enhoxfb/" + strings.ToLower(ref.Name)
+	case "INTFENH":
+		ref.Kind = EnhancementKind("XD")
+		ref.URI = "/sap/bc/adt/enhancements/enhoxd/" + strings.ToLower(ref.Name)
 	}
 }
 

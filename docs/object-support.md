@@ -20,7 +20,7 @@ has a concrete backend path and automated tests for the relevant behavior.
 | `SRVD` | Yes | Yes | Yes | RAP service definition |
 | `SRVB` | Metadata | Yes | Yes | JSON configuration rather than ABAP source |
 | `MSAG` | Metadata | No | No | Message-class metadata; specialized message tools are separate |
-| `ENHO` | Yes | No | `XH` | Existing classic source-code plug-ins can be updated through ZADT_VSP; other subtypes remain read-only |
+| `ENHO` | Yes | `XH`, `CLASENH`, `BADI_IMPL` | `XH` | Creation uses the dedicated `CreateEnhancement` contract; existing source-code plug-ins can be updated through ZADT_VSP |
 | `DYNP` | Experimental | No | No | Read-only screen metadata, layout, and flow logic through ZADT_VSP and `RPY_DYNPRO_READ`; validate against your non-production SAP release |
 | `ENHC` / `ENHS` | No | No | No | Explicitly unsupported; VSP does not pretend a safe mutation path exists |
 
@@ -53,8 +53,62 @@ Updating an existing `ENHO/XH` requires the current ZADT_VSP bridge. The bridge
 uses SAP's Enhancement Framework API in an isolated worker so SAP owns locking,
 saving, activation, and transport assignment. VSP reports success only after
 the active generated include has been read back and matches the requested
-source. Creation remains unavailable because source text alone does not define
-the host object, enhancement anchor, subtype, or enhancement spot.
+source. Creation through `WriteSource` remains unavailable because source text alone does not define
+the host object, enhancement anchor, subtype, or enhancement spot. Use the
+dedicated creation operation instead:
+
+```text
+CreateEnhancement(
+  kind="XH",
+  name="ZSAMPLE_XH",
+  description="Sample source-code enhancement",
+  package="$TMP",
+  host_object_type="PROG",
+  host_object_name="ZSAMPLE_HOST",
+  anchor="\\PR:ZSAMPLE_HOST\\SE:END\\EI",
+  source="WRITE 'sample'."
+)
+
+CreateEnhancement(
+  kind="CLASS",
+  name="ZSAMPLE_CLASS_ENH",
+  description="Sample class enhancement",
+  package="$TMP",
+  class_name="ZCL_SAMPLE_HOST",
+  method_name="SAMPLE_METHOD",
+  source="DATA lv_sample TYPE string."
+)
+
+CreateEnhancement(
+  kind="BADI",
+  name="ZSAMPLE_BADI_ENH",
+  description="Sample BAdI implementation",
+  package="$TMP",
+  spot="ZSAMPLE_SPOT",
+  badi_name="ZSAMPLE_BADI",
+  implementation_name="ZSAMPLE_IMPL",
+  implementation_class="ZCL_SAMPLE_IMPL"
+)
+```
+
+The equivalent CLI surface is `vsp enhancement create <xh|class|badi>
+<name>`. XH and optional class-method source are read from stdin. BAdI creation
+links an existing implementation class and never rewrites that class.
+
+Every create request is validated before the bridge is opened. VSP rejects an
+existing ENHO, missing host metadata, invalid identifiers, a transportable
+package without an explicit request, and a BAdI implementation whose class is
+absent. SAP then owns the Enhancement Framework lock, save, activation, and
+rollback. Success is returned only after active `ENHHEADER` read-back confirms
+the requested tool type. On classic 7.52 systems, the worker also propagates
+the caller-approved CTS task to enhancement subobject text persistence so no
+interactive transport dialog is opened in background processing.
+
+For class enhancements, `GetSource(ENHO)` reads the generated declaration and
+`EMnnn` method includes through ZADT_VSP. For BAdI implementations it returns
+the spot, BAdI, implementation name, implementation class, activation flag,
+and description as structured metadata. The authoritative `ENHHEADER` tool
+type is used because older ADT search services may label all ENHOs as `XH`.
 
 ## Program includes (`INCL`)
 
@@ -117,8 +171,7 @@ locking, transport ownership, syntax checks, activation, and rollback behavior.
 The next high-value expansion areas are:
 
 1. sandbox-validated Dynpro mutation workflows;
-2. Enhancement Framework mutation support and explicit `ENHC` / `ENHS`
-   contracts;
+2. explicit `ENHC` / `ENHS` definition and composite contracts;
 3. first-class domain and data-element creation;
 4. GUI status and other classic program assets.
 

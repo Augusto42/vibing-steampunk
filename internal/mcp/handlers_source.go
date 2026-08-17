@@ -1,6 +1,7 @@
 // Package mcp provides the MCP server implementation for ABAP ADT tools.
 // handlers_source.go contains handlers for source code operations
-// (GetSource, WriteSource, GrepObjects, GrepPackages, ImportFromFile, ExportToFile).
+// (GetSource, WriteSource, CreateEnhancement, GrepObjects, GrepPackages,
+// ImportFromFile, ExportToFile).
 package mcp
 
 import (
@@ -157,6 +158,45 @@ func (s *Server) registerWriteSource() {
 			mcp.Description("For CLAS only: update only this method (source must be METHOD...ENDMETHOD block). Method must already exist in the class."),
 		),
 	), s.handleWriteSource)
+}
+
+// registerCreateEnhancement registers the explicit Enhancement Framework
+// creation surface. It is separate from WriteSource because source alone is
+// insufficient to identify an enhancement host or BAdI definition safely.
+func (s *Server) registerCreateEnhancement() {
+	s.mcpServer.AddTool(mcp.NewTool("CreateEnhancement",
+		mcp.WithDescription("Create and activate an ENHO using explicit Enhancement Framework metadata. Supports XH source-code plug-ins, class enhancements, and BAdI implementations. The BAdI implementation class must already exist."),
+		mcp.WithString("kind", mcp.Required(), mcp.Description("Enhancement kind: XH, CLASS, or BADI")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("New ENHO name")),
+		mcp.WithString("description", mcp.Required(), mcp.Description("Enhancement description")),
+		mcp.WithString("package", mcp.Required(), mcp.Description("Target package")),
+		mcp.WithString("transport", mcp.Description("Transport request for a transportable package")),
+
+		mcp.WithString("host_object_type", mcp.Description("XH: host repository type, normally PROG")),
+		mcp.WithString("host_object_name", mcp.Description("XH: host repository object")),
+		mcp.WithString("host_program", mcp.Description("XH: generated/main program; defaults to host_object_name")),
+		mcp.WithString("main_object_type", mcp.Description("XH: main repository type; defaults to host_object_type")),
+		mcp.WithString("main_object_name", mcp.Description("XH: main repository name; defaults to host_object_name")),
+		mcp.WithString("anchor", mcp.Description("XH: exact Enhancement Framework FULL_NAME anchor")),
+		mcp.WithString("parent_anchor", mcp.Description("XH: optional parent anchor")),
+		mcp.WithString("source", mcp.Description("XH raw body, or CLASS method body/source")),
+		mcp.WithString("spot", mcp.Description("XH optional enhancement spot, or BADI enhancement spot")),
+		mcp.WithString("enhancement_mode", mcp.Description("XH mode S, E, or I; default S")),
+		mcp.WithBoolean("overwrite", mcp.Description("XH overwrite flag")),
+		mcp.WithBoolean("hook_method", mcp.Description("XH: mark the element as a method hook")),
+
+		mcp.WithString("class_name", mcp.Description("CLASS: class to enhance")),
+		mcp.WithString("method_name", mcp.Description("CLASS: optional new method")),
+		mcp.WithString("method_description", mcp.Description("CLASS: new method description")),
+		mcp.WithString("method_exposure", mcp.Description("CLASS: PUBLIC, PROTECTED, or PRIVATE; default PUBLIC")),
+
+		mcp.WithString("badi_name", mcp.Description("BADI: BAdI definition name")),
+		mcp.WithString("implementation_name", mcp.Description("BADI: implementation name")),
+		mcp.WithString("implementation_class", mcp.Description("BADI: existing implementation class")),
+		mcp.WithString("implementation_description", mcp.Description("BADI: implementation description")),
+		mcp.WithBoolean("inactive", mcp.Description("BADI: create implementation entry inactive")),
+		mcp.WithBoolean("default_implementation", mcp.Description("BADI: mark as default implementation")),
+	), s.handleCreateEnhancement)
 }
 
 // handleGetSource handles the unified GetSource tool call
@@ -348,6 +388,77 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 	}
 	if err := validateWriteSourceResult(result); err != nil {
 		return newToolResultError(err.Error()), nil
+	}
+
+	output, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(output)), nil
+}
+
+func (s *Server) handleCreateEnhancement(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	stringArg := func(name string) string {
+		value, _ := args[name].(string)
+		return value
+	}
+	boolArg := func(name string) bool {
+		value, _ := args[name].(bool)
+		return value
+	}
+
+	for _, required := range []string{"kind", "name", "description", "package"} {
+		if strings.TrimSpace(stringArg(required)) == "" {
+			return newToolResultError(required + " is required"), nil
+		}
+	}
+
+	opts := adt.CreateEnhancementOptions{
+		Kind:        adt.EnhancementCreateKind(stringArg("kind")),
+		Name:        stringArg("name"),
+		Description: stringArg("description"),
+		Package:     stringArg("package"),
+		Transport:   stringArg("transport"),
+
+		HostObjectType:  stringArg("host_object_type"),
+		HostObjectName:  stringArg("host_object_name"),
+		HostProgram:     stringArg("host_program"),
+		MainObjectType:  stringArg("main_object_type"),
+		MainObjectName:  stringArg("main_object_name"),
+		Anchor:          stringArg("anchor"),
+		ParentAnchor:    stringArg("parent_anchor"),
+		Spot:            stringArg("spot"),
+		EnhancementMode: stringArg("enhancement_mode"),
+		Overwrite:       boolArg("overwrite"),
+		HookMethod:      boolArg("hook_method"),
+		Source:          stringArg("source"),
+
+		ClassName:         stringArg("class_name"),
+		MethodName:        stringArg("method_name"),
+		MethodDescription: stringArg("method_description"),
+		MethodExposure:    stringArg("method_exposure"),
+		MethodSource:      stringArg("source"),
+
+		SpotName:                  stringArg("spot"),
+		BAdIName:                  stringArg("badi_name"),
+		ImplementationName:        stringArg("implementation_name"),
+		ImplementationClass:       stringArg("implementation_class"),
+		ImplementationDescription: stringArg("implementation_description"),
+		Inactive:                  boolArg("inactive"),
+		DefaultImplementation:     boolArg("default_implementation"),
+	}
+
+	result, err := s.adtClient.CreateEnhancement(ctx, opts)
+	if err != nil {
+		return newToolResultError(fmt.Sprintf("CreateEnhancement blocked: %v", err)), nil
+	}
+	if result == nil {
+		return newToolResultError("CreateEnhancement failed: no result returned"), nil
+	}
+	if !result.Success {
+		message := strings.TrimSpace(result.Message)
+		if message == "" {
+			message = "operation returned success=false without a diagnostic"
+		}
+		return newToolResultError("CreateEnhancement failed: " + message), nil
 	}
 
 	output, _ := json.MarshalIndent(result, "", "  ")

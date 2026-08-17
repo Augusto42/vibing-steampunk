@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- Add explicit `CreateEnhancement` API, MCP tool, and
+  `vsp enhancement create` CLI for XH source-code plug-ins, class
+  enhancements with optional new methods, and BAdI implementations.
+- Read classic class-enhancement generated declaration/method includes and
+  structured BAdI implementation metadata through ZADT_VSP.
+- Resolve ENHO subtype from authoritative `ENHHEADER.ENHTOOLTYPE` metadata on
+  systems whose ADT search incorrectly reports class and BAdI ENHOs as XH.
 - Add verified updates for existing classic source-code enhancements
   (`ENHO/XH`) through the ZADT_VSP bridge and SAP Enhancement Framework.
 - Add read-only Enhancement Framework (`ENHO`) source discovery, include
@@ -19,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- Propagate the approved CTS task to classic enhancement subobject text
+  persistence, preventing background `TRINT_ORDER_CHOICE` dialogs when an
+  ENHO is created in a transportable package.
 - Fail closed before mutation when a transportable package has no explicit
   transport request, and reject a request that differs from SAP's lock owner.
 - Preserve omitted RFC import parameters so SAP function-module defaults are
