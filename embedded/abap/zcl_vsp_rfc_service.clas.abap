@@ -1,7 +1,7 @@
 "! <p class="shorttext synchronized">VSP RFC Service</p>
 "! Enables dynamic RFC/BAPI calls via WebSocket.
 "! Actions: call, search, getMetadata, ping, moveToPackage, runReport, readSource,
-"!          writeEnhancementSource
+"!          writeEnhancementSource, createEnhancement
 CLASS zcl_vsp_rfc_service DEFINITION
   PUBLIC
   FINAL
@@ -14,6 +14,8 @@ CLASS zcl_vsp_rfc_service DEFINITION
       IMPORTING iv_enhname   TYPE string
                 iv_source_b64 TYPE string
                 iv_transport TYPE string.
+    CLASS-METHODS create_enho_worker
+      IMPORTING iv_payload_b64 TYPE string.
 
   PRIVATE SECTION.
     TYPES:
@@ -59,6 +61,16 @@ CLASS zcl_vsp_rfc_service DEFINITION
 
     "! Update and activate an existing classic HOOK_IMPL enhancement.
     METHODS handle_write_enho_source
+      IMPORTING is_message         TYPE zif_vsp_service=>ty_message
+      RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
+
+    "! Create and activate a new XH, class enhancement, or BAdI ENHO.
+    METHODS handle_create_enhancement
+      IMPORTING is_message         TYPE zif_vsp_service=>ty_message
+      RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
+
+    "! Return authoritative, tool-specific metadata for an ENHO.
+    METHODS handle_describe_enhancement
       IMPORTING is_message         TYPE zif_vsp_service=>ty_message
       RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
 
@@ -134,6 +146,10 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
         rs_response = handle_read_source( is_message ).
       WHEN 'writeEnhancementSource'.
         rs_response = handle_write_enho_source( is_message ).
+      WHEN 'createEnhancement'.
+        rs_response = handle_create_enhancement( is_message ).
+      WHEN 'describeEnhancement'.
+        rs_response = handle_describe_enhancement( is_message ).
       WHEN OTHERS.
         rs_response = build_error(
           iv_id      = is_message-id
@@ -1069,6 +1085,562 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
     DATA(lv_count) = lines( lt_elements ).
     DATA(lv_json) = |{ lv_o }"enhancement":"{ lv_enhname }","elements":{ lv_count }{ lv_c }|.
     rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
+  ENDMETHOD.
+
+  METHOD handle_describe_enhancement.
+    DATA(lv_enhname_str) = extract_param( iv_params = is_message-params iv_name = 'enhancement' ).
+    TRANSLATE lv_enhname_str TO UPPER CASE.
+    IF lv_enhname_str IS INITIAL OR strlen( lv_enhname_str ) > 30
+       OR lv_enhname_str CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/$'.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_ENHANCEMENT'
+        iv_message = 'Enhancement name is required and contains unsupported characters' ).
+      RETURN.
+    ENDIF.
+
+    DATA lv_enhname TYPE enhname.
+    DATA lv_tooltype TYPE enhtooltype.
+    DATA lo_tool TYPE REF TO if_enh_tool.
+    lv_enhname = lv_enhname_str.
+    SELECT SINGLE enhtooltype FROM enhheader INTO lv_tooltype
+      WHERE enhname = lv_enhname AND version = 'A'.
+    IF sy-subrc <> 0.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'ENHANCEMENT_NOT_FOUND'
+        iv_message = |Active enhancement { lv_enhname } was not found| ).
+      RETURN.
+    ENDIF.
+
+    TRY.
+        lo_tool = cl_enh_factory=>get_enhancement(
+          enhancement_id = lv_enhname suppress_lang_dialog = abap_true
+          run_dark = abap_true adt_resource = abap_true ).
+      CATCH cx_root INTO DATA(lx_describe).
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'ENHO_DESCRIBE_ERROR'
+          iv_message = lx_describe->get_text( ) ).
+        RETURN.
+    ENDTRY.
+
+    DATA(lv_o_desc) = '{'.
+    DATA(lv_c_desc) = '}'.
+    DATA lv_json TYPE string.
+    IF lv_tooltype = 'BADI_IMPL'.
+      DATA lo_badi TYPE REF TO cl_enh_tool_badi_impl.
+      DATA lt_implementations TYPE enh_badi_impl_data_it.
+      DATA lv_impl_json TYPE string.
+      lo_badi ?= lo_tool.
+      DATA(lv_spot_name) = lo_badi->get_spot_name( ).
+      lt_implementations = lo_badi->get_implementations( ).
+      LOOP AT lt_implementations INTO DATA(ls_implementation).
+        DATA lv_impl_spot_text TYPE string.
+        DATA lv_badi_name_text TYPE string.
+        DATA lv_impl_name_text TYPE string.
+        DATA lv_impl_class_text TYPE string.
+        DATA lv_impl_shorttext TYPE string.
+        lv_impl_spot_text = ls_implementation-spot_name.
+        lv_badi_name_text = ls_implementation-badi_name.
+        lv_impl_name_text = ls_implementation-impl_name.
+        lv_impl_class_text = ls_implementation-impl_class.
+        lv_impl_shorttext = ls_implementation-impl_shorttext.
+        IF lv_impl_json IS NOT INITIAL.
+          lv_impl_json = |{ lv_impl_json },|.
+        ENDIF.
+        DATA(lv_one_impl) = |{ lv_o_desc }"spotName":"{ escape_json( lv_impl_spot_text ) }"|.
+        lv_one_impl = |{ lv_one_impl },"badiName":"{ escape_json( lv_badi_name_text ) }"|.
+        lv_one_impl = |{ lv_one_impl },"implementationName":"{ escape_json( lv_impl_name_text ) }"|.
+        lv_one_impl = |{ lv_one_impl },"implementationClass":"{ escape_json( lv_impl_class_text ) }"|.
+        lv_one_impl = |{ lv_one_impl },"active":"{ ls_implementation-active }"|.
+        lv_one_impl = |{ lv_one_impl },"default":"{ ls_implementation-is_default }"|.
+        lv_one_impl = |{ lv_one_impl },"description":"{ escape_json( lv_impl_shorttext ) }"{ lv_c_desc }|.
+        lv_impl_json = |{ lv_impl_json }{ lv_one_impl }|.
+      ENDLOOP.
+      DATA lv_spot_name_text TYPE string.
+      lv_spot_name_text = lv_spot_name.
+      lv_json = |{ lv_o_desc }"name":"{ lv_enhname }","toolType":"{ lv_tooltype }","spotName":"{ escape_json( lv_spot_name_text ) }","implementations":[{ lv_impl_json }]{ lv_c_desc }|.
+    ELSE.
+      lv_json = |{ lv_o_desc }"name":"{ lv_enhname }","toolType":"{ lv_tooltype }"{ lv_c_desc }|.
+    ENDIF.
+    rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
+  ENDMETHOD.
+
+  METHOD handle_create_enhancement.
+    DATA(lv_kind) = extract_param( iv_params = is_message-params iv_name = 'kind' ).
+    DATA(lv_enhname_str) = extract_param( iv_params = is_message-params iv_name = 'enhancement' ).
+    DATA(lv_description_b64) = extract_param( iv_params = is_message-params iv_name = 'description_base64' ).
+    DATA(lv_package_str) = extract_param( iv_params = is_message-params iv_name = 'package' ).
+    DATA(lv_transport_str) = extract_param( iv_params = is_message-params iv_name = 'transport' ).
+    DATA(lv_host_type) = extract_param( iv_params = is_message-params iv_name = 'host_object_type' ).
+    DATA(lv_host_name) = extract_param( iv_params = is_message-params iv_name = 'host_object_name' ).
+    DATA(lv_host_program) = extract_param( iv_params = is_message-params iv_name = 'host_program' ).
+    DATA(lv_main_type) = extract_param( iv_params = is_message-params iv_name = 'main_object_type' ).
+    DATA(lv_main_name) = extract_param( iv_params = is_message-params iv_name = 'main_object_name' ).
+    DATA(lv_anchor_b64) = extract_param( iv_params = is_message-params iv_name = 'anchor_base64' ).
+    DATA(lv_parent_anchor_b64) = extract_param( iv_params = is_message-params iv_name = 'parent_anchor_base64' ).
+    DATA(lv_spot) = extract_param( iv_params = is_message-params iv_name = 'spot' ).
+    DATA(lv_enhmode) = extract_param( iv_params = is_message-params iv_name = 'enhancement_mode' ).
+    DATA(lv_overwrite) = extract_param( iv_params = is_message-params iv_name = 'overwrite' ).
+    DATA(lv_hook_method) = extract_param( iv_params = is_message-params iv_name = 'hook_method' ).
+    DATA(lv_source_b64) = extract_param( iv_params = is_message-params iv_name = 'source_base64' ).
+    DATA(lv_class_name) = extract_param( iv_params = is_message-params iv_name = 'class_name' ).
+    DATA(lv_method_name) = extract_param( iv_params = is_message-params iv_name = 'method_name' ).
+    DATA(lv_method_desc_b64) = extract_param( iv_params = is_message-params iv_name = 'method_description_base64' ).
+    DATA(lv_method_exposure) = extract_param( iv_params = is_message-params iv_name = 'method_exposure' ).
+    DATA(lv_method_source_b64) = extract_param( iv_params = is_message-params iv_name = 'method_source_base64' ).
+    DATA(lv_spot_name) = extract_param( iv_params = is_message-params iv_name = 'spot_name' ).
+    DATA(lv_badi_name) = extract_param( iv_params = is_message-params iv_name = 'badi_name' ).
+    DATA(lv_impl_name) = extract_param( iv_params = is_message-params iv_name = 'implementation_name' ).
+    DATA(lv_impl_class) = extract_param( iv_params = is_message-params iv_name = 'implementation_class' ).
+    DATA(lv_impl_desc_b64) = extract_param( iv_params = is_message-params iv_name = 'implementation_desc_base64' ).
+    DATA(lv_active) = extract_param( iv_params = is_message-params iv_name = 'active' ).
+    DATA(lv_default_impl) = extract_param( iv_params = is_message-params iv_name = 'default_implementation' ).
+
+    TRANSLATE: lv_kind TO UPPER CASE,
+               lv_enhname_str TO UPPER CASE,
+               lv_package_str TO UPPER CASE,
+               lv_transport_str TO UPPER CASE,
+               lv_host_type TO UPPER CASE,
+               lv_host_name TO UPPER CASE,
+               lv_host_program TO UPPER CASE,
+               lv_main_type TO UPPER CASE,
+               lv_main_name TO UPPER CASE,
+               lv_spot TO UPPER CASE,
+               lv_enhmode TO UPPER CASE,
+               lv_hook_method TO UPPER CASE,
+               lv_class_name TO UPPER CASE,
+               lv_method_name TO UPPER CASE,
+               lv_method_exposure TO UPPER CASE,
+               lv_spot_name TO UPPER CASE,
+               lv_badi_name TO UPPER CASE,
+               lv_impl_name TO UPPER CASE,
+               lv_impl_class TO UPPER CASE.
+
+    IF lv_kind <> 'XH' AND lv_kind <> 'CLASS' AND lv_kind <> 'BADI'.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_KIND'
+        iv_message = 'kind must be XH, CLASS, or BADI' ).
+      RETURN.
+    ENDIF.
+    IF lv_enhname_str IS INITIAL OR strlen( lv_enhname_str ) > 30
+       OR lv_enhname_str CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/$'.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_ENHANCEMENT'
+        iv_message = 'Enhancement name is required and must be a valid 30-character repository identifier' ).
+      RETURN.
+    ENDIF.
+    IF lv_package_str IS INITIAL OR strlen( lv_package_str ) > 30
+       OR lv_package_str CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/$'.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_PACKAGE'
+        iv_message = 'Package is required and contains unsupported characters' ).
+      RETURN.
+    ENDIF.
+    IF lv_transport_str IS NOT INITIAL.
+      IF strlen( lv_transport_str ) > 20
+         OR lv_transport_str CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/'.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'INVALID_TRANSPORT'
+          iv_message = 'Transport contains unsupported characters' ).
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    DATA lt_b64_values TYPE TABLE OF string.
+    APPEND lv_description_b64 TO lt_b64_values.
+    APPEND lv_anchor_b64 TO lt_b64_values.
+    APPEND lv_parent_anchor_b64 TO lt_b64_values.
+    APPEND lv_source_b64 TO lt_b64_values.
+    APPEND lv_method_desc_b64 TO lt_b64_values.
+    APPEND lv_method_source_b64 TO lt_b64_values.
+    APPEND lv_impl_desc_b64 TO lt_b64_values.
+    LOOP AT lt_b64_values INTO DATA(lv_b64_value).
+      IF lv_b64_value IS NOT INITIAL
+         AND lv_b64_value CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'INVALID_BASE64'
+          iv_message = 'A base64 parameter contains unsupported characters' ).
+        RETURN.
+      ENDIF.
+      IF strlen( lv_b64_value ) > 700000.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'PAYLOAD_TOO_LARGE'
+          iv_message = 'Enhancement source exceeds the bridge limit' ).
+        RETURN.
+      ENDIF.
+    ENDLOOP.
+
+    DATA lv_enhname TYPE enhname.
+    DATA lv_devclass TYPE devclass.
+    DATA lv_trkorr TYPE trkorr.
+    DATA lv_existing TYPE enhname.
+    DATA lv_korrflag TYPE tdevc-korrflag.
+    lv_enhname = lv_enhname_str.
+    lv_devclass = lv_package_str.
+    lv_trkorr = lv_transport_str.
+
+    SELECT SINGLE enhname FROM enhheader INTO lv_existing
+      WHERE enhname = lv_enhname.
+    IF sy-subrc = 0.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'ENHANCEMENT_EXISTS'
+        iv_message = |Enhancement { lv_enhname } already exists| ).
+      RETURN.
+    ENDIF.
+    SELECT SINGLE obj_name FROM tadir INTO lv_existing
+      WHERE pgmid = 'R3TR' AND object = 'ENHO' AND obj_name = lv_enhname.
+    IF sy-subrc = 0.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'ENHANCEMENT_EXISTS'
+        iv_message = |Enhancement { lv_enhname } is already registered in TADIR| ).
+      RETURN.
+    ENDIF.
+    SELECT SINGLE korrflag FROM tdevc INTO lv_korrflag
+      WHERE devclass = lv_devclass.
+    IF sy-subrc <> 0.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'PACKAGE_NOT_FOUND'
+        iv_message = |Package { lv_devclass } does not exist| ).
+      RETURN.
+    ENDIF.
+    IF lv_korrflag = 'X' AND lv_trkorr IS INITIAL.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'TRANSPORT_REQUIRED'
+        iv_message = |Package { lv_devclass } requires an explicit transport| ).
+      RETURN.
+    ENDIF.
+
+    IF lv_kind = 'XH'.
+      IF lv_host_type IS INITIAL OR lv_host_name IS INITIAL
+         OR lv_host_program IS INITIAL OR lv_main_type IS INITIAL
+         OR lv_main_name IS INITIAL OR lv_anchor_b64 IS INITIAL
+         OR lv_source_b64 IS INITIAL.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'MISSING_XH_METADATA'
+          iv_message = 'XH requires host type/name, host program, main type/name, anchor, and source' ).
+        RETURN.
+      ENDIF.
+    ELSEIF lv_kind = 'CLASS'.
+      IF lv_class_name IS INITIAL.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'MISSING_CLASS'
+          iv_message = 'CLASS requires class_name' ).
+        RETURN.
+      ENDIF.
+      SELECT SINGLE obj_name FROM tadir INTO lv_existing
+        WHERE pgmid = 'R3TR' AND object = 'CLAS' AND obj_name = lv_class_name.
+      IF sy-subrc <> 0.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'CLASS_NOT_FOUND'
+          iv_message = |Class { lv_class_name } does not exist| ).
+        RETURN.
+      ENDIF.
+      IF lv_method_name IS INITIAL AND lv_method_source_b64 IS NOT INITIAL.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'MISSING_METHOD_NAME'
+          iv_message = 'method_name is required when method source is supplied' ).
+        RETURN.
+      ENDIF.
+    ELSEIF lv_kind = 'BADI'.
+      IF lv_spot_name IS INITIAL OR lv_badi_name IS INITIAL
+         OR lv_impl_name IS INITIAL OR lv_impl_class IS INITIAL.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'MISSING_BADI_METADATA'
+          iv_message = 'BADI requires spot_name, badi_name, implementation_name, and implementation_class' ).
+        RETURN.
+      ENDIF.
+      SELECT SINGLE obj_name FROM tadir INTO lv_existing
+        WHERE pgmid = 'R3TR' AND object = 'CLAS' AND obj_name = lv_impl_class.
+      IF sy-subrc <> 0.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'IMPLEMENTATION_CLASS_NOT_FOUND'
+          iv_message = |Implementation class { lv_impl_class } does not exist| ).
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    " Enhancement persistence commits, which is illegal inside the APC work
+    " process. Re-run the validated payload in an isolated RFC work process.
+    IF gv_enho_worker_mode = abap_false.
+      DATA lv_payload_x TYPE xstring.
+      DATA lv_payload_b64 TYPE string.
+      TRY.
+          lv_payload_x = cl_abap_codepage=>convert_to(
+            source = is_message-params codepage = `UTF-8` ).
+          lv_payload_b64 = cl_http_utility=>encode_x_base64( lv_payload_x ).
+        CATCH cx_root INTO DATA(lx_payload).
+          rs_response = build_error(
+            iv_id = is_message-id iv_code = 'PAYLOAD_ENCODING_FAILED'
+            iv_message = lx_payload->get_text( ) ).
+          RETURN.
+      ENDTRY.
+
+      DATA lt_program TYPE TABLE OF progtab.
+      DATA lv_program_line TYPE string.
+      DATA lv_remaining TYPE string.
+      DATA lv_chunk TYPE string.
+      APPEND 'REPORT z$$$xrfc.' TO lt_program.
+      APPEND 'DATA lv_b64 TYPE string.' TO lt_program.
+      lv_remaining = lv_payload_b64.
+      WHILE lv_remaining IS NOT INITIAL.
+        IF strlen( lv_remaining ) > 48.
+          lv_chunk = lv_remaining(48).
+          lv_remaining = lv_remaining+48.
+        ELSE.
+          lv_chunk = lv_remaining.
+          CLEAR lv_remaining.
+        ENDIF.
+        lv_program_line = |lv_b64 = lv_b64 && '{ lv_chunk }'.|.
+        APPEND lv_program_line TO lt_program.
+      ENDWHILE.
+      APPEND 'zcl_vsp_rfc_service=>create_enho_worker( iv_payload_b64 = lv_b64 ).' TO lt_program.
+
+      DATA(lv_task) = |VSP_ENHC_{ sy-uzeit }|.
+      CALL FUNCTION 'RFC_ABAP_INSTALL_AND_RUN'
+        STARTING NEW TASK lv_task
+        EXPORTING mode = 'F'
+        TABLES program = lt_program
+        EXCEPTIONS communication_failure = 1 system_failure = 2
+                   resource_failure = 3 OTHERS = 4.
+      IF sy-subrc <> 0.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'ENHO_WORKER_START_FAILED'
+          iv_message = |Could not start enhancement worker: { sy-subrc }| ).
+        RETURN.
+      ENDIF.
+
+      DATA(lv_o_scheduled) = '{'.
+      DATA(lv_c_scheduled) = '}'.
+      DATA(lv_scheduled_json) = |{ lv_o_scheduled }"status":"scheduled","task":"{ lv_task }"{ lv_c_scheduled }|.
+      rs_response = VALUE #( id = is_message-id success = abap_true data = lv_scheduled_json ).
+      RETURN.
+    ENDIF.
+
+    DATA lv_description TYPE string.
+    DATA lv_method_description TYPE string.
+    DATA lv_impl_description TYPE string.
+    DATA lv_anchor TYPE string.
+    DATA lv_parent_anchor TYPE string.
+    DATA lv_source_text TYPE string.
+    DATA lv_method_source_text TYPE string.
+    TRY.
+        IF lv_description_b64 IS NOT INITIAL.
+          lv_description = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_description_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+        IF lv_method_desc_b64 IS NOT INITIAL.
+          lv_method_description = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_method_desc_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+        IF lv_impl_desc_b64 IS NOT INITIAL.
+          lv_impl_description = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_impl_desc_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+        IF lv_anchor_b64 IS NOT INITIAL.
+          lv_anchor = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_anchor_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+        IF lv_parent_anchor_b64 IS NOT INITIAL.
+          lv_parent_anchor = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_parent_anchor_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+        IF lv_source_b64 IS NOT INITIAL.
+          lv_source_text = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_source_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+        IF lv_method_source_b64 IS NOT INITIAL.
+          lv_method_source_text = cl_abap_codepage=>convert_from(
+            source = cl_http_utility=>decode_x_base64( lv_method_source_b64 ) codepage = `UTF-8` ).
+        ENDIF.
+      CATCH cx_root INTO DATA(lx_decode_create).
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'INVALID_BASE64'
+          iv_message = lx_decode_create->get_text( ) ).
+        RETURN.
+    ENDTRY.
+    REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf
+      IN lv_source_text WITH cl_abap_char_utilities=>newline.
+    REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf
+      IN lv_method_source_text WITH cl_abap_char_utilities=>newline.
+
+    DATA lt_source TYPE rswsourcet.
+    DATA lt_method_source TYPE rswsourcet.
+    IF lv_source_text IS NOT INITIAL.
+      SPLIT lv_source_text AT cl_abap_char_utilities=>newline INTO TABLE lt_source.
+    ENDIF.
+    IF lv_method_source_text IS NOT INITIAL.
+      SPLIT lv_method_source_text AT cl_abap_char_utilities=>newline INTO TABLE lt_method_source.
+    ENDIF.
+
+    DATA lo_tool TYPE REF TO if_enh_tool.
+    DATA lo_hook TYPE REF TO cl_enh_tool_hook_impl.
+    DATA lo_class TYPE REF TO cl_enh_tool_class.
+    DATA lo_badi TYPE REF TO cl_enh_tool_badi_impl.
+    DATA lv_tooltype TYPE enhtooltype.
+    DATA lv_created TYPE abap_bool.
+    DATA lv_enhtype TYPE enhtype VALUE 'RDEF'.
+    DATA lv_overwrite_flag TYPE enhboolean.
+    DATA lv_method_flag TYPE enhboolean.
+    DATA lv_active_flag TYPE enhboolean.
+    DATA lv_default_flag TYPE enhboolean.
+    DATA lv_class_typed TYPE seoclsname.
+    DATA lv_method_typed TYPE seocpdname.
+    DATA lv_spot_typed TYPE enhspotname.
+    DATA lv_host_name_typed TYPE trobj_name.
+    DATA lv_host_type_typed TYPE trobjtype.
+    DATA lv_host_program_typed TYPE progname.
+    DATA lv_main_type_typed TYPE trobjtype.
+    DATA lv_main_name_typed TYPE eu_aname.
+    DATA lv_hook_spot_typed TYPE enhspotname.
+    DATA lv_enhmode_typed TYPE enhmode.
+    lv_overwrite_flag = lv_overwrite.
+    lv_method_flag = lv_hook_method.
+    lv_active_flag = lv_active.
+    lv_default_flag = lv_default_impl.
+    lv_class_typed = lv_class_name.
+    lv_method_typed = lv_method_name.
+    lv_spot_typed = lv_spot_name.
+    lv_host_name_typed = lv_host_name.
+    lv_host_type_typed = lv_host_type.
+    lv_host_program_typed = lv_host_program.
+    lv_main_type_typed = lv_main_type.
+    lv_main_name_typed = lv_main_name.
+    lv_hook_spot_typed = lv_spot.
+    lv_enhmode_typed = lv_enhmode.
+    TRY.
+        CASE lv_kind.
+          WHEN 'XH'.
+            lv_tooltype = 'HOOK_IMPL'.
+          WHEN 'CLASS'.
+            lv_tooltype = 'CLASENH'.
+          WHEN 'BADI'.
+            lv_tooltype = 'BADI_IMPL'.
+        ENDCASE.
+
+        cl_enh_factory=>create_enhancement(
+          EXPORTING enhname = lv_enhname enhtype = lv_enhtype
+                    enhtooltype = lv_tooltype dark = abap_true
+          IMPORTING enhancement = lo_tool
+          CHANGING trkorr = lv_trkorr devclass = lv_devclass
+        ).
+        lv_created = abap_true.
+
+        CASE lv_kind.
+          WHEN 'XH'.
+            lo_hook ?= lo_tool.
+            lo_hook->set_original_object(
+              pgmid = 'R3TR' obj_name = lv_host_name_typed obj_type = lv_host_type_typed
+              program = lv_host_program_typed main_type = lv_main_type_typed main_name = lv_main_name_typed ).
+            lo_hook->add_hook_impl(
+              overwrite = lv_overwrite_flag method = lv_method_flag enhmode = lv_enhmode_typed
+              full_name = lv_anchor source = lt_source spot = lv_hook_spot_typed
+              parent_full_name = lv_parent_anchor ).
+
+          WHEN 'CLASS'.
+            lo_class ?= lo_tool.
+            lo_class->set_class( class_name = lv_class_typed ).
+            IF lv_method_name IS NOT INITIAL.
+              DATA ls_method_key TYPE seocmpkey.
+              DATA ls_method_header TYPE vseomethod.
+              ls_method_key-clsname = lv_class_name.
+              ls_method_key-cmpname = lv_method_name.
+              ls_method_header-clsname = lv_class_name.
+              ls_method_header-cmpname = lv_method_name.
+              ls_method_header-version = '1'.
+              ls_method_header-langu = sy-langu.
+              ls_method_header-descript = lv_method_description.
+              CASE lv_method_exposure.
+                WHEN 'PRIVATE'.
+                  ls_method_header-exposure = '0'.
+                WHEN 'PROTECTED'.
+                  ls_method_header-exposure = '1'.
+                WHEN OTHERS.
+                  ls_method_header-exposure = '2'.
+              ENDCASE.
+              ls_method_header-state = '1'.
+              ls_method_header-mtdtype = '0'.
+              ls_method_header-mtddecltyp = '0'.
+              lo_class->add_change_new_enh_method(
+                methkey = ls_method_key method_header = ls_method_header ).
+              lo_class->add_change_new_method_source(
+                clsname = lv_class_typed methname = lv_method_typed
+                methsource = lt_method_source ).
+            ENDIF.
+
+          WHEN 'BADI'.
+            lo_badi ?= lo_tool.
+            lo_badi->set_spot_name( spot_name = lv_spot_typed ).
+            DATA ls_badi_impl TYPE enh_badi_impl_data.
+            ls_badi_impl-spot_name = lv_spot_name.
+            ls_badi_impl-badi_name = lv_badi_name.
+            ls_badi_impl-impl_name = lv_impl_name.
+            ls_badi_impl-impl_class = lv_impl_class.
+            ls_badi_impl-active = lv_active_flag.
+            ls_badi_impl-is_default = lv_default_flag.
+            ls_badi_impl-impl_shorttext = lv_impl_description.
+            lo_badi->add_implementation( im_implementation = ls_badi_impl ).
+        ENDCASE.
+
+        " Classic 7.52 text repositories (used by class/BAdI enhancement
+        " subobjects) call RS_CORR_INSERT without forwarding the ENHO request.
+        " Seed the standard EUT memory contract so that background processing
+        " uses the caller-approved task instead of opening TRINT_ORDER_CHOICE.
+        IF lv_trkorr IS NOT INITIAL.
+          EXPORT tasknr = lv_trkorr TO MEMORY ID 'EUT'.
+        ENDIF.
+        lo_tool->if_enh_object~save(
+          EXPORTING run_dark = abap_true
+          CHANGING devclass = lv_devclass trkorr = lv_trkorr ).
+        lo_tool->if_enh_object~activate(
+          EXPORTING run_dark = abap_true
+          CHANGING devclass = lv_devclass trkorr = lv_trkorr ).
+        lo_tool->if_enh_object~unlock( ).
+
+      CATCH cx_root INTO DATA(lx_create).
+        IF lo_tool IS BOUND.
+          TRY.
+              IF lv_created = abap_true.
+                lo_tool->if_enh_object~delete(
+                  EXPORTING nevertheless_delete = abap_true run_dark = abap_true
+                  CHANGING devclass = lv_devclass trkorr = lv_trkorr ).
+              ENDIF.
+              IF lo_tool->if_enh_object~is_locked( ) = abap_true.
+                lo_tool->if_enh_object~unlock( ).
+              ENDIF.
+            CATCH cx_root.
+          ENDTRY.
+        ENDIF.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'ENHO_CREATE_ERROR'
+          iv_message = lx_create->get_text( ) ).
+        RETURN.
+    ENDTRY.
+
+    DATA(lv_o_created) = '{'.
+    DATA(lv_c_created) = '}'.
+    DATA(lv_created_json) = |{ lv_o_created }"enhancement":"{ lv_enhname }","kind":"{ lv_kind }","toolType":"{ lv_tooltype }"{ lv_c_created }|.
+    rs_response = VALUE #( id = is_message-id success = abap_true data = lv_created_json ).
+  ENDMETHOD.
+
+  METHOD create_enho_worker.
+    DATA ls_message TYPE zif_vsp_service=>ty_message.
+    DATA ls_response TYPE zif_vsp_service=>ty_response.
+    DATA lo_service TYPE REF TO zcl_vsp_rfc_service.
+    TRY.
+        DATA(lv_payload_x) = cl_http_utility=>decode_x_base64( iv_payload_b64 ).
+        ls_message-params = cl_abap_codepage=>convert_from(
+          source = lv_payload_x codepage = `UTF-8` ).
+      CATCH cx_root INTO DATA(lx_decode).
+        MESSAGE lx_decode->get_text( ) TYPE 'X'.
+    ENDTRY.
+    ls_message-id = 'worker'.
+    ls_message-action = 'createEnhancement'.
+    gv_enho_worker_mode = abap_true.
+    CREATE OBJECT lo_service.
+    ls_response = lo_service->handle_create_enhancement( ls_message ).
+    gv_enho_worker_mode = abap_false.
+    IF ls_response-success = abap_false.
+      MESSAGE ls_response-error TYPE 'X'.
+    ENDIF.
   ENDMETHOD.
 
   METHOD write_enho_worker.

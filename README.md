@@ -936,7 +936,7 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 - **Read:** GetSource, GetTable, GetTableContents, RunQuery, GetPackage, GetFunctionGroup, GetCDSDependencies
 - **Debugger:** DebuggerListen, DebuggerAttach, DebuggerDetach, DebuggerStep, DebuggerGetStack, DebuggerGetVariables
   - *Note: Breakpoints now managed via WebSocket (ZADT_VSP)*
-- **Write:** WriteSource, EditSource, ImportFromFile, ExportToFile, MoveObject
+- **Write:** WriteSource, CreateEnhancement, EditSource, ImportFromFile, ExportToFile, MoveObject
 - **Dev:** SyntaxCheck, RunUnitTests, RunATCCheck, LockObject, UnlockObject
 - **Intelligence:** FindDefinition, FindReferences, GetContext
 - **System:** GetSystemInfo, GetInstalledComponents, GetCallGraph, GetObjectStructure, GetFeatures
@@ -947,8 +947,9 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 
 See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tools).
 
-For operation-level coverage—including `INCL` writes, verified updates of
-existing `ENHO/XH` implementations, and read-only `DYNP` through ZADT_VSP—see the
+For operation-level coverage—including `INCL` writes, creation of XH/class/BAdI
+enhancement implementations, verified updates of existing `ENHO/XH` objects,
+and read-only `DYNP` through ZADT_VSP—see the
 **[ABAP object support matrix](docs/object-support.md)**.
 
 <details>

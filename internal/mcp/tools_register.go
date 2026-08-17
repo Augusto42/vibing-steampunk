@@ -103,6 +103,9 @@ func (s *Server) registerUnifiedTools(shouldRegister func(string) bool) {
 	if shouldRegister("WriteSource") {
 		s.registerWriteSource()
 	}
+	if shouldRegister("CreateEnhancement") {
+		s.registerCreateEnhancement()
+	}
 }
 
 // registerReadTools registers object read tools (GetProgram, GetClass, etc.)
