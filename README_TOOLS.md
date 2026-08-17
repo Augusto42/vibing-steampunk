@@ -1,23 +1,30 @@
 # vsp Tool Reference
 
-Complete documentation for all 96 MCP tools available in vsp.
+Reference for the MCP tools available in vsp. The exact enabled set depends on
+the selected server mode and release.
 
 **Mode Legend:**
-- **Focused** - Available in focused mode (48 tools, default)
-- **Expert** - Only available in expert mode (96 tools total)
+- **Focused** - Available in the default focused mode
+- **Expert** - Available when the full expert tool surface is enabled
 
 ---
 
-## Unified Tools (2 tools) - Focused Mode
+## Unified Source and Enhancement Tools - Focused Mode
 
-These tools replace 11 granular read/write operations with intelligent parameter-based routing:
+These tools provide the preferred high-level read, write, and Enhancement
+Framework contracts:
 
 | Tool | Description | Mode |
 |------|-------------|------|
-| `GetSource` | Unified read for any ABAP source. Parameters: `type` (PROG/CLAS/INTF/FUNC/FUGR/INCL/DDLS/VIEW/BDEF/SRVD/SRVB/MSAG), `name`, optional `parent` (for FUNC), optional `include` (for CLAS). | Focused |
-| `WriteSource` | Unified write with auto-upsert. Parameters: `type` (PROG/CLAS/INTF/DDLS/BDEF/SRVD), `name`, `source`, `mode`, `options`. Supports create and update for classic ABAP and RAP types. | Focused |
+| `GetSource` | Unified read. Parameters include `object_type` (`PROG`, `CLAS`, `INTF`, `FUNC`, `FUGR`, `INCL`, `DYNP`, `ENHO`, `DDLS`, `VIEW`, `BDEF`, `SRVD`, `SRVB`, `MSAG`), `name`, optional `parent`, `include`, `method`, and merged-include controls. | Focused |
+| `WriteSource` | Unified create/update for supported classic and RAP source objects, including first-class program includes and verified updates of existing XH enhancements. | Focused |
+| `CreateEnhancement` | Explicitly creates XH source-code plug-ins, class enhancements, or BAdI implementations through SAP's Enhancement Framework. Requires kind-specific host metadata and the current ZADT_VSP bridge. | Focused |
 
-**Benefits:** 70% token reduction, simplified tool selection, extensible for new types.
+`CreateEnhancement` is separate from `WriteSource` because source text cannot
+safely identify an enhancement host, exact anchor, class, spot, or BAdI
+definition. See the
+[complete enhancement creation guide](docs/enhancement-creation.md) for all
+parameters, transport controls, validation rules, and limitations.
 
 **RAP Support (NEW):** WriteSource now supports creating and updating CDS views (DDLS), behavior definitions (BDEF), and service definitions (SRVD).
 

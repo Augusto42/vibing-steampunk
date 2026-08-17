@@ -95,10 +95,13 @@ vsp ImportFromFile --file_path embedded/abap/zcl_vsp_git_service.clas.abap --pac
 The easiest deployment method - single command:
 
 ```bash
-vsp InstallZADTVSP --package '$ZADT_VSP'
+vsp -s dev install zadt-vsp --package '$ZADT_VSP'
 ```
 
-This tool reads embedded sources and deploys all objects automatically.
+MCP clients can invoke the equivalent `InstallZADTVSP` tool with
+`package="$ZADT_VSP"`. Both paths read the sources embedded in the current VSP
+binary and deploy the objects in dependency order. Enhancement creation needs
+the bridge shipped with `v2.40.0-augusto.1` or newer.
 
 ### Post-Deployment: Create APC Application
 
@@ -141,6 +144,9 @@ Full end-to-end debugging tested and verified:
 | Continue | **Working** | Runs until next breakpoint |
 | Detach | **Working** | Ends debug session |
 | RFC Domain | **Working** | Function module execution |
+| Existing XH update | **Working** | Framework-owned save, activation, and source read-back |
+| XH/class/BAdI creation | **Working** | Validated with synthetic objects on classic NetWeaver 7.52 |
+| Transportable ENHO creation | **Working** | Explicit CTS request/task and VSP safety gate required |
 
 **Note:** Line breakpoints require correct program name (e.g., `SAPLZFUGR` for function groups,
 `ZCL_CLASS================CP` for classes). Statement and exception breakpoints work globally.

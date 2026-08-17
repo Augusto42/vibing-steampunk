@@ -110,6 +110,12 @@ the spot, BAdI, implementation name, implementation class, activation flag,
 and description as structured metadata. The authoritative `ENHHEADER` tool
 type is used because older ADT search services may label all ENHOs as `XH`.
 
+The full operational reference—including CLI and MCP examples, field limits,
+transport safety, verification, known limitations, and error recovery—is in
+[Creating enhancement implementations](enhancement-creation.md). The
+[Portuguese guide](pt-BR/criacao-enhancements.md) provides the same day-to-day
+workflow for Brazilian teams.
+
 ## Program includes (`INCL`)
 
 Program includes are created and updated as `PROG/I` objects. The update
