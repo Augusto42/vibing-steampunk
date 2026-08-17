@@ -83,6 +83,41 @@ func TestClient_SearchObject(t *testing.T) {
 	}
 }
 
+func TestClient_SearchObjectByTypeSendsServerFilter(t *testing.T) {
+	searchResponse := `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_enho" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_ENHO" adtcore:packageName="$TMP"/>
+</adtcore:objectReferences>`
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"search":    newTestResponse(searchResponse),
+			"discovery": newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	results, err := client.SearchObjectByType(context.Background(), "*", "enho", 20)
+	if err != nil {
+		t.Fatalf("SearchObjectByType failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Type != "ENHO/XH" {
+		t.Fatalf("unexpected results: %#v", results)
+	}
+	if len(mock.requests) == 0 {
+		t.Fatal("expected an ADT search request")
+	}
+	requestQuery := mock.requests[len(mock.requests)-1].URL.Query()
+	if got := requestQuery.Get("objectType"); got != "ENHO" {
+		t.Fatalf("objectType = %q, want ENHO", got)
+	}
+	if got := requestQuery.Get("maxResults"); got != "20" {
+		t.Fatalf("maxResults = %q, want 20", got)
+	}
+}
+
 func TestClient_CheckObjectPackageSafety_NormalizesObjectURLs(t *testing.T) {
 	tests := []struct {
 		name      string

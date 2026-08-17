@@ -255,38 +255,74 @@ func ParseABAPFile(filePath string) (*ABAPFileInfo, error) {
 func parseFromContent(filePath string) (*ABAPFileInfo, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opening file: %w", err)
 	}
 	defer file.Close()
 
+	info := &ABAPFileInfo{FilePath: filePath}
 	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.ToUpper(strings.TrimSpace(scanner.Text()))
+	lineNum := 0
+	for scanner.Scan() && lineNum < 200 {
+		line := scanner.Text()
+		lineNum++
 
-		if strings.HasPrefix(line, "CLASS ") && strings.Contains(line, "DEFINITION") {
-			// Re-parse with known type
-			file.Close()
-			return ParseABAPFile(filePath)
+		if info.ObjectType == "" {
+			switch {
+			case parseClassName(line) != "":
+				info.ObjectType = ObjectTypeClass
+				info.ObjectName = parseClassName(line)
+			case parseProgramName(line) != "":
+				info.ObjectType = ObjectTypeProgram
+				info.ObjectName = parseProgramName(line)
+			case parseInterfaceName(line) != "":
+				info.ObjectType = ObjectTypeInterface
+				info.ObjectName = parseInterfaceName(line)
+			case parseFunctionGroupName(line) != "":
+				info.ObjectType = ObjectTypeFunctionGroup
+				info.ObjectName = parseFunctionGroupName(line)
+			case parseFunctionModuleName(line) != "":
+				info.ObjectType = ObjectTypeFunctionMod
+				info.ObjectName = parseFunctionModuleName(line)
+			case parseIncludeName(line) != "":
+				info.ObjectType = ObjectTypeInclude
+				info.ObjectName = parseIncludeName(line)
+			}
 		}
-		if strings.HasPrefix(line, "REPORT ") || strings.HasPrefix(line, "PROGRAM ") {
-			file.Close()
-			return ParseABAPFile(filePath)
+
+		if info.ObjectType == ObjectTypeClass {
+			upperLine := strings.ToUpper(line)
+			info.HasDefinition = info.HasDefinition || strings.Contains(upperLine, "DEFINITION")
+			info.HasImplementation = info.HasImplementation || strings.Contains(upperLine, "IMPLEMENTATION")
+			info.HasTestClasses = info.HasTestClasses || strings.Contains(upperLine, "FOR TESTING")
 		}
-		if strings.HasPrefix(line, "INTERFACE ") {
-			file.Close()
-			return ParseABAPFile(filePath)
-		}
-		if strings.HasPrefix(line, "FUNCTION-POOL ") {
-			file.Close()
-			return ParseABAPFile(filePath)
-		}
-		if strings.HasPrefix(line, "FUNCTION ") {
-			file.Close()
-			return ParseABAPFile(filePath)
+
+		if info.Description == "" {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "\"") {
+				comment := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, "*"), "\""))
+				if comment != "" &&
+					!strings.HasPrefix(comment, "-") &&
+					!strings.HasPrefix(comment, "=") &&
+					!strings.HasPrefix(comment, "*") &&
+					!strings.Contains(strings.ToLower(comment), "author") &&
+					!strings.Contains(strings.ToLower(comment), "date") &&
+					len(comment) > 10 && len(comment) < 60 {
+					info.Description = comment
+				}
+			}
 		}
 	}
 
-	return nil, fmt.Errorf("could not detect object type from file content")
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+	if info.ObjectType == "" || info.ObjectName == "" {
+		return nil, fmt.Errorf("could not detect object type from file content")
+	}
+	if info.Description == "" {
+		info.Description = fmt.Sprintf("Generated from %s", filepath.Base(filePath))
+	}
+	return info, nil
 }
 
 // parseClassName extracts class name from CLASS <name> DEFINITION
@@ -305,6 +341,16 @@ func parseProgramName(line string) string {
 	matches := re.FindStringSubmatch(line)
 	if len(matches) > 2 {
 		return strings.ToUpper(matches[2])
+	}
+	return ""
+}
+
+// parseIncludeName extracts an include name from INCLUDE <name>.
+func parseIncludeName(line string) string {
+	re := regexp.MustCompile(`(?i)^\s*INCLUDE\s+([a-z0-9_/]+)\s*\.?`)
+	matches := re.FindStringSubmatch(line)
+	if len(matches) > 1 {
+		return strings.ToUpper(matches[1])
 	}
 	return ""
 }

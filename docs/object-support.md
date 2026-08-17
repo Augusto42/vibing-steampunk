@@ -114,3 +114,6 @@ The next high-value expansion areas are:
 Every new mutation path should preserve the same safety gates, transport
 handling, synthetic test policy, and fail-closed behavior used by current VSP
 workflows.
+
+For a runnable ADT/ZADT_VSP protocol simulator and the real-system validation
+ladder, see [Testing VSP without customer SAP data](mock-sap-testing.md).

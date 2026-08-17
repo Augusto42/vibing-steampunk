@@ -1022,6 +1022,8 @@ See [WebSocket Handler Report](reports/2025-12-18-002-websocket-rfc-handler.md) 
 | Document | Description |
 |----------|-------------|
 | [docs/architecture.md](docs/architecture.md) | Architecture diagrams (Mermaid) |
+| [docs/object-support.md](docs/object-support.md) | Operation-level ABAP object support matrix |
+| [docs/mock-sap-testing.md](docs/mock-sap-testing.md) | Synthetic SAP protocol simulator and real-system validation ladder |
 | [README_TOOLS.md](README_TOOLS.md) | Complete tool reference (94 tools) |
 | [MCP_USAGE.md](MCP_USAGE.md) | AI agent usage guide |
 | [docs/DSL.md](docs/DSL.md) | DSL & workflow documentation |

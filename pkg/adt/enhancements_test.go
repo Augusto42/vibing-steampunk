@@ -343,6 +343,54 @@ func TestGetEnhancement_FallsBackToRFC(t *testing.T) {
 	}
 }
 
+func TestGetEnhancement_RFCFallbackResolvesPaddedIncludeFromENHINCINX(t *testing.T) {
+	const name = "ZSYNTHETIC_HOOK"
+	searchBody := `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_hook" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_HOOK" adtcore:packageName="$TMP"/>
+</adtcore:objectReferences>`
+	enhincinxBody := dataPreviewBody(
+		[]string{"ENHNAME", "PROGRAMNAME", "FULL_NAME", "ENHINCLUDE"},
+		[][]string{{
+			name,
+			"ZSYNTHETIC_PROGRAM",
+			`\PR:ZSYNTHETIC_PROGRAM\FO:SYNTHETIC_FORM\SE:BEGIN\EI`,
+			"ZSYNTHETIC_HOOK============E",
+		}},
+	)
+	mock := &queryRoutedMock{
+		byPathBody: map[string]string{
+			"/sap/bc/adt/repository/informationsystem/search": searchBody,
+			"/sap/bc/adt/discovery":                           "OK",
+			"/sap/bc/adt/core/discovery":                      "OK",
+		},
+		byDdicEntityKeyBody: map[string]string{"ENHINCINX": enhincinxBody},
+	}
+	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	stub := &stubRFCSourceFetcher{sourceLines: []string{
+		"ENHANCEMENT 1 ZSYNTHETIC_HOOK.",
+		"  WRITE 'resolved'.",
+		"ENDENHANCEMENT.",
+	}}
+	client.rfcFetcherFactory = func(ctx context.Context) (rfcSourceFetcher, error) {
+		return stub, nil
+	}
+
+	got, err := client.GetEnhancement(context.Background(), name)
+	if err != nil {
+		t.Fatalf("GetEnhancement should resolve ENHINCINX include, got: %v", err)
+	}
+	if !strings.Contains(got, "WRITE 'resolved'") {
+		t.Fatalf("expected RFC source body, got: %q", got)
+	}
+	if len(stub.readCalls) != 1 || stub.readCalls[0] != "ZSYNTHETIC_HOOK============E" {
+		t.Fatalf("expected padded ENHINCLUDE, got calls: %#v", stub.readCalls)
+	}
+}
+
 // TestGetEnhancementByRef_PreservesEnhInclude: when the caller already has
 // a table-discovered ref with EnhInclude populated (e.g. the include-footer
 // renderer for HOOK_IMPL ENHOs whose REPOSRC entry uses `=`-padding rather
