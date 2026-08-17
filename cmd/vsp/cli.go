@@ -324,7 +324,8 @@ var searchCmd = &cobra.Command{
 
 Examples:
   vsp -s a4h search "ZCL_*"
-  vsp search "Z*ORDER*" --type CLAS --max 50`,
+  vsp search "Z*ORDER*" --type CLAS --max 50
+  vsp search "*" --type ENHO --max 20`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSearch,
 }
@@ -347,7 +348,12 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	query := args[0]
 	ctx := context.Background()
 
-	results, err := client.SearchObject(ctx, query, maxResults)
+	var results []adt.SearchResult
+	if objectType != "" {
+		results, err = client.SearchObjectByType(ctx, query, objectType, maxResults)
+	} else {
+		results, err = client.SearchObject(ctx, query, maxResults)
+	}
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}

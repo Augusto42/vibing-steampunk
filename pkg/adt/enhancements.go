@@ -137,6 +137,14 @@ func (c *Client) GetEnhancementByRef(ctx context.Context, ref *EnhancementRef) (
 		}
 	}
 
+	// Classic systems store HOOK_IMPL source in an internal include whose
+	// name is often padded with '=' characters. Search results do not expose
+	// that include, so resolve it from ENHINCINX before falling back to the
+	// convention-based <ENHNAME>E guess.
+	if ref.Kind == EnhancementKind("XH") && ref.EnhInclude == "" {
+		c.enrichEnhancementRefFromIndex(ctx, ref)
+	}
+
 	// 3) RFC fallback via ZADT_VSP WebSocket. Classic ECC walls off ENHO
 	// bodies behind RPY_PROGRAM_READ — the only reliable way to read the
 	// plug-in source on those releases. ref.EnhInclude (from ENHINCINX) is
@@ -159,6 +167,45 @@ func (c *Client) GetEnhancementByRef(ctx context.Context, ref *EnhancementRef) (
 			"(SE80: see include %s). Install ZADT_VSP or grant the vsp cookie write "+
 			"scope to enable inline retrieval.",
 		ref.Name, ref.Kind, ref.PackageName, hint)
+}
+
+// enrichEnhancementRefFromIndex fills the classic repository fields that ADT
+// search omits for HOOK_IMPL enhancements. It is deliberately best-effort:
+// modern systems and restricted users still fall through to the existing
+// convention-based source lookup when ENHINCINX cannot be read.
+func (c *Client) enrichEnhancementRefFromIndex(ctx context.Context, ref *EnhancementRef) {
+	if ref == nil || ref.Kind != EnhancementKind("XH") || ref.EnhInclude != "" {
+		return
+	}
+
+	name := strings.ToUpper(strings.TrimSpace(ref.Name))
+	if name == "" {
+		return
+	}
+	// ENHINCINX.ENHNAME is limited to 30 characters even when ENHHEADER keeps
+	// the full implementation name.
+	indexName := name
+	if len(indexName) > 30 {
+		indexName = indexName[:30]
+	}
+	sql := fmt.Sprintf(
+		"SELECT ENHNAME, PROGRAMNAME, FULL_NAME, ENHINCLUDE FROM ENHINCINX WHERE ENHNAME = '%s'",
+		strings.ReplaceAll(indexName, "'", "''"))
+
+	result, err := c.GetTableContents(ctx, "ENHINCINX", 20, sql)
+	if err != nil || result == nil {
+		return
+	}
+	for _, row := range result.Rows {
+		enhInclude := strings.TrimSpace(asString(row["ENHINCLUDE"]))
+		if enhInclude == "" {
+			continue
+		}
+		ref.EnhInclude = enhInclude
+		ref.HostProgram = strings.TrimSpace(asString(row["PROGRAMNAME"]))
+		ref.FullName = strings.TrimSpace(asString(row["FULL_NAME"]))
+		return
+	}
 }
 
 // tryFetchEnhancementSourceViaRFC opens a one-shot WebSocket to ZADT_VSP and

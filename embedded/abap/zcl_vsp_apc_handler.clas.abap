@@ -66,9 +66,29 @@ CLASS zcl_vsp_apc_handler IMPLEMENTATION.
 
     APPEND NEW zcl_vsp_rfc_service( ) TO gt_services.
     APPEND NEW zcl_vsp_debug_service( ) TO gt_services.
-    APPEND NEW zcl_vsp_amdp_service( ) TO gt_services.
-    APPEND NEW zcl_vsp_git_service( ) TO gt_services.
     APPEND NEW zcl_vsp_report_service( ) TO gt_services.
+
+    " AMDP and abapGit are optional. Instantiate them dynamically so the
+    " handler remains activatable on non-HANA systems or installations without
+    " abapGit.
+    DATA lo_optional_service TYPE REF TO zif_vsp_service.
+    DATA lv_optional_class TYPE seoclsname.
+
+    TRY.
+        lv_optional_class = 'ZCL_VSP_AMDP_SERVICE'.
+        CREATE OBJECT lo_optional_service TYPE (lv_optional_class).
+        APPEND lo_optional_service TO gt_services.
+      CATCH cx_sy_create_object_error.
+        CLEAR lo_optional_service.
+    ENDTRY.
+
+    TRY.
+        lv_optional_class = 'ZCL_VSP_GIT_SERVICE'.
+        CREATE OBJECT lo_optional_service TYPE (lv_optional_class).
+        APPEND lo_optional_service TO gt_services.
+      CATCH cx_sy_create_object_error.
+        CLEAR lo_optional_service.
+    ENDTRY.
   ENDMETHOD.
 
   METHOD if_apc_wsp_extension~on_start.
@@ -83,10 +103,16 @@ CLASS zcl_vsp_apc_handler IMPLEMENTATION.
     ENDTRY.
     mv_session_id = lv_uuid.
 
+    DATA lt_domains TYPE string_table.
+    LOOP AT gt_services INTO DATA(lo_service).
+      APPEND |"{ zcl_vsp_utils=>escape_json( lo_service->get_domain( ) ) }"| TO lt_domains.
+    ENDLOOP.
+
+    DATA(lv_domains) = zcl_vsp_utils=>json_join( lt_domains ).
     DATA(lv_data) = zcl_vsp_utils=>json_obj( zcl_vsp_utils=>json_join( VALUE #(
       ( zcl_vsp_utils=>json_str( iv_key = 'session' iv_value = mv_session_id ) )
       ( zcl_vsp_utils=>json_str( iv_key = 'version' iv_value = '2.3.0' ) )
-      ( |"domains":["rfc","debug","amdp","git","report"]| )
+      ( |"domains":[{ lv_domains }]| )
     ) ) ).
 
     send_response( VALUE #(

@@ -85,7 +85,7 @@ func GetObjects() []ObjectInfo {
 			Name:        "ZCL_VSP_AMDP_SERVICE",
 			Source:      ZclVspAmdpService,
 			Description: "AMDP domain - HANA debugging (experimental)",
-			Optional:    false,
+			Optional:    true, // Requires a HANA system with AMDP debugger support
 		},
 		{
 			Type:        "CLAS",
@@ -146,19 +146,18 @@ func PostDeploymentInstructions() string {
          -H "Authorization: Basic $(echo -n USER:PASS | base64)"
 
    Expected response:
-   {"id":"welcome","success":true,"data":{"session":"...","version":"2.2.0",
-    "domains":["rfc","debug","amdp","git"]}}
+   {"id":"welcome","success":true,"data":{"session":"...","version":"2.3.0",
+    "domains":["rfc","debug","report"]}}
+
+   Optional domains such as "amdp" and "git" appear only when their service
+   classes were successfully deployed.
 
 4. VERIFY IN VSP
    ──────────────
-   # Test WebSocket connection
-   vsp ws-ping
+   # Confirm the SAP connection and ZADT_VSP detection
+   vsp system info
 
-   # Test RFC domain
-   vsp call-rfc RFC_SYSTEM_INFO
-
-   # Test Git domain (if abapGit installed)
-   vsp git-types
+   # Then use the WebSocket-backed tools through the VSP MCP server.
 
 ═══════════════════════════════════════════════════════════════════════════════
   For detailed documentation, see: embedded/abap/README.md

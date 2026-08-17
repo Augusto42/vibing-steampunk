@@ -261,6 +261,18 @@ func (c *Client) AllowPackageTemporarily(pkg string) func() {
 // SearchObject searches for ABAP objects by name pattern.
 // The query parameter supports wildcards (* for multiple chars, ? for single char).
 func (c *Client) SearchObject(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	return c.searchObject(ctx, query, "", maxResults)
+}
+
+// SearchObjectByType searches for ABAP objects while applying the object type
+// filter on the SAP server. Server-side filtering is important because ADT
+// applies maxResults before returning the response; filtering only on the
+// client can otherwise produce an empty page even when matching objects exist.
+func (c *Client) SearchObjectByType(ctx context.Context, query, objectType string, maxResults int) ([]SearchResult, error) {
+	return c.searchObject(ctx, query, strings.ToUpper(strings.TrimSpace(objectType)), maxResults)
+}
+
+func (c *Client) searchObject(ctx context.Context, query, objectType string, maxResults int) ([]SearchResult, error) {
 	if maxResults <= 0 {
 		maxResults = 100
 	}
@@ -269,6 +281,9 @@ func (c *Client) SearchObject(ctx context.Context, query string, maxResults int)
 	params.Set("operation", "quickSearch")
 	params.Set("query", query)
 	params.Set("maxResults", fmt.Sprintf("%d", maxResults))
+	if objectType != "" {
+		params.Set("objectType", objectType)
+	}
 
 	resp, err := c.transport.Request(ctx, "/sap/bc/adt/repository/informationsystem/search", &RequestOptions{
 		Method: http.MethodGet,

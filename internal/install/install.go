@@ -70,13 +70,13 @@ func DeploySource(ctx context.Context, client Client, objectType, name, source s
 		if message == "" {
 			message = "WriteSource returned success=false without a diagnostic"
 		}
+		if diagnostics := fatalSyntaxDiagnostics(result.SyntaxErrors); diagnostics != "" {
+			message += ": " + diagnostics
+		}
 		return result, fmt.Errorf("WriteSource failed: %s", message)
 	}
-	for _, syntax := range result.SyntaxErrors {
-		severity := strings.ToUpper(strings.TrimSpace(syntax.Severity))
-		if severity == "E" || severity == "A" || severity == "X" {
-			return result, fmt.Errorf("WriteSource reported a syntax error")
-		}
+	if diagnostics := fatalSyntaxDiagnostics(result.SyntaxErrors); diagnostics != "" {
+		return result, fmt.Errorf("WriteSource reported a syntax error: %s", diagnostics)
 	}
 	if result.Activation != nil && !result.Activation.Success {
 		return result, fmt.Errorf("WriteSource reported activation failure")
@@ -89,4 +89,24 @@ func DeploySource(ctx context.Context, client Client, objectType, name, source s
 		return result, fmt.Errorf("source read-back was empty")
 	}
 	return result, nil
+}
+
+func fatalSyntaxDiagnostics(results []adt.SyntaxCheckResult) string {
+	var diagnostics []string
+	for _, syntax := range results {
+		severity := strings.ToUpper(strings.TrimSpace(syntax.Severity))
+		if severity != "E" && severity != "A" && severity != "X" {
+			continue
+		}
+		text := strings.TrimSpace(syntax.Text)
+		if text == "" {
+			text = "syntax error"
+		}
+		if syntax.Line > 0 {
+			diagnostics = append(diagnostics, fmt.Sprintf("line %d: %s", syntax.Line, text))
+		} else {
+			diagnostics = append(diagnostics, text)
+		}
+	}
+	return strings.Join(diagnostics, "; ")
 }

@@ -40,7 +40,7 @@ var sourceWriteCmd = &cobra.Command{
 
 Examples:
   cat myclass.abap | vsp source write CLAS ZCL_MY_CLASS
-  echo "REPORT ztest." | vsp source write PROG ZTEST
+  echo "REPORT ztest." | vsp source write PROG ZTEST --mode create --package '$TMP' --description "Synthetic test"
   vsp source write CLAS ZCL_FOO --transport A4HK900001 < source.abap`,
 	Args: cobra.ExactArgs(2),
 	RunE: runSourceWrite,
@@ -482,6 +482,9 @@ func init() {
 
 	// Source write flags
 	sourceWriteCmd.Flags().String("transport", "", "Transport request number")
+	sourceWriteCmd.Flags().String("mode", "upsert", "Write mode: create, update, or upsert")
+	sourceWriteCmd.Flags().String("package", "", "Package for newly created objects")
+	sourceWriteCmd.Flags().String("description", "", "Description for newly created objects")
 
 	// Source edit flags
 	sourceEditCmd.Flags().String("old", "", "String to find (required)")
@@ -1386,6 +1389,9 @@ func runSourceWrite(cmd *cobra.Command, args []string) error {
 	objType := strings.ToUpper(args[0])
 	name := strings.ToUpper(args[1])
 	transport, _ := cmd.Flags().GetString("transport")
+	mode, _ := cmd.Flags().GetString("mode")
+	packageName, _ := cmd.Flags().GetString("package")
+	description, _ := cmd.Flags().GetString("description")
 
 	// Read source from stdin
 	source, err := io.ReadAll(os.Stdin)
@@ -1398,7 +1404,10 @@ func runSourceWrite(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 	result, err := client.WriteSource(ctx, objType, name, string(source), &adt.WriteSourceOptions{
-		Transport: transport,
+		Mode:        adt.WriteSourceMode(strings.ToLower(strings.TrimSpace(mode))),
+		Package:     strings.ToUpper(strings.TrimSpace(packageName)),
+		Description: strings.TrimSpace(description),
+		Transport:   transport,
 	})
 	if err != nil {
 		return fmt.Errorf("write failed: %w", err)
@@ -3085,6 +3094,27 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Git service skipped (--skip-git-service)\n")
 	}
 
+	// AMDP is HANA-only. Reuse the existing feature probe and fail closed when
+	// HANA/AMDP support cannot be established (for example, on ASE systems).
+	featureConfig := adt.DefaultFeatureConfig()
+	featureConfig.HANA = adt.FeatureMode(strings.ToLower(cfg.FeatureHANA))
+	featureConfig.AMDP = adt.FeatureMode(strings.ToLower(cfg.FeatureAMDP))
+	amdpStatus := adt.NewFeatureProber(client, featureConfig, cfg.Verbose).Probe(ctx, adt.FeatureAMDP)
+	skipAMDPService := !amdpStatus.Available
+	if skipAMDPService {
+		fmt.Fprintf(os.Stderr, "  AMDP service will be skipped (%s)\n", amdpStatus.Message)
+	} else {
+		fmt.Fprintf(os.Stderr, "  AMDP available -> AMDP service will be deployed\n")
+	}
+
+	skipReasons := map[string]string{}
+	if skipGitService {
+		skipReasons["ZCL_VSP_GIT_SERVICE"] = "no abapGit"
+	}
+	if skipAMDPService {
+		skipReasons["ZCL_VSP_AMDP_SERVICE"] = "AMDP unavailable"
+	}
+
 	// Get objects to deploy
 	objects := embedded.GetObjects()
 
@@ -3106,8 +3136,8 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Deployment Plan (%d objects):\n", len(objects))
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 60))
 	for i, obj := range objects {
-		if obj.Name == "ZCL_VSP_GIT_SERVICE" && skipGitService {
-			fmt.Fprintf(os.Stderr, "  [%d/%d] %-30s SKIP (no abapGit)\n", i+1, len(objects), obj.Name)
+		if reason, skip := skipReasons[obj.Name]; skip {
+			fmt.Fprintf(os.Stderr, "  [%d/%d] %-30s SKIP (%s)\n", i+1, len(objects), obj.Name, reason)
 		} else {
 			action := "CREATE"
 			for _, existing := range existingObjects {
@@ -3144,11 +3174,12 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 	deployed := 0
 	skipped := 0
 	failed := 0
+	amdpDeployed := false
+	gitDeployed := false
 
 	for i, obj := range objects {
-		// Skip Git service if no abapGit
-		if obj.Name == "ZCL_VSP_GIT_SERVICE" && skipGitService {
-			fmt.Fprintf(os.Stderr, "  [%d/%d] %s ... SKIPPED (no abapGit)\n", i+1, len(objects), obj.Name)
+		if reason, skip := skipReasons[obj.Name]; skip {
+			fmt.Fprintf(os.Stderr, "  [%d/%d] %s ... SKIPPED (%s)\n", i+1, len(objects), obj.Name, reason)
 			skipped++
 			continue
 		}
@@ -3162,11 +3193,18 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 		}
 		_, err := installer.DeploySource(ctx, client, obj.Type, obj.Name, obj.Source, opts)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "FAILED: %v\n", err)
-			failed++
+			if obj.Optional {
+				fmt.Fprintf(os.Stderr, "SKIPPED (optional service failed: %v)\n", err)
+				skipped++
+			} else {
+				fmt.Fprintf(os.Stderr, "FAILED: %v\n", err)
+				failed++
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "OK\n")
 			deployed++
+			amdpDeployed = amdpDeployed || obj.Name == "ZCL_VSP_AMDP_SERVICE"
+			gitDeployed = gitDeployed || obj.Name == "ZCL_VSP_GIT_SERVICE"
 		}
 	}
 
@@ -3191,8 +3229,12 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "\nFeatures unlocked:\n")
 	fmt.Fprintf(os.Stderr, "  WebSocket debugging (TPDAPI)\n")
 	fmt.Fprintf(os.Stderr, "  RFC/BAPI execution\n")
-	fmt.Fprintf(os.Stderr, "  AMDP debugging (experimental)\n")
-	if hasAbapGit && !skipGitService {
+	if amdpDeployed {
+		fmt.Fprintf(os.Stderr, "  AMDP debugging (experimental)\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "  AMDP debugging NOT available\n")
+	}
+	if hasAbapGit && gitDeployed {
 		fmt.Fprintf(os.Stderr, "  abapGit export (158 object types)\n")
 	} else {
 		fmt.Fprintf(os.Stderr, "  abapGit export NOT available (install abapGit first)\n")

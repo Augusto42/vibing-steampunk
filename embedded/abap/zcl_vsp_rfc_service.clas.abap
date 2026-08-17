@@ -422,20 +422,45 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
 
   METHOD create_table_data.
     DATA lv_type TYPE string.
+    FIELD-SYMBOLS <fs_dynamic_table> TYPE ANY TABLE.
 
+    " FUNCTION_IMPORT_INTERFACE can return either a complete DDIC table type
+    " in TYP or a row structure in DBSTRUCT. Wrapping an existing table type
+    " in another STANDARD TABLE creates a nested table that is incompatible
+    " with PARAMETER-TABLE (for example RPY_DYNPRO_READ-CONTAINERS).
     IF strlen( is_param-typ ) > 0.
       lv_type = is_param-typ.
-    ELSEIF strlen( is_param-dbfield ) > 0.
-      lv_type = is_param-dbfield.
-    ELSE.
-      RETURN.
+      TRY.
+          CREATE DATA ro_data TYPE (lv_type).
+          ASSIGN ro_data->* TO <fs_dynamic_table>.
+          IF sy-subrc = 0.
+            RETURN.
+          ENDIF.
+          CLEAR ro_data.
+        CATCH cx_sy_create_data_error.
+          CLEAR ro_data.
+      ENDTRY.
     ENDIF.
 
-    TRY.
-        CREATE DATA ro_data TYPE STANDARD TABLE OF (lv_type).
-      CATCH cx_sy_create_data_error.
-        CLEAR ro_data.
-    ENDTRY.
+    IF strlen( is_param-dbfield ) > 0.
+      lv_type = is_param-dbfield.
+      TRY.
+          CREATE DATA ro_data TYPE STANDARD TABLE OF (lv_type).
+          RETURN.
+        CATCH cx_sy_create_data_error.
+          CLEAR ro_data.
+      ENDTRY.
+    ENDIF.
+
+    " Older function interfaces may expose only the row type in TYP.
+    IF strlen( is_param-typ ) > 0.
+      lv_type = is_param-typ.
+      TRY.
+          CREATE DATA ro_data TYPE STANDARD TABLE OF (lv_type).
+        CATCH cx_sy_create_data_error.
+          CLEAR ro_data.
+      ENDTRY.
+    ENDIF.
   ENDMETHOD.
 
   METHOD handle_get_metadata.
