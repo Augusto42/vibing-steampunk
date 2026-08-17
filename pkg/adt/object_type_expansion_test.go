@@ -51,6 +51,10 @@ func TestWriteSourceUpdatesProgramInclude(t *testing.T) {
 	mock := &methodPathMock{routes: []routedResponse{
 		resp("", "discovery", http.StatusOK, ""),
 		resp(http.MethodGet, "/programs/includes/ZSYNTHETIC_INCL/source/main", http.StatusOK, "INCLUDE zsynthetic_incl."),
+		resp(http.MethodGet, "/repository/informationsystem/search", http.StatusOK, `<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/programs/includes/zsynthetic_incl" adtcore:type="PROG/I" adtcore:name="ZSYNTHETIC_INCL" adtcore:packageName="$TMP"/>
+</adtcore:objectReferences>`),
 		resp(http.MethodPost, "/checkruns", http.StatusOK, emptyCheckRun),
 		resp(http.MethodPost, "/programs/includes/ZSYNTHETIC_INCL", http.StatusOK, syntheticLocalLockXML),
 		resp(http.MethodPut, "/programs/includes/ZSYNTHETIC_INCL/source/main", http.StatusOK, ""),

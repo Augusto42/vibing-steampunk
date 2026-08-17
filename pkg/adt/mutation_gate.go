@@ -3,6 +3,7 @@ package adt
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 type mutationPackageCheckedKey struct{}
@@ -141,4 +142,32 @@ func (c *Client) checkMutationPackage(ctx context.Context, m MutationContext) er
 	default:
 		return fmt.Errorf("mutation gate: unknown surface %d for %s", m.Surface, m.OpName)
 	}
+}
+
+// checkPackageTransportRequirement prevents SAP from partially creating or
+// changing an object before it asks for a transport. It must run before the
+// first stateful lock or write request. Unlike CheckTransportableEdit, which
+// validates an explicitly supplied request against local policy, this check
+// validates that a request was supplied when the package itself records
+// changes.
+func (c *Client) checkPackageTransportRequirement(ctx context.Context, packageName, transport, opName string) error {
+	packageName = strings.ToUpper(strings.TrimSpace(packageName))
+	transport = strings.ToUpper(strings.TrimSpace(transport))
+	if packageName == "" {
+		return nil
+	}
+	if strings.HasPrefix(packageName, "$") {
+		return nil
+	}
+
+	metadata, err := c.GetPackageMetadata(ctx, packageName)
+	if err != nil {
+		return fmt.Errorf("%s blocked before mutation: cannot determine whether package %s requires a transport: %w", opName, packageName, err)
+	}
+	if metadata.RequiresTransport() && transport == "" {
+		return fmt.Errorf(
+			"%s blocked before mutation: package %s records changes and requires an explicit transport request; provide --transport and --allow-transportable-edits",
+			opName, packageName)
+	}
+	return nil
 }

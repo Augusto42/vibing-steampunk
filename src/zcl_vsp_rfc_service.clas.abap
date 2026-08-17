@@ -202,9 +202,16 @@ CLASS ZCL_VSP_RFC_SERVICE IMPLEMENTATION.
     " Function's IMPORT params: we EXPORT values TO the function
     LOOP AT lt_import INTO DATA(ls_imp).
       CLEAR: ls_ptab, lo_data, lv_val.
+      DATA(lv_param_marker) = |"{ ls_imp-parameter }":|.
+      FIND lv_param_marker IN is_message-params IGNORING CASE.
+      IF sy-subrc <> 0.
+        CONTINUE.
+      ENDIF.
+      lv_val = extract_param( iv_params = is_message-params iv_name = CONV #( ls_imp-parameter ) ).
+      " Only bind parameters present in the request so omitted DEFAULT values
+      " remain owned by the called function module.
       lo_data = create_param_data( ls_imp ).
       IF lo_data IS BOUND.
-        lv_val = extract_param( iv_params = is_message-params iv_name = CONV #( ls_imp-parameter ) ).
         IF lv_val IS NOT INITIAL.
           ASSIGN lo_data->* TO <fs_val>.
           IF sy-subrc = 0.

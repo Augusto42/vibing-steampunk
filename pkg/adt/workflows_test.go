@@ -204,6 +204,7 @@ WRITE: 'Updated!'.`
 		responses: map[string]*http.Response{
 			"/sap/bc/adt/programs/programs/ZTEST": newWorkflowTestResponse(`<?xml version="1.0"?>
 <program:abapProgram xmlns:program="http://www.sap.com/adt/programs"/>`),
+			"search":    newSearchResponse("/sap/bc/adt/programs/programs/ztest", "PROG/P", "ZTEST", "$TMP"),
 			"discovery": newWorkflowTestResponse("OK"),
 		},
 	})

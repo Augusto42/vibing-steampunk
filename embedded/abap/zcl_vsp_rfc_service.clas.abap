@@ -1,6 +1,7 @@
 "! <p class="shorttext synchronized">VSP RFC Service</p>
 "! Enables dynamic RFC/BAPI calls via WebSocket.
-"! Actions: call, search, getMetadata, ping, moveToPackage, runReport, readSource
+"! Actions: call, search, getMetadata, ping, moveToPackage, runReport, readSource,
+"!          writeEnhancementSource
 CLASS zcl_vsp_rfc_service DEFINITION
   PUBLIC
   FINAL
@@ -9,6 +10,10 @@ CLASS zcl_vsp_rfc_service DEFINITION
   PUBLIC SECTION.
     INTERFACES zif_vsp_service.
     CLASS-METHODS class_constructor.
+    CLASS-METHODS write_enho_worker
+      IMPORTING iv_enhname   TYPE string
+                iv_source_b64 TYPE string
+                iv_transport TYPE string.
 
   PRIVATE SECTION.
     TYPES:
@@ -52,6 +57,11 @@ CLASS zcl_vsp_rfc_service DEFINITION
       IMPORTING is_message         TYPE zif_vsp_service=>ty_message
       RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
 
+    "! Update and activate an existing classic HOOK_IMPL enhancement.
+    METHODS handle_write_enho_source
+      IMPORTING is_message         TYPE zif_vsp_service=>ty_message
+      RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
+
     METHODS get_func_interface
       IMPORTING iv_function       TYPE rs38l_fnam
       EXPORTING et_import         TYPE tt_param_info
@@ -84,6 +94,7 @@ CLASS zcl_vsp_rfc_service DEFINITION
       RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
 
     CLASS-DATA gv_pcre_supported TYPE abap_bool.
+    CLASS-DATA gv_enho_worker_mode TYPE abap_bool.
 
 ENDCLASS.
 
@@ -121,6 +132,8 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
         rs_response = handle_run_report( is_message ).
       WHEN 'readSource'.
         rs_response = handle_read_source( is_message ).
+      WHEN 'writeEnhancementSource'.
+        rs_response = handle_write_enho_source( is_message ).
       WHEN OTHERS.
         rs_response = build_error(
           iv_id      = is_message-id
@@ -227,9 +240,17 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
     " Function's IMPORT params: we EXPORT values TO the function
     LOOP AT lt_import INTO DATA(ls_imp).
       CLEAR: ls_ptab, lo_data, lv_val.
+      DATA(lv_param_marker) = |"{ ls_imp-parameter }":|.
+      FIND lv_param_marker IN is_message-params IGNORING CASE.
+      IF sy-subrc <> 0.
+        CONTINUE.
+      ENDIF.
+      lv_val = extract_param( iv_params = is_message-params iv_name = CONV #( ls_imp-parameter ) ).
+      " Only bind parameters that were present in the request. Binding an
+      " omitted parameter's type-initial value would override the function
+      " module's declared DEFAULT value (for example JOB_CLOSE restrictions).
       lo_data = create_param_data( ls_imp ).
       IF lo_data IS BOUND.
-        lv_val = extract_param( iv_params = is_message-params iv_name = CONV #( ls_imp-parameter ) ).
         IF lv_val IS NOT INITIAL.
           ASSIGN lo_data->* TO <fs_val>.
           IF sy-subrc = 0.
@@ -761,6 +782,312 @@ CLASS zcl_vsp_rfc_service IMPLEMENTATION.
 
     lv_json = |{ lv_json }]{ lv_c }|.
     rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
+  ENDMETHOD.
+
+  METHOD handle_write_enho_source.
+    TYPES:
+      BEGIN OF ty_source_element,
+        id     TYPE int4,
+        source TYPE rswsourcet,
+      END OF ty_source_element,
+      tt_source_elements TYPE STANDARD TABLE OF ty_source_element WITH KEY id.
+
+    DATA(lv_enhname_str) = extract_param( iv_params = is_message-params iv_name = 'enhancement' ).
+    DATA(lv_source_b64) = extract_param( iv_params = is_message-params iv_name = 'source_base64' ).
+    DATA(lv_transport_str) = extract_param( iv_params = is_message-params iv_name = 'transport' ).
+    IF lv_enhname_str IS INITIAL OR lv_source_b64 IS INITIAL.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'MISSING_PARAM'
+        iv_message = 'Parameters enhancement and source_base64 are required' ).
+      RETURN.
+    ENDIF.
+    TRANSLATE lv_enhname_str TO UPPER CASE.
+    TRANSLATE lv_transport_str TO UPPER CASE.
+    IF strlen( lv_enhname_str ) > 30
+       OR lv_enhname_str CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/$'.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_ENHANCEMENT'
+        iv_message = 'Enhancement name contains unsupported characters' ).
+      RETURN.
+    ENDIF.
+    IF lv_source_b64 CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_SOURCE'
+        iv_message = 'source_base64 contains unsupported characters' ).
+      RETURN.
+    ENDIF.
+    IF lv_transport_str IS NOT INITIAL.
+      IF strlen( lv_transport_str ) > 20
+         OR lv_transport_str CN 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/'.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'INVALID_TRANSPORT'
+          iv_message = 'Transport contains unsupported characters' ).
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    " Validate package and CTS ownership before starting the isolated worker.
+    " The worker executes this same check again immediately before locking.
+    DATA lv_enhname TYPE enhname.
+    DATA lv_trkorr TYPE trkorr.
+    DATA lv_devclass TYPE devclass.
+    DATA lv_owner_task TYPE trkorr.
+    DATA lv_owner_request TYPE trkorr.
+    DATA lv_korrflag TYPE tdevc-korrflag.
+    lv_enhname = lv_enhname_str.
+    lv_trkorr = lv_transport_str.
+    SELECT SINGLE devclass FROM tadir INTO lv_devclass
+      WHERE pgmid = 'R3TR' AND object = 'ENHO' AND obj_name = lv_enhname.
+    IF sy-subrc <> 0.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'ENHANCEMENT_NOT_FOUND'
+        iv_message = |Enhancement { lv_enhname } is not registered in TADIR| ).
+      RETURN.
+    ENDIF.
+    SELECT SINGLE korrflag FROM tdevc INTO lv_korrflag
+      WHERE devclass = lv_devclass.
+    IF lv_korrflag = 'X' AND lv_trkorr IS INITIAL.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'TRANSPORT_REQUIRED'
+        iv_message = |Package { lv_devclass } requires an explicit transport| ).
+      RETURN.
+    ENDIF.
+    SELECT SINGLE trkorr FROM e071 INTO lv_owner_task
+      WHERE pgmid = 'R3TR' AND object = 'ENHO' AND obj_name = lv_enhname
+        AND lockflag = 'X'.
+    IF lv_owner_task IS NOT INITIAL.
+      SELECT SINGLE strkorr FROM e070 INTO lv_owner_request
+        WHERE trkorr = lv_owner_task.
+      IF lv_owner_request IS INITIAL.
+        lv_owner_request = lv_owner_task.
+      ENDIF.
+      IF lv_trkorr IS NOT INITIAL AND lv_trkorr <> lv_owner_task
+         AND lv_trkorr <> lv_owner_request.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'TRANSPORT_MISMATCH'
+          iv_message = |Requested { lv_trkorr } but CTS owns the ENHO in { lv_owner_request }| ).
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    " Enhancement persistence performs commits that are not legal in an APC
+    " work process. Schedule the exact same handler in an isolated RFC work
+    " process; the Go client confirms completion through active read-back.
+    IF gv_enho_worker_mode = abap_false.
+      DATA lt_program TYPE TABLE OF progtab.
+      DATA lv_program_line TYPE string.
+      APPEND 'REPORT z$$$xrfc.' TO lt_program.
+      APPEND 'DATA lv_b64 TYPE string.' TO lt_program.
+      DATA lv_remaining TYPE string.
+      DATA lv_chunk TYPE string.
+      lv_remaining = lv_source_b64.
+      WHILE lv_remaining IS NOT INITIAL.
+        IF strlen( lv_remaining ) > 48.
+          lv_chunk = lv_remaining(48).
+          lv_remaining = lv_remaining+48.
+        ELSE.
+          lv_chunk = lv_remaining.
+          CLEAR lv_remaining.
+        ENDIF.
+        lv_program_line = |lv_b64 = lv_b64 && '{ lv_chunk }'.|.
+        APPEND lv_program_line TO lt_program.
+      ENDWHILE.
+      APPEND 'zcl_vsp_rfc_service=>write_enho_worker(' TO lt_program.
+      lv_program_line = |iv_enhname = '{ lv_enhname_str }'|.
+      APPEND lv_program_line TO lt_program.
+      APPEND 'iv_source_b64 = lv_b64' TO lt_program.
+      lv_program_line = |iv_transport = '{ lv_transport_str }' ).|.
+      APPEND lv_program_line TO lt_program.
+
+      DATA(lv_task) = |VSP_ENHO_{ sy-uzeit }|.
+      CALL FUNCTION 'RFC_ABAP_INSTALL_AND_RUN'
+        STARTING NEW TASK lv_task
+        EXPORTING mode = 'F'
+        TABLES program = lt_program
+        EXCEPTIONS communication_failure = 1 system_failure = 2
+                   resource_failure = 3 OTHERS = 4.
+      IF sy-subrc <> 0.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'ENHO_WORKER_START_FAILED'
+          iv_message = |Could not start ENHO worker: { sy-subrc }| ).
+        RETURN.
+      ENDIF.
+
+      DATA(lv_o_scheduled) = '{'.
+      DATA(lv_c_scheduled) = '}'.
+      DATA(lv_scheduled_json) = |{ lv_o_scheduled }"status":"scheduled","task":"{ lv_task }"{ lv_c_scheduled }|.
+      rs_response = VALUE #( id = is_message-id success = abap_true data = lv_scheduled_json ).
+      RETURN.
+    ENDIF.
+
+    DATA lv_source_text TYPE string.
+    TRY.
+        DATA(lv_source_x) = cl_http_utility=>decode_x_base64( lv_source_b64 ).
+        lv_source_text = cl_abap_codepage=>convert_from( source = lv_source_x codepage = `UTF-8` ).
+      CATCH cx_root INTO DATA(lx_decode).
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'INVALID_SOURCE'
+          iv_message = lx_decode->get_text( ) ).
+        RETURN.
+    ENDTRY.
+    REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf
+      IN lv_source_text WITH cl_abap_char_utilities=>newline.
+
+    DATA lt_lines TYPE rswsourcet.
+    DATA lt_elements TYPE tt_source_elements.
+    DATA ls_element TYPE ty_source_element.
+    DATA lv_inside TYPE abap_bool.
+    DATA lv_line TYPE string.
+    DATA lv_header TYPE string.
+    DATA lv_id_text TYPE string.
+    DATA lv_header_rest TYPE string.
+    SPLIT lv_source_text AT cl_abap_char_utilities=>newline INTO TABLE lt_lines.
+    LOOP AT lt_lines INTO lv_line.
+      lv_header = lv_line.
+      CONDENSE lv_header.
+      IF lv_inside = abap_false.
+        IF lv_header IS INITIAL.
+          CONTINUE.
+        ENDIF.
+        IF lv_header NP 'ENHANCEMENT *.'.
+          rs_response = build_error(
+            iv_id = is_message-id iv_code = 'INVALID_SOURCE'
+            iv_message = 'Expected ENHANCEMENT <id>. wrapper' ).
+          RETURN.
+        ENDIF.
+        lv_id_text = lv_header+12.
+        CONDENSE lv_id_text.
+        SPLIT lv_id_text AT space INTO lv_id_text lv_header_rest.
+        REPLACE ALL OCCURRENCES OF '.' IN lv_id_text WITH ''.
+        IF lv_id_text IS INITIAL OR lv_id_text CN '0123456789'.
+          rs_response = build_error(
+            iv_id = is_message-id iv_code = 'INVALID_SOURCE'
+            iv_message = 'Enhancement element id is missing' ).
+          RETURN.
+        ENDIF.
+        CLEAR ls_element.
+        ls_element-id = lv_id_text.
+        lv_inside = abap_true.
+      ELSEIF lv_header = 'ENDENHANCEMENT.'.
+        INSERT ls_element INTO TABLE lt_elements.
+        IF sy-subrc <> 0.
+          rs_response = build_error(
+            iv_id = is_message-id iv_code = 'INVALID_SOURCE'
+            iv_message = 'Duplicate enhancement element id' ).
+          RETURN.
+        ENDIF.
+        CLEAR ls_element.
+        lv_inside = abap_false.
+      ELSE.
+        APPEND lv_line TO ls_element-source.
+      ENDIF.
+    ENDLOOP.
+    IF lv_inside = abap_true OR lt_elements IS INITIAL.
+      rs_response = build_error(
+        iv_id = is_message-id iv_code = 'INVALID_SOURCE'
+        iv_message = 'Enhancement source has an unclosed or empty wrapper' ).
+      RETURN.
+    ENDIF.
+
+    DATA lo_tool TYPE REF TO if_enh_tool.
+    DATA lo_hook TYPE REF TO cl_enh_tool_hook_impl.
+    DATA lt_current TYPE enh_hook_impl_it.
+    DATA ls_current TYPE enh_hook_impl.
+    DATA lv_version TYPE r3state VALUE 'A'.
+    TRY.
+        cl_enh_factory=>get_enhancement(
+          EXPORTING enhancement_id = lv_enhname lock = abap_true
+                    suppress_lang_dialog = abap_true run_dark = abap_true
+                    adt_resource = abap_true
+          RECEIVING enhancement = lo_tool ).
+        lo_hook ?= lo_tool.
+
+        DATA(lv_locked_trkorr) = lo_tool->if_enh_object~get_trkorr( ).
+        DATA lv_locked_request TYPE trkorr.
+        IF lv_locked_trkorr IS NOT INITIAL.
+          SELECT SINGLE strkorr FROM e070 INTO lv_locked_request
+            WHERE trkorr = lv_locked_trkorr.
+          IF lv_locked_request IS INITIAL.
+            lv_locked_request = lv_locked_trkorr.
+          ENDIF.
+        ENDIF.
+        IF lv_trkorr IS NOT INITIAL AND lv_locked_trkorr IS NOT INITIAL
+           AND lv_trkorr <> lv_locked_trkorr AND lv_trkorr <> lv_locked_request.
+          lo_tool->if_enh_object~unlock( ).
+          rs_response = build_error(
+            iv_id = is_message-id iv_code = 'TRANSPORT_MISMATCH'
+            iv_message = |Requested { lv_trkorr } but SAP locked the ENHO in { lv_locked_trkorr }| ).
+          RETURN.
+        ENDIF.
+
+        IF lo_tool->if_enh_object~has_inactive_version( ) = abap_true.
+          lv_version = 'I'.
+        ENDIF.
+        lt_current = lo_hook->get_hook_impls( lv_version ).
+
+        LOOP AT lt_elements INTO ls_element.
+          READ TABLE lt_current INTO ls_current WITH KEY id = ls_element-id.
+          IF sy-subrc <> 0.
+            lo_tool->if_enh_object~unlock( ).
+            rs_response = build_error(
+              iv_id = is_message-id iv_code = 'ELEMENT_NOT_FOUND'
+              iv_message = |Enhancement element { ls_element-id } does not exist| ).
+            RETURN.
+          ENDIF.
+          lo_hook->modify_hook_impl(
+            extid = ls_current-extid overwrite = ls_current-overwrite
+            method = ls_current-method enhmode = ls_current-enhmode
+            full_name = ls_current-full_name source = ls_element-source
+            spot = ls_current-spotname parent_full_name = ls_current-parent_full_name ).
+        ENDLOOP.
+
+        lo_tool->if_enh_object~save(
+          EXPORTING run_dark = abap_true
+          CHANGING devclass = lv_devclass trkorr = lv_trkorr ).
+        lo_tool->if_enh_object~activate(
+          EXPORTING run_dark = abap_true
+          CHANGING devclass = lv_devclass trkorr = lv_trkorr ).
+        lo_tool->if_enh_object~unlock( ).
+
+      CATCH cx_root INTO DATA(lx_write).
+        IF lo_tool IS BOUND.
+          TRY.
+              IF lo_tool->if_enh_object~is_locked( ) = abap_true.
+                lo_tool->if_enh_object~unlock( ).
+              ENDIF.
+            CATCH cx_root.
+          ENDTRY.
+        ENDIF.
+        rs_response = build_error(
+          iv_id = is_message-id iv_code = 'ENHO_WRITE_ERROR'
+          iv_message = lx_write->get_text( ) ).
+        RETURN.
+    ENDTRY.
+
+    DATA(lv_o) = '{'.
+    DATA(lv_c) = '}'.
+    DATA(lv_count) = lines( lt_elements ).
+    DATA(lv_json) = |{ lv_o }"enhancement":"{ lv_enhname }","elements":{ lv_count }{ lv_c }|.
+    rs_response = VALUE #( id = is_message-id success = abap_true data = lv_json ).
+  ENDMETHOD.
+
+  METHOD write_enho_worker.
+    DATA ls_message TYPE zif_vsp_service=>ty_message.
+    DATA ls_response TYPE zif_vsp_service=>ty_response.
+    DATA lo_service TYPE REF TO zcl_vsp_rfc_service.
+    DATA(lv_o) = '{'.
+    DATA(lv_c) = '}'.
+    ls_message-id = 'worker'.
+    ls_message-action = 'writeEnhancementSource'.
+    ls_message-params = |{ lv_o }"enhancement":"{ iv_enhname }","source_base64":"{ iv_source_b64 }","transport":"{ iv_transport }"{ lv_c }|.
+
+    gv_enho_worker_mode = abap_true.
+    CREATE OBJECT lo_service.
+    ls_response = lo_service->handle_write_enho_source( ls_message ).
+    gv_enho_worker_mode = abap_false.
+    IF ls_response-success = abap_false.
+      MESSAGE ls_response-error TYPE 'X'.
+    ENDIF.
   ENDMETHOD.
 
 ENDCLASS.

@@ -116,19 +116,26 @@ func (c *Client) UnlockObject(ctx context.Context, objectURL string, lockHandle 
 	return nil
 }
 
-// effectiveLockTransport preserves an explicit caller transport and otherwise
-// reuses the correlation number returned by SAP for this lock. The resulting
-// value is fed through the ordinary mutation safety gate before any write.
-func (c *Client) effectiveLockTransport(lockHandle, requested string) string {
-	if requested != "" {
-		return requested
-	}
+// effectiveLockTransport reuses the correlation number returned by SAP for
+// this lock. If the caller supplied a different request, fail closed: sending
+// the PUT with a request that disagrees with the lock can leave a partial
+// object or a method locked in another request.
+func (c *Client) effectiveLockTransport(lockHandle, requested string) (string, error) {
+	requested = strings.ToUpper(strings.TrimSpace(requested))
 	if value, ok := c.lockTransports.Load(lockHandle); ok {
 		if corrNr, ok := value.(string); ok {
-			return corrNr
+			corrNr = strings.ToUpper(strings.TrimSpace(corrNr))
+			if requested != "" && corrNr != "" && requested != corrNr {
+				return "", fmt.Errorf(
+					"transport mismatch for lock: caller requested %s but SAP locked the object in %s; aborting before mutation",
+					requested, corrNr)
+			}
+			if corrNr != "" {
+				return corrNr, nil
+			}
 		}
 	}
-	return ""
+	return requested, nil
 }
 
 // --- Update Source Operations ---
@@ -138,7 +145,11 @@ func (c *Client) effectiveLockTransport(lockHandle, requested string) string {
 // lockHandle is required (from LockObject)
 // transport is optional (for transportable objects)
 func (c *Client) UpdateSource(ctx context.Context, objectSourceURL string, source string, lockHandle string, transport string) error {
-	transport = c.effectiveLockTransport(lockHandle, transport)
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 	// Unified mutation policy gate (op type + package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
 		Op:        OpUpdate,
@@ -161,7 +172,7 @@ func (c *Client) UpdateSource(ctx context.Context, objectSourceURL string, sourc
 		contentType = "application/*"
 	}
 
-	_, err := c.transport.Request(ctx, objectSourceURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, objectSourceURL, &RequestOptions{
 		Method:      http.MethodPut,
 		Query:       params,
 		Body:        []byte(source),
@@ -894,7 +905,11 @@ func escapeXML(s string) string {
 // lockHandle is required (from LockObject)
 // transport is optional (for transportable objects)
 func (c *Client) DeleteObject(ctx context.Context, objectURL string, lockHandle string, transport string) error {
-	transport = c.effectiveLockTransport(lockHandle, transport)
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 	// Unified mutation policy gate (op type + package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
 		Op:        OpDelete,
@@ -911,7 +926,7 @@ func (c *Client) DeleteObject(ctx context.Context, objectURL string, lockHandle 
 		params.Set("corrNr", transport)
 	}
 
-	_, err := c.transport.Request(ctx, objectURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, objectURL, &RequestOptions{
 		Method:   http.MethodDelete,
 		Query:    params,
 		Stateful: true, // Lock handles are session-specific — must match the session that acquired the lock (issue #88)
@@ -1016,7 +1031,11 @@ func GetClassIncludeSourceURL(className string, includeType ClassIncludeType) st
 // Supports namespaced classes.
 func (c *Client) CreateTestInclude(ctx context.Context, className string, lockHandle string, transport string) error {
 	className = strings.ToUpper(className)
-	transport = c.effectiveLockTransport(lockHandle, transport)
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 
 	// Unified mutation policy gate (op type + parent class package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
@@ -1041,7 +1060,7 @@ func (c *Client) CreateTestInclude(ctx context.Context, className string, lockHa
 
 	// URL encode for namespaced objects
 	includesURL := fmt.Sprintf("/sap/bc/adt/oo/classes/%s/includes", url.PathEscape(className))
-	_, err := c.transport.Request(ctx, includesURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, includesURL, &RequestOptions{
 		Method:      http.MethodPost,
 		Query:       params,
 		Body:        []byte(body),
@@ -1073,7 +1092,11 @@ func (c *Client) GetClassInclude(ctx context.Context, className string, includeT
 // Requires a lock on the parent class.
 func (c *Client) UpdateClassInclude(ctx context.Context, className string, includeType ClassIncludeType, source string, lockHandle string, transport string) error {
 	sourceURL := GetClassIncludeSourceURL(className, includeType)
-	transport = c.effectiveLockTransport(lockHandle, transport)
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 
 	// Unified mutation policy gate (op type + package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
@@ -1091,7 +1114,7 @@ func (c *Client) UpdateClassInclude(ctx context.Context, className string, inclu
 		params.Set("corrNr", transport)
 	}
 
-	_, err := c.transport.Request(ctx, sourceURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, sourceURL, &RequestOptions{
 		Method:      http.MethodPut,
 		Query:       params,
 		Body:        []byte(source),

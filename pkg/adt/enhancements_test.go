@@ -265,9 +265,13 @@ ENDENHANCEMENT.`
 type stubRFCSourceFetcher struct {
 	sourceLines []string
 	err         error
+	writeErr    error
 
-	readCalls []string // program names the prod code asked for
-	closeFn   func()
+	readCalls      []string // program names the prod code asked for
+	writeName      string
+	writeSource    string
+	writeTransport string
+	closeFn        func()
 }
 
 func (s *stubRFCSourceFetcher) CallRFC(ctx context.Context, function string, params map[string]string) (*RFCResult, error) {
@@ -282,11 +286,83 @@ func (s *stubRFCSourceFetcher) ReadSource(ctx context.Context, program string) (
 	return s.sourceLines, s.err
 }
 
+func (s *stubRFCSourceFetcher) WriteEnhancementSource(ctx context.Context, enhancement, source, transport string) error {
+	s.writeName = enhancement
+	s.writeSource = source
+	s.writeTransport = transport
+	if s.writeErr == nil {
+		s.sourceLines = strings.Split(source, "\n")
+	}
+	return s.writeErr
+}
+
 func (s *stubRFCSourceFetcher) Close() error {
 	if s.closeFn != nil {
 		s.closeFn()
 	}
 	return nil
+}
+
+func TestWriteEnhancementUpdateByRef_WritesAndVerifiesActiveSource(t *testing.T) {
+	const source = "ENHANCEMENT 1 ZSYNTHETIC_ENHO.\n  DATA lv_marker TYPE string VALUE 'SYNTHETIC'.\nENDENHANCEMENT."
+	stub := &stubRFCSourceFetcher{sourceLines: []string{
+		"ENHANCEMENT 1.",
+		"  DATA lv_marker TYPE string VALUE 'BEFORE'.",
+		"ENDENHANCEMENT.",
+	}}
+	client := &Client{rfcFetcherFactory: func(ctx context.Context) (rfcSourceFetcher, error) {
+		return stub, nil
+	}}
+	ref := &EnhancementRef{
+		Name:        "ZSYNTHETIC_ENHO",
+		Kind:        EnhancementKind("XH"),
+		URI:         "/sap/bc/adt/enhancements/enhoxh/zsynthetic_enho",
+		PackageName: "$TMP",
+		EnhInclude:  "ZSYNTHETIC_ENHO===============E",
+	}
+
+	result, err := client.writeEnhancementUpdateByRef(context.Background(), ref, source, "")
+	if err != nil {
+		t.Fatalf("writeEnhancementUpdateByRef returned error: %v", err)
+	}
+	if !result.Success || result.Activation == nil || !result.Activation.Success {
+		t.Fatalf("expected verified success, got: %+v", result)
+	}
+	if stub.writeName != ref.Name || stub.writeSource != source || stub.writeTransport != "" {
+		t.Fatalf("unexpected writer call: name=%q source=%q transport=%q", stub.writeName, stub.writeSource, stub.writeTransport)
+	}
+	if len(stub.readCalls) != 2 || stub.readCalls[0] != ref.EnhInclude || stub.readCalls[1] != ref.EnhInclude {
+		t.Fatalf("expected preflight and post-write active read-back from %q, got %#v", ref.EnhInclude, stub.readCalls)
+	}
+}
+
+func TestGetEnhancementTransportOwner_ResolvesParentRequest(t *testing.T) {
+	mock := &queryRoutedMock{
+		byPathBody: map[string]string{
+			"/sap/bc/adt/discovery":      "OK",
+			"/sap/bc/adt/core/discovery": "OK",
+		},
+		byDdicEntityKeyBody: map[string]string{
+			"E071": dataPreviewBody([]string{"TRKORR"}, [][]string{{"NPLK900078"}}),
+			"E070": dataPreviewBody([]string{"TRKORR", "STRKORR"}, [][]string{{"NPLK900078", "NPLK900075"}}),
+		},
+	}
+	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
+
+	task, request, err := client.getEnhancementTransportOwner(context.Background(), "ZSYNTHETIC_ENHO")
+	if err != nil {
+		t.Fatalf("getEnhancementTransportOwner returned error: %v", err)
+	}
+	if task != "NPLK900078" || request != "NPLK900075" {
+		t.Fatalf("unexpected CTS owner: task=%q request=%q", task, request)
+	}
+	if !transportMatchesCTSOwner("NPLK900075", task, request) || !transportMatchesCTSOwner("NPLK900078", task, request) {
+		t.Fatal("parent request and owning task should both be accepted")
+	}
+	if transportMatchesCTSOwner("NPLK900076", task, request) {
+		t.Fatal("unrelated request should be rejected")
+	}
 }
 
 // TestGetEnhancement_FallsBackToRFC: classic ECC, both REST source URLs 404,
