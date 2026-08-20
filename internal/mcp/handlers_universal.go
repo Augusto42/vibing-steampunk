@@ -19,7 +19,7 @@ func (s *Server) registerUniversalTool() {
 		mcp.WithDescription(`SAP ABAP development: read/edit/create/test/analyze/debug objects on a live SAP system.
 
 common target types: CLAS, PROG, INTF, FUNC, FUGR, DDLS, TABL, DEVC, BDEF, SRVD
-actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, help
+actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, help
 some actions (analyze, test, debug, system, help) use params only — no target needed.
 
 SAP(action="read", target="CLAS ZCL_TEST")  — source + dependency context
@@ -28,10 +28,14 @@ SAP(action="edit", target="CLAS ZCL_TEST", params={"source": "..."})  — auto l
 SAP(action="edit", target="CLAS ZCL_TEST", params={"method": "X", "source": "METHOD x.\nENDMETHOD."})
 SAP(action="search", target="ZCL_*")
 SAP(action="analyze", params={"type": "check_boundaries", "package": "$ZDEV"})
+SAP(action="rfc", params={"op":"info"}) — classic RFC to the same system (gateway, not ADT)
+SAP(action="rfc", target="Z_DOUBLE", params={"op":"call","args":{"N":21}}) — call any RFC-enabled FM
+SAP(action="rfc", target="STFC_CONNECTION") — describe an FM interface (JSON Schema)
+  rfc ops: info, ping, describe, call, search, read_table; destination overrides: host, sysnr, port, user
 SAP(action="help") — full docs; SAP(action="help", target="tips") — best practices`),
 		mcp.WithString("action",
 			mcp.Required(),
-			mcp.Description("Action to perform: read, edit, create, delete, search, query, grep, test, analyze, debug, system, help"),
+			mcp.Description("Action to perform: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, help"),
 		),
 		mcp.WithString("target",
 			mcp.Description("Target object as 'TYPE NAME' (e.g. 'CLAS ZCL_TEST', 'PROG ZREPORT'). Some actions don't need a target."),
@@ -90,6 +94,7 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeReportAction,
 		s.routeInstallAction,
 		s.routeSystemAction,
+		s.routeRFCAction,
 		s.routeDumpsAction,
 		s.routeTracesAction,
 		s.routeSQLTraceAction,
