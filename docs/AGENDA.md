@@ -89,7 +89,12 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
       group; no underscore straight after `Z`, per this landscape's convention).
 - [ ] `vsp-debugd` — a daemon owning a pinned `rfc.Session`, with the short-lived
       MCP/CLI calls talking to it; revives the disabled debugger tools.
-- [ ] abapGit over RFC (`Z_ABAPGIT_SERIALIZE_PACKAGE` already returns a real ZIP).
+- [x] abapGit over RFC — `vsp rfc export <PACKAGE>` serializes a package to an
+      abapGit ZIP with one call to abapGit's own `Z_ABAPGIT_SERIALIZE_PACKAGE`,
+      replacing the `vsp export` → APC WebSocket → `ZCL_VSP_GIT_SERVICE` →
+      `cl_abap_zip` chain. Needs abapGit on the system and no vsp helper at all.
+      Verified: `Z_BADI_CHECK` → a 10 KB archive with `.abapgit.xml` and `src/*`.
+      (Deserialize has no RFC entry point; that would need a Z wrapper.)
 - [x] `vsp rfc probe` — fast system fingerprint in about a second: release, kernel,
       database, code page and Unicode, installed components from CVERS, ZADT_VSP and
       abapGit presence, and — the part ADT cannot answer — whether *this* user is
