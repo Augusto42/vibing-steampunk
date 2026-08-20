@@ -113,6 +113,28 @@ inline, with --file, or on stdin; values are coerced to each parameter's type.`,
 	},
 }
 
+var rfcProbeCmd = &cobra.Command{
+	Use:   "probe",
+	Short: "Fingerprint the system over RFC (release, components, helpers, authorizations)",
+	Long: `Gather what you want to know before trusting a system with real work: what it
+is, which components are installed, whether the vsp/abapGit helpers are present, and
+which function modules this user is actually authorized to call — the last of which
+ADT cannot answer. Read-only: nothing is executed or written.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return withRFCDest(cmd, func(ctx context.Context, c *rfc.Client, dest saprfc.Params) error {
+			probe, err := saprfc.RunProbe(ctx, c, dest)
+			if err != nil {
+				return err
+			}
+			if format, _ := cmd.Flags().GetString("format"); format == "json" {
+				return emitRFC(probe)
+			}
+			fmt.Print(probe.Text())
+			return nil
+		})
+	},
+}
+
 var rfcSearchCmd = &cobra.Command{
 	Use:   "search <pattern>",
 	Short: "Find RFC-enabled function modules (name mask, * wildcard)",
@@ -164,6 +186,13 @@ var rfcReadTableCmd = &cobra.Command{
 
 // withRFC resolves the RFC destination for the selected system and runs fn.
 func withRFC(cmd *cobra.Command, fn func(context.Context, *rfc.Client) error) error {
+	return withRFCDest(cmd, func(ctx context.Context, c *rfc.Client, _ saprfc.Params) error {
+		return fn(ctx, c)
+	})
+}
+
+// withRFCDest is withRFC for callers that also need the resolved destination.
+func withRFCDest(cmd *cobra.Command, fn func(context.Context, *rfc.Client, saprfc.Params) error) error {
 	params, err := resolveSystemParams(cmd)
 	if err != nil {
 		return err
@@ -201,7 +230,7 @@ func withRFC(cmd *cobra.Command, fn func(context.Context, *rfc.Client) error) er
 		return fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
 	}
 	defer c.Close(ctx)
-	return fn(ctx, c)
+	return fn(ctx, c, dest)
 }
 
 func emitRFC(v any) error {
@@ -242,6 +271,7 @@ func init() {
 	rfcReadTableCmd.Flags().String("fields", "", "comma-separated column list")
 	rfcReadTableCmd.Flags().Int("top", 0, "maximum rows (0 = all)")
 
-	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
+	rfcProbeCmd.Flags().String("format", "text", "Output format: text or json")
+	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
 	rootCmd.AddCommand(rfcCmd)
 }
