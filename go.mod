@@ -9,7 +9,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/mattn/go-sqlite3 v1.14.32
-	github.com/oisee/open-rfc-go v0.0.0-20260820180047-69e910f680a4
+	github.com/oisee/open-rfc-go v0.0.0-20260820192317-5001c01cfe8a
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
 	github.com/tetratelabs/wazero v1.11.0
