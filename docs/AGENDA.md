@@ -1,0 +1,103 @@
+# Agenda — what to do next
+
+A working backlog distilled from three studies done on 2026-08-20, kept short on
+purpose: each line says what to do, why, and where. The studies themselves hold the
+evidence — [`design/pr-issue-triage.md`](design/pr-issue-triage.md) (19 open PRs, 47
+issues), [`design/fork-survey.md`](design/fork-survey.md) (107 forks), and, for the
+RFC track, [`design/rfc-opportunities.md`](design/rfc-opportunities.md) and
+[`design/rfc-debugger-feasibility.md`](design/rfc-debugger-feasibility.md).
+
+Status key: **[ ]** open · **[x]** done · **[~]** in progress.
+
+## Now — small, high value
+
+- [x] **Authenticate vsp's own HTTP transport.** `ServeHTTP` served the Streamable HTTP
+  endpoint bare — no API key, no `Origin` check — so a localhost bind was exploitable by
+  DNS rebinding and a `0.0.0.0` bind exposed the whole ADT tool surface unauthenticated.
+  Fixed in `internal/mcp/server.go` (API key with a constant-time compare, `Origin`/`Host`
+  validation, health endpoint). `marianfoo`'s fork has a fuller version worth taking
+  later (RFC 9728 protected-resource metadata).
+- [x] **Make `go test ./...` green on a clean checkout.** `pkg/ctxcomp/analyzer_test.go`
+  and `benchmark_live_test.go` dial a live SAP system and fail with 401; they now carry
+  `//go:build integration`, matching `pkg/adt/integration_test.go`.
+- [x] **Bump `open-rfc-go`.** Picks up nested-structure support (`.INCLUDE`d and
+  `STRU`/`TTYP` parameters now describe and call), pinned sessions, 32-bit builds.
+- [ ] **Add PR CI** (`.github/workflows/ci.yml`: build, vet, test, lint). Nothing has
+  merged since April and no PR has been reviewed; without CI there is no cheap signal.
+- [ ] **Fix `parseActivationResult`.** It parses nothing, so *every* activation reports
+  success — silent data loss for the caller. (fork survey, Tier 0)
+
+## Next — correctness, then the merge train
+
+- [ ] **Tier 0 bugs from the fork survey** (~1.5 days total): CSRF `HEAD`→`GET` fallback
+  (four forks fixed this independently; BASIS 740 / ECC EhP7 are unusable without it),
+  WebSocket ignoring `HTTP_PROXY`, redirect/session hardening.
+- [ ] **Merge train** (maintainer decision, not an agent's): `#128, #126, #120, #107,
+  #149` are clean and independent → then `#152`; `#125` before `#108` (they collide in
+  `workflows_deploy.go`); `#148` before `#150`; `#145`; `#121`.
+  ⚠️ `#106` carries a stray closing reference to issue `#2` — remove it before merging.
+- [ ] **Message classes are unwritable** — `#162/#159/#160/#161`: the edit switch in
+  `handlers_source.go` omits `MSAG`; `WriteMessageClassTexts` is registered without its
+  `texts` argument, so the tool cannot be called at all; `MessageClass` has no `XMLName`,
+  so the PUT body marshals as `<MessageClass>`.
+- [ ] **Close with an explanation:** `#151` (obsolete — the old `CallRFC` forced every
+  parameter through `map[string]string`; the typed RFC path handles structured tables),
+  `#138` (110 files for what `#106` does in three), `#130` (silently disables four
+  ZADT_VSP service domains), `#139` (contained in `#121`).
+
+## Authentication — harvest from forks
+
+Findings sat mostly on non-default branches. Licences are MIT throughout, but the DCO
+means **inviting the author to submit** beats copying for the larger pieces.
+
+- [ ] **macOS Keychain mTLS** (`Edgars-Ralfs-Dunis`, `feat/macos-keychain-client-cert`) —
+  the best of the lot: per-handshake certificate resolution, issuer-CN fleet selection,
+  the private key never leaves the keychain, and a deliberate `MaxVersion=TLS1.2` pin
+  because NetWeaver 7.50's ICM drops TLS 1.3 client-cert handshakes. Fix the non-darwin
+  build (`LoadKeychainClientCertByIssuers` missing from `keychain_other.go`) first.
+- [ ] **Native reentrance-ticket SSO** (`BurnerPat`) — system browser + `MYSAPSSO2`
+  exchange, 908 lines with tests; better than the current chromedp path and handles MFA.
+- [ ] **OIDC / JWT bearer + principal propagation** (`marianfoo`) — the only such stack;
+  reimplement on a real JWT library, and keep one key and cookie jar per session rather
+  than regenerating them per request (which breaks stateful locks).
+- [ ] **OAuth2 / XSUAA / BTP destinations / Cloud Connector** (`Prolls`) — the only work
+  in this area; its `Proxy-Authorization` is sent as a request header, which does not
+  authenticate an HTTPS `CONNECT` tunnel — fix before adopting.
+- [ ] Open a crediting issue for each of the four authors above; several are active.
+
+## RFC track
+
+- [x] Classic RFC in vsp: `vsp rfc` CLI and `SAP(action="rfc")`; released in v2.40.0.
+- [x] Debugger over RFC **proven end to end** — `TPDAPI_TEST_DEBUGGER` (RFC-enabled
+  dynamic dispatcher) runs attach, stepping, line breakpoints, run-to-line, variable and
+  locals reads, all in seconds, with no ZADT_VSP, no WebSocket and no deployed ABAP.
+- [ ] **`Z_VSP_DBG_*` facade** — the test harness proves the API is reachable but only
+  runs fixed scenarios; the facade exposes the same TPDA calls as parameterised
+  operations (attach *this* debuggee, step *now*, read *these* variables).
+- [ ] **`vsp-debugd` session holder** — a daemon owning a pinned `rfc.Session` (state is
+  proven to persist: a pinned session re-locks its own enqueue while another connection
+  gets `FOREIGN_LOCK`), with the short-lived MCP/CLI calls talking to it. This is what
+  revives the currently disabled debugger tools.
+- [ ] **Use the pinned session in vsp** — `internal/mcp/handlers_rfc.go` still opens and
+  closes a client per call, so `rfc.Client.Pin` (already pinned in `go.mod`) is unused.
+- [ ] **abapGit over RFC** — `Z_ABAPGIT_SERIALIZE_PACKAGE` is RFC-enabled and returns a
+  real ZIP; it replaces the `vsp export` → APC WebSocket → `cl_abap_zip` chain with one
+  call. (Note `vsp install abapgit` is currently a no-op: both embedded ZIPs are 0 bytes.)
+- [ ] **`vsp rfc probe`** — a fast system fingerprint ADT cannot produce:
+  `RFC_SIMULATE_AUTH_CHECK` ("will this tool work for this user?" without executing),
+  CVERS/installed components, kernel, unicode, ZADT_VSP and abapGit presence.
+- [ ] **Reports and jobs over RFC** (`SUBST_START_REPORT_IN_BATCH`, `BAPI_XBP_*`, spool
+  reads) — unblocks `#55`/`#113`, which are no longer an architectural limit.
+- [ ] **ADT over RFC, natively** — `berndeplo`'s Java sidecar documents the
+  `SADT_REST_RFC_ENDPOINT` wire contract, which would let vsp work where ICF/HTTP is
+  closed. Strategically the biggest item here.
+
+## open-rfc-go
+
+- [ ] **Take `pkg/adt/landscape.go`** (from the fork survey): `SAPUILandscape.xml` →
+  hosts, message servers, SAProuter strings, SNC partner names, plus cross-platform
+  CommonCryptoLib discovery. Drops in almost unchanged and feeds `Destination.Router`.
+- [ ] Never expose `SXPG_COMMAND_EXECUTE` as a tool (OS command execution; the probing
+  user is authorized for it).
+- [ ] Remaining roadmap: `rfcgen` (DDIC → typed Go structs), observability hooks, the
+  generating "conscious" server, tRFC/qRFC, SNC.
