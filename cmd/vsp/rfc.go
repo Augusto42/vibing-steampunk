@@ -135,6 +135,35 @@ ADT cannot answer. Read-only: nothing is executed or written.`,
 	},
 }
 
+var rfcExportCmd = &cobra.Command{
+	Use:   "export <PACKAGE>",
+	Short: "Serialize a package to an abapGit ZIP over RFC",
+	Long: `Serialize an ABAP package into an abapGit ZIP with a single RFC call to
+abapGit's own Z_ABAPGIT_SERIALIZE_PACKAGE. Needs abapGit installed on the system;
+it needs no vsp helper, and no HTTP.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out, _ := cmd.Flags().GetString("output")
+		if out == "" {
+			out = strings.ToLower(strings.TrimPrefix(args[0], "$")) + ".zip"
+		}
+		opts := saprfc.ExportOptions{}
+		opts.FolderLogic, _ = cmd.Flags().GetString("folder-logic")
+		opts.MainLanguageOnly, _ = cmd.Flags().GetBool("main-lang-only")
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			zip, err := saprfc.ExportPackage(ctx, c, args[0], opts)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(out, zip, 0o644); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", out, len(zip))
+			return nil
+		})
+	},
+}
+
 var rfcSearchCmd = &cobra.Command{
 	Use:   "search <pattern>",
 	Short: "Find RFC-enabled function modules (name mask, * wildcard)",
@@ -272,6 +301,9 @@ func init() {
 	rfcReadTableCmd.Flags().Int("top", 0, "maximum rows (0 = all)")
 
 	rfcProbeCmd.Flags().String("format", "text", "Output format: text or json")
-	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
+	rfcExportCmd.Flags().StringP("output", "o", "", "Write the ZIP here (default: <package>.zip)")
+	rfcExportCmd.Flags().String("folder-logic", "", "abapGit folder logic: FULL or PREFIX")
+	rfcExportCmd.Flags().Bool("main-lang-only", false, "Serialize the main language only")
+	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcExportCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
 	rootCmd.AddCommand(rfcCmd)
 }
