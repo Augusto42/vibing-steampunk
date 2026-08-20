@@ -60,6 +60,12 @@ release:
   github:
     owner: oisee
     name: vibing-steampunk
+  # The binaries embed open-rfc-go, which is Apache-2.0: section 4 requires the
+  # licence and the notice to travel with any distribution. The archives are bare
+  # binaries, so they ride along as release assets.
+  extra_files:
+    - glob: LICENSE
+    - glob: NOTICE
   draft: false
   # Automatically mark as pre-release if version contains -rc, -beta, -alpha
   prerelease: auto

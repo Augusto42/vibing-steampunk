@@ -134,15 +134,24 @@ func (c *Client) WriteMessageClassTexts(ctx context.Context, name, lang string, 
 		return err
 	}
 
-	// Build XML body
-	mc := MessageClass{
-		Name:     name,
-		Messages: texts,
+	// Build the XML body in the shape ADT actually serves and expects: a
+	// namespaced <mc:messageClass> root whose messages carry mc:msgno/mc:msgtext
+	// as ATTRIBUTES. MessageClass itself is the read model — Go's encoding/xml
+	// cannot express prefixed names for writing and namespace-agnostic matching
+	// for reading in one struct — so the request has its own type.
+	mc := messageClassWrite{
+		XMLNSmc:      "http://www.sap.com/adt/MessageClass",
+		XMLNSadtcore: "http://www.sap.com/adt/core",
+		Name:         name,
+	}
+	for _, t := range texts {
+		mc.Messages = append(mc.Messages, messageWrite{Number: t.Number, Text: t.Text})
 	}
 	body, err := xml.Marshal(mc)
 	if err != nil {
 		return fmt.Errorf("marshal message class XML: %w", err)
 	}
+	body = append([]byte(xml.Header), body...)
 
 	path := fmt.Sprintf("/sap/bc/adt/messageclass/%s", url.PathEscape(strings.ToLower(name)))
 
@@ -290,4 +299,21 @@ func (c *Client) CompareObjectLanguages(ctx context.Context, objectSourceURL, so
 	}
 
 	return comparison, nil
+}
+
+// messageClassWrite is the request body for updating a message class. ADT serves
+// and accepts <mc:messageClass> with the messages' number and text as attributes;
+// marshalling the read model produced a bare <MessageClass> that the server could
+// not interpret.
+type messageClassWrite struct {
+	XMLName      xml.Name       `xml:"mc:messageClass"`
+	XMLNSmc      string         `xml:"xmlns:mc,attr"`
+	XMLNSadtcore string         `xml:"xmlns:adtcore,attr"`
+	Name         string         `xml:"adtcore:name,attr"`
+	Messages     []messageWrite `xml:"mc:messages"`
+}
+
+type messageWrite struct {
+	Number string `xml:"mc:msgno,attr"`
+	Text   string `xml:"mc:msgtext,attr"`
 }

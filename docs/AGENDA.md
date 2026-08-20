@@ -41,12 +41,19 @@ checkout passes `go test ./...`; activation failures surface as failures.
 
 *Theme: the bugs that make vsp look broken on systems we do not test on.*
 
-- [ ] CSRF `HEAD` → `GET` fallback (BASIS 740 / ECC EhP7 answer 400 to the HEAD probe,
-      making vsp unusable there; four forks fixed this independently).
-- [ ] WebSocket path ignores `HTTP_PROXY`.
 - [ ] Redirect and session hardening (the remaining Tier 0 items in the fork survey).
-- [ ] Message classes are unwritable — `#162/#159/#160/#161` (three distinct root
-      causes, all confirmed by reading the code).
+- [x] Message classes are unwritable — `#162/#159/#160/#161`: three root causes, all
+      fixed. The edit switch omitted `MSAG`; `WriteMessageClassTexts` was registered
+      without its `texts` argument, so the tool could not be called at all; and the
+      request marshalled the read model into a bare `<MessageClass>` while ADT serves
+      and expects a namespaced `<mc:messageClass>` whose messages carry `mc:msgno`
+      and `mc:msgtext` as attributes (confirmed against the live system).
+- [x] CSRF `HEAD` → `GET` fallback.
+- [x] WebSocket path ignores `HTTP_PROXY`.
+- [x] Ship `LICENSE` and `NOTICE` with the release binaries — they embed
+      open-rfc-go, which is Apache-2.0, and section 4 requires the licence and
+      notice to travel with a distribution. vsp stays MIT: Apache-2.0 is permissive,
+      not copyleft, so depending on it does not change vsp's own licence.
 - [ ] **(maintainer)** Merge train: `#128, #126, #120, #107, #149` → `#152`;
       `#125` before `#108`; `#148` before `#150`; `#145`; `#121`. Remove the stray
       closing reference to `#2` from `#106` first.

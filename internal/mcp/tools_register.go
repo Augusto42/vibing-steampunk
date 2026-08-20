@@ -2348,6 +2348,18 @@ func (s *Server) registerI18NTools(shouldRegister func(string) bool) {
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for $TMP objects)"),
 			),
+			mcp.WithArray("texts",
+				mcp.Required(),
+				mcp.Description(`Messages to write: [{"number":"001","text":"Order & created"}]`),
+				mcp.Items(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"number": map[string]any{"type": "string", "description": "Three-digit message number"},
+						"text":   map[string]any{"type": "string", "description": "Message text for this language"},
+					},
+					"required": []string{"number", "text"},
+				}),
+			),
 		), s.handleWriteMessageClassTexts)
 	}
 
