@@ -161,8 +161,10 @@ func (s *Server) rfcClientFor(ctx context.Context, params map[string]any) (*open
 
 // rfcKeepAliveInterval is how often an idle shared connection is pinged. SAP
 // gateways and work processes drop conversations that go quiet, and an MCP
-// session can sit idle for a long time between a user's questions.
-const rfcKeepAliveInterval = 5 * time.Minute
+// session can sit idle for a long time between a user's questions. One minute is
+// deliberately conservative: an RFC_PING is a few hundred bytes, far cheaper than
+// the logon a dropped connection would cost.
+const rfcKeepAliveInterval = time.Minute
 
 // startRFCKeepAlive pings the shared connection while it is idle, so the next
 // tool call does not pay for a fresh logon (or fail outright). It exits once the
