@@ -29,6 +29,16 @@ type SystemConfig struct {
 	CookieFile   string `json:"cookie_file,omitempty"`   // Path to Netscape-format cookie file
 	CookieString string `json:"cookie_string,omitempty"` // Inline cookie string
 
+	// Classic RFC (open-rfc-go) settings. The host defaults to the URL's host and
+	// the gateway port to 3300 + system number; set rfc_port to override directly.
+	// Credentials default to the RFC environment (SAP_USER/SAP_PASSWORD), then to
+	// this system's user/password.
+	RFCHost     string `json:"rfc_host,omitempty"`
+	RFCSysnr    string `json:"rfc_sysnr,omitempty"`
+	RFCPort     int    `json:"rfc_port,omitempty"`
+	RFCUser     string `json:"rfc_user,omitempty"`
+	RFCPassword string `json:"rfc_password,omitempty"`
+
 	// Optional safety settings per system
 	ReadOnly        bool     `json:"read_only,omitempty"`
 	AllowedPackages []string `json:"allowed_packages,omitempty"`
@@ -125,6 +135,25 @@ func (c *SystemsConfig) GetSystem(name string) (*SystemConfig, error) {
 		}
 	} else {
 		sys.TransportAttribute = strings.ToUpper(strings.TrimSpace(sys.TransportAttribute))
+	}
+
+	// Resolve RFC credentials: VSP_<SYSTEM>_RFC_PASSWORD, then the RFC
+	// environment (SAP_USER/SAP_PASSWORD) used by the open-rfc-go tooling.
+	if sys.RFCPassword == "" {
+		envKey := fmt.Sprintf("VSP_%s_RFC_PASSWORD", strings.ToUpper(name))
+		if pwd := os.Getenv(envKey); pwd != "" {
+			sys.RFCPassword = pwd
+		}
+	}
+	if sys.RFCPassword == "" {
+		if pwd := os.Getenv("SAP_PASSWORD"); pwd != "" {
+			sys.RFCPassword = pwd
+		}
+	}
+	if sys.RFCUser == "" {
+		if u := os.Getenv("SAP_USER"); u != "" {
+			sys.RFCUser = u
+		}
 	}
 
 	// Resolve cache from env if not set in config
