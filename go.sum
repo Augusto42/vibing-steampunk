@@ -47,6 +47,8 @@ github.com/oisee/open-rfc-go v0.0.0-20260820180047-69e910f680a4 h1:MaDgYURDAf0KI
 github.com/oisee/open-rfc-go v0.0.0-20260820180047-69e910f680a4/go.mod h1:ymKpeVFBsjAHn/YF/zk1d7z+MkRVrEO2Ckqa2RKGD6c=
 github.com/oisee/open-rfc-go v0.0.0-20260820192317-5001c01cfe8a h1:zGCPceAR+xs5u3rKxAt3nEhtDbeO0Z3+D0q8QxRRHuI=
 github.com/oisee/open-rfc-go v0.0.0-20260820192317-5001c01cfe8a/go.mod h1:ymKpeVFBsjAHn/YF/zk1d7z+MkRVrEO2Ckqa2RKGD6c=
+github.com/oisee/open-rfc-go v0.0.0-20260820210256-6b0fd4a541ec h1:ZHa/uIwd4HUmnKqsN4/kKYvWepd2HbdqGDQwlT5Azeg=
+github.com/oisee/open-rfc-go v0.0.0-20260820210256-6b0fd4a541ec/go.mod h1:ymKpeVFBsjAHn/YF/zk1d7z+MkRVrEO2Ckqa2RKGD6c=
 github.com/orisano/pixelmatch v0.0.0-20220722002657-fb0b55479cde h1:x0TT0RDC7UhAVbbWWBzr41ElhJx5tXPWkIHA2HWPRuw=
 github.com/orisano/pixelmatch v0.0.0-20220722002657-fb0b55479cde/go.mod h1:nZgzbfBr3hhjoZnS66nKrHmduYNpc34ny7RK4z5/HM0=
 github.com/pelletier/go-toml/v2 v2.2.4 h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4=
