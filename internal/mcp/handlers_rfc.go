@@ -23,6 +23,8 @@ import (
 //
 //	SAP(action="rfc", params={"op":"info"})                       — RFC_SYSTEM_INFO
 //	SAP(action="rfc", params={"op":"ping"})                       — RFC_PING
+//	SAP(action="rfc", params={"op":"probe"})                      — system fingerprint:
+//	    release, components, helper presence, and what this user may call
 //	SAP(action="rfc", target="BAPI_USER_*", params={"op":"search"})
 //	SAP(action="rfc", target="STFC_CONNECTION")                   — describe (default)
 //	SAP(action="rfc", target="Z_DOUBLE", params={"op":"call","args":{"N":21}})
@@ -70,6 +72,16 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 			return nil, true, err
 		}
 		return rfcResult(r.Get("RFCSI_EXPORT"))
+	case "probe":
+		dest, derr := s.rfcDestination(params)
+		if derr != nil {
+			return nil, true, derr
+		}
+		probe, perr := saprfc.RunProbe(ctx, c, dest)
+		if perr != nil {
+			return nil, true, perr
+		}
+		return rfcResult(probe)
 	case "ping":
 		if _, err := c.Call(ctx, "RFC_PING", nil); err != nil {
 			return nil, true, err
@@ -127,7 +139,7 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 		}
 		return rfcResult(rows)
 	}
-	return nil, true, fmt.Errorf("unknown rfc op %q (info, ping, describe, call, search, read_table)", op)
+	return nil, true, fmt.Errorf("unknown rfc op %q (info, ping, probe, describe, call, search, read_table)", op)
 }
 
 // rfcClientFor returns a client for this call and a release function. Calls
@@ -210,6 +222,20 @@ func (s *Server) dropSharedRFC(ctx context.Context) {
 // dialRFC resolves the destination for this server's system, honouring per-call
 // overrides and the RFC settings of the default .vsp.json system.
 func (s *Server) dialRFC(ctx context.Context, params map[string]any) (*openrfc.Client, error) {
+	dest, err := s.rfcDestination(params)
+	if err != nil {
+		return nil, err
+	}
+	c, err := saprfc.Open(ctx, dest)
+	if err != nil {
+		return nil, fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
+	}
+	return c, nil
+}
+
+// rfcDestination resolves where an RFC call goes: this server's system, the RFC
+// settings of the default .vsp.json system, and any per-call override.
+func (s *Server) rfcDestination(params map[string]any) (saprfc.Params, error) {
 	in := saprfc.Input{
 		URL:      s.config.BaseURL,
 		User:     s.config.Username,
@@ -238,15 +264,7 @@ func (s *Server) dialRFC(ctx context.Context, params map[string]any) (*openrfc.C
 	in.UserFlag = getStringParam(params, "user")
 	in.PortFlag = intParam(params, "port", 0)
 
-	dest, err := saprfc.Resolve(in)
-	if err != nil {
-		return nil, err
-	}
-	c, err := saprfc.Open(ctx, dest)
-	if err != nil {
-		return nil, fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
-	}
-	return c, nil
+	return saprfc.Resolve(in)
 }
 
 func rfcResult(v any) (*mcp.CallToolResult, bool, error) {

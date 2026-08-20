@@ -90,8 +90,12 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
 - [ ] `vsp-debugd` — a daemon owning a pinned `rfc.Session`, with the short-lived
       MCP/CLI calls talking to it; revives the disabled debugger tools.
 - [ ] abapGit over RFC (`Z_ABAPGIT_SERIALIZE_PACKAGE` already returns a real ZIP).
-- [ ] `vsp rfc probe` — fast system fingerprint (`RFC_SIMULATE_AUTH_CHECK`, CVERS,
-      kernel, unicode, ZADT_VSP and abapGit presence).
+- [x] `vsp rfc probe` — fast system fingerprint in about a second: release, kernel,
+      database, code page and Unicode, installed components from CVERS, ZADT_VSP and
+      abapGit presence, and — the part ADT cannot answer — whether *this* user is
+      authorized to call each function module vsp depends on
+      (`RFC_SIMULATE_AUTH_CHECK`, which decides without executing anything). Also
+      exposed as `SAP(action="rfc", params={"op":"probe"})`.
 - [ ] Reports and jobs over RFC — unblocks `#55` / `#113`.
 - [ ] Investigate ADT over RFC (`SADT_REST_RFC_ENDPOINT`) — vsp where ICF is closed.
 
