@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/oisee/open-rfc-go/rfc"
 	"github.com/oisee/vibing-steampunk/pkg/config"
@@ -164,6 +165,69 @@ it needs no vsp helper, and no HTTP.`,
 	},
 }
 
+var rfcRunCmd = &cobra.Command{
+	Use:   "run <REPORT>",
+	Short: "Run an ABAP report as a background job over RFC",
+	Long: `Schedule a report as a background job (SUBST_START_REPORT_IN_BATCH), optionally
+wait for it to finish, and optionally fetch its spool. This is the thing the ADT
+WebSocket path cannot do — APC forbids SUBMIT — and it needs no helper on the system.
+
+  vsp rfc run RSPARAM --wait 60
+  vsp rfc run ZMY_REPORT -p P_WERKS=1000 -p S_MATNR=M1 --wait 120 --spool`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		raw, _ := cmd.Flags().GetStringArray("param")
+		var params []saprfc.ReportParam
+		for _, kv := range raw {
+			name, value, found := strings.Cut(kv, "=")
+			if !found {
+				return fmt.Errorf("parameter %q must be NAME=VALUE", kv)
+			}
+			params = append(params, saprfc.ReportParam{Name: name, Low: value})
+		}
+		jobName, _ := cmd.Flags().GetString("job-name")
+		waitSecs, _ := cmd.Flags().GetInt("wait")
+		wantSpool, _ := cmd.Flags().GetBool("spool")
+
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			run, err := saprfc.RunReport(ctx, c, args[0], jobName, params, time.Duration(waitSecs)*time.Second)
+			if err != nil {
+				return err
+			}
+			if wantSpool && run.Status == "F" {
+				spool, serr := saprfc.ReadSpool(ctx, c, run.JobName, run.JobCount)
+				if serr != nil {
+					fmt.Fprintln(os.Stderr, "spool unavailable:", serr)
+				} else {
+					run.Spool = spool
+				}
+			}
+			return emitRFC(run)
+		})
+	},
+}
+
+var rfcSpoolCmd = &cobra.Command{
+	Use:   "spool <JOBNAME> <JOBCOUNT>",
+	Short: "Read a background job's spool list over RFC",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		step, _ := cmd.Flags().GetInt("step")
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			out, err := saprfc.ReadSpoolStep(ctx, c, args[0], args[1], step)
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				fmt.Fprintln(os.Stderr, "the job produced no spool list")
+				return nil
+			}
+			fmt.Print(out)
+			return nil
+		})
+	},
+}
+
 var rfcSearchCmd = &cobra.Command{
 	Use:   "search <pattern>",
 	Short: "Find RFC-enabled function modules (name mask, * wildcard)",
@@ -304,6 +368,11 @@ func init() {
 	rfcExportCmd.Flags().StringP("output", "o", "", "Write the ZIP here (default: <package>.zip)")
 	rfcExportCmd.Flags().String("folder-logic", "", "abapGit folder logic: FULL or PREFIX")
 	rfcExportCmd.Flags().Bool("main-lang-only", false, "Serialize the main language only")
-	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcExportCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
+	rfcRunCmd.Flags().StringArrayP("param", "p", nil, "Selection parameter NAME=VALUE (repeatable)")
+	rfcRunCmd.Flags().String("job-name", "", "Background job name (default: VSP_<REPORT>)")
+	rfcRunCmd.Flags().Int("wait", 0, "Seconds to wait for the job to finish (0 = do not wait)")
+	rfcRunCmd.Flags().Bool("spool", false, "Fetch the spool list once the job has finished")
+	rfcSpoolCmd.Flags().Int("step", 1, "Job step number")
+	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcExportCmd, rfcRunCmd, rfcSpoolCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
 	rootCmd.AddCommand(rfcCmd)
 }

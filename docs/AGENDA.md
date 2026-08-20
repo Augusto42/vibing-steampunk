@@ -101,7 +101,14 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
       authorized to call each function module vsp depends on
       (`RFC_SIMULATE_AUTH_CHECK`, which decides without executing anything). Also
       exposed as `SAP(action="rfc", params={"op":"probe"})`.
-- [ ] Reports and jobs over RFC — unblocks `#55` / `#113`.
+- [x] Reports and jobs over RFC — `vsp rfc run <REPORT>` schedules a report as a
+      background job through the XBP BAPIs, optionally waits for it and fetches its
+      spool; `vsp rfc spool <JOB> <COUNT>` reads any job's spool. This unblocks
+      `#55`/`#113`: the APC ban on SUBMIT does not apply over RFC. Note
+      `SUBST_START_REPORT_IN_BATCH` is the obvious call but fails with
+      BATCH_SCHEDULING_FAILED on this system even with SAP_ALL — XBP takes an
+      explicit target server and works. Verified: a job reached status F, and a
+      real spool list was read back.
 - [ ] Investigate ADT over RFC (`SADT_REST_RFC_ENDPOINT`) — vsp where ICF is closed.
 
 **Done when:** a breakpoint can be set, hit and inspected from an MCP client without
