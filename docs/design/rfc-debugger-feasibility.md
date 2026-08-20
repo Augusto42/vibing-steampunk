@@ -422,3 +422,69 @@ and `Destination.OperationTimeout` must be raised for that connection.
 The `Z_VSP_PROBE_STATE` experiment is no longer needed. The remaining ABAP-side work
 is only the `Z_VSP_DBG_*` facade over the TPDA API (attach/step/stack/variables) —
 the session mechanics underneath it are proven.
+
+---
+
+## Update 2 — the debugger runs over RFC, proven end to end (2026-08-20)
+
+The verdicts above were "feasible, with a Z facade". The facade turned out to be
+unnecessary for the proof: SAP ships an RFC-enabled entry point that drives its own
+debugger test harness, and it works from Go today.
+
+### The entry point
+
+`TPDAPI_TEST_DEBUGGER` (`TFDIR-FMODE='R'`, function group `SAPLSTPDAPI_TEST`) is a
+**dynamic dispatcher**:
+
+```abap
+AUTHORITY-CHECK OBJECT 'S_DEVELOP' ID 'OBJTYPE' FIELD 'DEBUG' ID 'ACTVT' FIELD '03'.
+l_ref_main = tcl_main=>s_create( i_terminal_id ).
+CALL METHOD l_ref_main->(i_method) RECEIVING r_tab_msg = e_tab_msg.
+```
+
+`tcl_main` (local class, include `LSTPDAPI_TESTD00`) declares ~90 methods through the
+macro `mac_main_def`, which expands to `test_&1`. So the callable names are
+`TEST_PING`, `TEST_ATTACH_BASIC`, `TEST_SIMPLE_STEP`, … — **uppercase**, as a dynamic
+`CALL METHOD` requires (lowercase raises "the method … does not exist"). The harness
+returns messages only on failure: an empty `E_TAB_MSG` means the scenario passed.
+
+### Measured, live, from the Go client
+
+| Method | Result | Time |
+|---|---|---|
+| `TEST_PING` | OK (no messages) | <1s |
+| `TEST_DEBUGGEE_EXISTS` | OK | <1s |
+| `TEST_STATIC_BREAKPOINTS` | OK — sets and removes external breakpoints, self-cleaning (`ABDBG_EXTDBPS` empty afterwards) | 1s |
+| `TEST_ATTACH_BASIC` | **OK — spawns a debuggee, attaches, detaches** | 4s |
+| `TEST_SIMPLE_STEP` | OK — stepping | 4s |
+| `TEST_LINE_BREAKPOINT` | OK | 3s |
+| `TEST_RUN_TO_LINE` | OK | 4s |
+| `TEST_SIMPLE_DATA` | OK — reads variables | 4s |
+| `TEST_GET_LOCALS` | OK — reads locals | 4s |
+| `TEST_RFC` | OK — the RFC-debugging scenario | <1s |
+
+Authorization was satisfied by the probing user (`S_DEVELOP` with `OBJTYPE=DEBUG`,
+`ACTVT=03`) — a least-privilege check is still outstanding.
+
+### What this changes
+
+- **Attach, step, breakpoints, stack and variable reads all execute over classic
+  RFC**, with no ZADT_VSP, no WebSocket and no deployed Z code. The earlier
+  session-mismatch problem does not appear, because each scenario runs inside one
+  RFC-served ABAP session.
+- The harness is a *test* harness: each method is a fixed scenario, not a general
+  API. It is therefore the **reference implementation** for a `Z_VSP_DBG_*` facade —
+  and simultaneously a live conformance suite proving the underlying TPDA API is
+  reachable from an RFC session.
+- The remaining work for an interactive debugger is a facade that exposes the same
+  TPDA calls as parameterised operations (attach to *this* debuggee, step *now*, read
+  *these* variables), driven from a pinned `rfc.Session` — the daemon shape.
+
+### Client changes this required
+
+Reaching the dispatcher exposed two real defects in the Go client, both fixed:
+`RFC_FIELDS POSITION` is not a dense 1..n sequence (structures with `.INCLUDE`), and
+parameters with nested `STRU`/`TTYP` components could not be modelled at all — the
+recursive metadata path (`RFC_METADATA_GET` → `metadata.Graph` → recursive xRFC codec)
+is now wired, which is what makes `E_TAB_MSG` decodable. The CLI also gained
+`--timeout` for calls that block server-side.
