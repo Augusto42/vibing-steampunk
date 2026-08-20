@@ -116,7 +116,10 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 		}
 		where := "FUNCNAME LIKE '" + like + "'"
 		if all, ok := getBoolParam(params, "all"); !ok || !all {
-			where += " AND FMODE = 'R'"
+			// 'R' and 'X' are both remote-enabled; 'X' additionally marks the
+			// interface basXML-capable, which SAP sets on every FM with
+			// deep/nested parameters. See pkg/saprfc/adt.go.
+			where += " AND FMODE IN ( 'R', 'X' )"
 		}
 		rows, err := saprfc.ReadTable(ctx, c, "TFDIR", where, []string{"FUNCNAME", "PNAME"}, intParam(params, "top", 100))
 		if err != nil {

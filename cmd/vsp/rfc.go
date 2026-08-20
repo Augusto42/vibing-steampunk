@@ -114,6 +114,64 @@ inline, with --file, or on stdin; values are coerced to each parameter's type.`,
 	},
 }
 
+var rfcADTCmd = &cobra.Command{
+	Use:   "adt <METHOD> <URI>",
+	Short: "Send an ADT REST request through the classic-RFC tunnel (no HTTP)",
+	Long: `Tunnel an ADT REST request over classic RFC, via SAP's own
+SADT_REST_RFC_ENDPOINT. The request reaches the same handlers the ICF nodes under
+/sap/bc/adt/ serve, so this works on systems whose HTTP port is closed entirely.
+
+The status line and headers go to stderr, the body to stdout, so a body can be
+piped or redirected as it stands.
+
+  vsp rfc adt GET /sap/bc/adt/discovery
+  vsp rfc adt GET /sap/bc/adt/programs/programs/RSUSR000/source/main -H Accept=text/plain
+
+No CSRF token is fetched and no session is kept, so this is a read-only door:
+use ADT over HTTP for stateful, token-protected flows.`,
+	Args: cobra.ExactArgs(2),
+	// A 4xx/5xx from ADT is a result, not a usage mistake: report it and exit
+	// non-zero without dumping the flag list over the response body.
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		req := saprfc.ADTRequest{Method: args[0], URI: args[1]}
+		raw, _ := cmd.Flags().GetStringArray("header")
+		for _, kv := range raw {
+			name, value, found := strings.Cut(kv, "=")
+			if !found {
+				return fmt.Errorf("header %q must be NAME=VALUE", kv)
+			}
+			req.Headers = append(req.Headers, saprfc.ADTHeader{Name: name, Value: value})
+		}
+		if body, _ := cmd.Flags().GetString("body"); body != "" {
+			b, err := os.ReadFile(body)
+			if err != nil {
+				return err
+			}
+			req.Body = b
+		}
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			res, err := saprfc.CallADT(ctx, c, req)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "%s %d %s\n", res.Version, res.Status, res.ReasonPhrase)
+			for _, h := range res.Headers {
+				fmt.Fprintf(os.Stderr, "%s: %s\n", h.Name, h.Value)
+			}
+			fmt.Fprintf(os.Stderr, "(%d bytes)\n", len(res.Body))
+			if out, _ := cmd.Flags().GetString("output"); out != "" {
+				return os.WriteFile(out, res.Body, 0o644)
+			}
+			_, err = os.Stdout.Write(res.Body)
+			if err == nil && res.Status >= 400 {
+				return fmt.Errorf("ADT returned HTTP %d %s", res.Status, res.ReasonPhrase)
+			}
+			return err
+		})
+	},
+}
+
 var rfcProbeCmd = &cobra.Command{
 	Use:   "probe",
 	Short: "Fingerprint the system over RFC (release, components, helpers, authorizations)",
@@ -239,7 +297,12 @@ var rfcSearchCmd = &cobra.Command{
 		}
 		where := "FUNCNAME LIKE '" + like + "'"
 		if all, _ := cmd.Flags().GetBool("all"); !all {
-			where += " AND FMODE = 'R'"
+			// TFDIR-FMODE has two remote values: 'R' is a remote-enabled module
+			// and 'X' a remote-enabled module whose interface is basXML-capable,
+			// which SAP sets on every FM with deep/nested parameters —
+			// SADT_REST_RFC_ENDPOINT among them. Filtering on 'R' alone hides
+			// them and makes a callable module look local.
+			where += " AND FMODE IN ( 'R', 'X' )"
 		}
 		top, _ := cmd.Flags().GetInt("top")
 		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
@@ -356,6 +419,10 @@ func init() {
 	rfcCmd.PersistentFlags().Int("port", 0, "RFC gateway port (default: 3300 + system number)")
 	rfcCmd.PersistentFlags().String("rfc-user", "", "RFC logon user (default: rfc_user / SAP_USER / the system's user)")
 
+	rfcADTCmd.Flags().StringArrayP("header", "H", nil, "Request header NAME=VALUE (repeatable)")
+	rfcADTCmd.Flags().String("body", "", "Read the request body from a file")
+	rfcADTCmd.Flags().StringP("output", "o", "", "Write the response body here instead of stdout")
+
 	rfcCallCmd.Flags().String("file", "", "read JSON parameters from a file")
 	rfcCallCmd.Flags().Bool("stdin", false, "read JSON parameters from stdin")
 	rfcSearchCmd.Flags().Bool("all", false, "include function modules that are not RFC-enabled")
@@ -373,6 +440,6 @@ func init() {
 	rfcRunCmd.Flags().Int("wait", 0, "Seconds to wait for the job to finish (0 = do not wait)")
 	rfcRunCmd.Flags().Bool("spool", false, "Fetch the spool list once the job has finished")
 	rfcSpoolCmd.Flags().Int("step", 1, "Job step number")
-	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcExportCmd, rfcRunCmd, rfcSpoolCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
+	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcADTCmd, rfcExportCmd, rfcRunCmd, rfcSpoolCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
 	rootCmd.AddCommand(rfcCmd)
 }
