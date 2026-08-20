@@ -71,8 +71,9 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
 
 *Theme: turn today's proof-of-concept into features.*
 
-- [ ] `Z_VSP_DBG_*` facade — parameterised attach / step / stack / variables, modelled
-      on the test harness that already works over RFC.
+- [ ] `ZADT_DEBUG_*` facade — parameterised attach / step / stack / variables, modelled
+      on the test harness that already works over RFC (extends the existing ZADT_DEBUG
+      group; no underscore straight after `Z`, per this landscape's convention).
 - [ ] `vsp-debugd` — a daemon owning a pinned `rfc.Session`, with the short-lived
       MCP/CLI calls talking to it; revives the disabled debugger tools.
 - [ ] abapGit over RFC (`Z_ABAPGIT_SERIALIZE_PACKAGE` already returns a real ZIP).
@@ -152,9 +153,15 @@ means **inviting the author to submit** beats copying for the larger pieces.
 - [x] Debugger over RFC **proven end to end** — `TPDAPI_TEST_DEBUGGER` (RFC-enabled
   dynamic dispatcher) runs attach, stepping, line breakpoints, run-to-line, variable and
   locals reads, all in seconds, with no ZADT_VSP, no WebSocket and no deployed ABAP.
-- [ ] **`Z_VSP_DBG_*` facade** — the test harness proves the API is reachable but only
+- [ ] **`ZADT_DEBUG_*` facade** — the test harness proves the API is reachable but only
   runs fixed scenarios; the facade exposes the same TPDA calls as parameterised
-  operations (attach *this* debuggee, step *now*, read *these* variables).
+  operations (attach *this* debuggee, step *now*, read *these* variables). Extend the
+  **existing** `ZADT_DEBUG` function group rather than creating a new object: it already
+  ships with `vsp install zadt-vsp`, and `ZADT_00_RFC_TEST` is the precedent for an
+  RFC-enabled FM in that family. Naming follows the convention in this landscape —
+  no underscore straight after `Z` (`ZADT_DEBUG`, `ZADT_00_RFC`, `ZLLM_04`, `ZTST`), so
+  the modules are `ZADT_DEBUG_ATTACH`, `ZADT_DEBUG_STEP`, `ZADT_DEBUG_STACK`,
+  `ZADT_DEBUG_VARS`.
 - [ ] **`vsp-debugd` session holder** — a daemon owning a pinned `rfc.Session` (state is
   proven to persist: a pinned session re-locks its own enqueue while another connection
   gets `FOREIGN_LOCK`), with the short-lived MCP/CLI calls talking to it. This is what
