@@ -97,7 +97,7 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 		if all, ok := getBoolParam(params, "all"); !ok || !all {
 			where += " AND FMODE = 'R'"
 		}
-		rows, err := s.rfcReadTable(ctx, c, "TFDIR", where, []string{"FUNCNAME", "PNAME"}, intParam(params, "top", 100))
+		rows, err := saprfc.ReadTable(ctx, c, "TFDIR", where, []string{"FUNCNAME", "PNAME"}, intParam(params, "top", 100))
 		if err != nil {
 			return nil, true, err
 		}
@@ -112,7 +112,7 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 				fields = append(fields, strings.ToUpper(fmt.Sprint(f)))
 			}
 		}
-		rows, err := s.rfcReadTable(ctx, c, strings.ToUpper(name), getStringParam(params, "where"), fields, intParam(params, "top", 0))
+		rows, err := saprfc.ReadTable(ctx, c, strings.ToUpper(name), getStringParam(params, "where"), fields, intParam(params, "top", 0))
 		if err != nil {
 			return nil, true, err
 		}
@@ -161,44 +161,6 @@ func (s *Server) rfcClient(ctx context.Context, params map[string]any) (*openrfc
 		return nil, fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
 	}
 	return c, nil
-}
-
-// rfcReadTable runs RFC_READ_TABLE and splits each row into a column->value map.
-func (s *Server) rfcReadTable(ctx context.Context, c *openrfc.Client, table, where string, fields []string, top int) ([]map[string]string, error) {
-	in := openrfc.Params{"QUERY_TABLE": table, "DELIMITER": "|"}
-	if top > 0 {
-		in["ROWCOUNT"] = int64(top)
-	}
-	if where != "" {
-		in["OPTIONS"] = []map[string]any{{"TEXT": where}}
-	}
-	if len(fields) > 0 {
-		fs := make([]map[string]any, 0, len(fields))
-		for _, f := range fields {
-			fs = append(fs, map[string]any{"FIELDNAME": f})
-		}
-		in["FIELDS"] = fs
-	}
-	r, err := c.Call(ctx, "RFC_READ_TABLE", in)
-	if err != nil {
-		return nil, err
-	}
-	var cols []string
-	for _, fr := range r.Table("FIELDS") {
-		cols = append(cols, strings.TrimSpace(fmt.Sprint(fr["FIELDNAME"])))
-	}
-	var out []map[string]string
-	for _, dr := range r.Table("DATA") {
-		parts := strings.Split(fmt.Sprint(dr["WA"]), "|")
-		row := map[string]string{}
-		for i, col := range cols {
-			if i < len(parts) {
-				row[col] = strings.TrimRight(parts[i], " ")
-			}
-		}
-		out = append(out, row)
-	}
-	return out, nil
 }
 
 func rfcResult(v any) (*mcp.CallToolResult, bool, error) {

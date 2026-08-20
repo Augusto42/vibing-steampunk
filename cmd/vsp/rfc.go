@@ -128,7 +128,7 @@ var rfcSearchCmd = &cobra.Command{
 		}
 		top, _ := cmd.Flags().GetInt("top")
 		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
-			rows, err := rfcReadTable(ctx, c, "TFDIR", where, []string{"FUNCNAME", "PNAME"}, top)
+			rows, err := saprfc.ReadTable(ctx, c, "TFDIR", where, []string{"FUNCNAME", "PNAME"}, top)
 			if err != nil {
 				return err
 			}
@@ -153,7 +153,7 @@ var rfcReadTableCmd = &cobra.Command{
 			}
 		}
 		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
-			rows, err := rfcReadTable(ctx, c, strings.ToUpper(args[0]), where, fields, top)
+			rows, err := saprfc.ReadTable(ctx, c, strings.ToUpper(args[0]), where, fields, top)
 			if err != nil {
 				return err
 			}
@@ -202,44 +202,6 @@ func withRFC(cmd *cobra.Command, fn func(context.Context, *rfc.Client) error) er
 	}
 	defer c.Close(ctx)
 	return fn(ctx, c)
-}
-
-// rfcReadTable runs RFC_READ_TABLE and splits rows into column->value maps.
-func rfcReadTable(ctx context.Context, c *rfc.Client, table, where string, fields []string, top int) ([]map[string]string, error) {
-	in := rfc.Params{"QUERY_TABLE": table, "DELIMITER": "|"}
-	if top > 0 {
-		in["ROWCOUNT"] = int64(top)
-	}
-	if where != "" {
-		in["OPTIONS"] = []map[string]any{{"TEXT": where}}
-	}
-	if len(fields) > 0 {
-		fs := make([]map[string]any, 0, len(fields))
-		for _, f := range fields {
-			fs = append(fs, map[string]any{"FIELDNAME": f})
-		}
-		in["FIELDS"] = fs
-	}
-	r, err := c.Call(ctx, "RFC_READ_TABLE", in)
-	if err != nil {
-		return nil, err
-	}
-	var cols []string
-	for _, fr := range r.Table("FIELDS") {
-		cols = append(cols, strings.TrimSpace(fmt.Sprint(fr["FIELDNAME"])))
-	}
-	var out []map[string]string
-	for _, dr := range r.Table("DATA") {
-		parts := strings.Split(fmt.Sprint(dr["WA"]), "|")
-		row := map[string]string{}
-		for i, col := range cols {
-			if i < len(parts) {
-				row[col] = strings.TrimRight(parts[i], " ")
-			}
-		}
-		out = append(out, row)
-	}
-	return out, nil
 }
 
 func emitRFC(v any) error {
