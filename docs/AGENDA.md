@@ -9,6 +9,87 @@ RFC track, [`design/rfc-opportunities.md`](design/rfc-opportunities.md) and
 
 Status key: **[ ]** open · **[x]** done · **[~]** in progress.
 
+## Sprints
+
+Work is organised into four sprints. Each has one theme, a definition of done, and
+items small enough to finish; nothing moves to the next sprint until the current
+one's exit criteria hold. Items marked **(maintainer)** need a human decision — an
+agent must not perform them.
+
+### Sprint 1 — Make the project reviewable (½ day) — *in progress*
+
+*Theme: a contributor's patch can be judged in minutes, and the front door is locked.*
+
+- [x] Authenticate the HTTP transport (API key + Origin validation + /health).
+- [x] Gate the live `ctxcomp` tests behind `//go:build integration`.
+- [x] Bump `open-rfc-go` (nested structures, pinned sessions, 32-bit builds).
+- [ ] `.github/workflows/ci.yml` — build, vet, `go test ./...`, lint, on PR and on push.
+- [ ] `parseActivationResult` — it parses nothing, so every activation reports success.
+- [ ] Use the pinned session in `internal/mcp/handlers_rfc.go` (it opens and closes a
+      client per call; `rfc.Client.Pin` is already available in the pinned version).
+
+**Done when:** CI is green on `main` and reports a status on every PR; a clean
+checkout passes `go test ./...`; activation failures surface as failures.
+
+### Sprint 2 — Correctness and the backlog (2–3 days)
+
+*Theme: the bugs that make vsp look broken on systems we do not test on.*
+
+- [ ] CSRF `HEAD` → `GET` fallback (BASIS 740 / ECC EhP7 answer 400 to the HEAD probe,
+      making vsp unusable there; four forks fixed this independently).
+- [ ] WebSocket path ignores `HTTP_PROXY`.
+- [ ] Redirect and session hardening (the remaining Tier 0 items in the fork survey).
+- [ ] Message classes are unwritable — `#162/#159/#160/#161` (three distinct root
+      causes, all confirmed by reading the code).
+- [ ] **(maintainer)** Merge train: `#128, #126, #120, #107, #149` → `#152`;
+      `#125` before `#108`; `#148` before `#150`; `#145`; `#121`. Remove the stray
+      closing reference to `#2` from `#106` first.
+- [ ] **(maintainer)** Close with an explanation: `#151`, `#138`, `#130`, `#139`.
+
+**Done when:** the Tier 0 list is empty, message classes round-trip, and the open-PR
+count is in single digits.
+
+### Sprint 3 — Authentication (3–5 days)
+
+*Theme: stop being basic-auth-only; harvest what the forks already proved.*
+
+- [ ] An auth abstraction both transports can share (`Apply(req)` for HTTP; the RFC
+      side keeps its own logon), so a new method is a plug-in rather than a fork.
+- [ ] macOS Keychain mTLS (`Edgars-Ralfs-Dunis`) — fix the non-darwin build first.
+- [ ] Native reentrance-ticket SSO (`BurnerPat`) — replaces the chromedp path, handles MFA.
+- [ ] OIDC / JWT bearer + principal propagation (`marianfoo`) — reimplement on a real
+      JWT library; one key and cookie jar per session, not per request.
+- [ ] OAuth2 / XSUAA / BTP destinations / Cloud Connector (`Prolls`) — fix the
+      `Proxy-Authorization`-on-`CONNECT` bug before adopting.
+- [ ] **(maintainer)** Open a crediting issue for each author and invite the PR; the
+      DCO makes that better than copying.
+
+**Done when:** vsp authenticates to an on-prem system with a client certificate and to
+a BTP system with OAuth2, both configured from `.vsp.json`.
+
+### Sprint 4 — The RFC platform (1–2 weeks)
+
+*Theme: turn today's proof-of-concept into features.*
+
+- [ ] `Z_VSP_DBG_*` facade — parameterised attach / step / stack / variables, modelled
+      on the test harness that already works over RFC.
+- [ ] `vsp-debugd` — a daemon owning a pinned `rfc.Session`, with the short-lived
+      MCP/CLI calls talking to it; revives the disabled debugger tools.
+- [ ] abapGit over RFC (`Z_ABAPGIT_SERIALIZE_PACKAGE` already returns a real ZIP).
+- [ ] `vsp rfc probe` — fast system fingerprint (`RFC_SIMULATE_AUTH_CHECK`, CVERS,
+      kernel, unicode, ZADT_VSP and abapGit presence).
+- [ ] Reports and jobs over RFC — unblocks `#55` / `#113`.
+- [ ] Investigate ADT over RFC (`SADT_REST_RFC_ENDPOINT`) — vsp where ICF is closed.
+
+**Done when:** a breakpoint can be set, hit and inspected from an MCP client without
+ZADT_VSP, and `vsp` works against a system with HTTP disabled.
+
+### Later (not scheduled)
+
+`landscape.go` harvest into open-rfc-go, `rfcgen`, observability hooks, the generating
+"conscious" server, tRFC/qRFC, SNC.
+
+
 ## Now — small, high value
 
 - [x] **Authenticate vsp's own HTTP transport.** `ServeHTTP` served the Streamable HTTP
