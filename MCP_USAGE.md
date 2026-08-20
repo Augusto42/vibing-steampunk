@@ -484,3 +484,22 @@ flowchart TD
 **Last Updated:** 2025-12-04
 **MCP Server Version:** v2.2.0+
 **Maintained by:** vibing-steampunk project
+
+
+## Classic RFC (`action="rfc"`)
+
+RFC is one more action on the universal `SAP` tool, so the tool space stays a single
+tool. It talks to the same system over the gateway instead of ADT.
+
+```
+SAP(action="rfc", params={"op":"info"})                    RFC_SYSTEM_INFO
+SAP(action="rfc", params={"op":"ping"})                    RFC_PING
+SAP(action="rfc", target="BAPI_USER_*", params={"op":"search"})
+SAP(action="rfc", target="STFC_CONNECTION")                describe (default with a target)
+SAP(action="rfc", target="Z_DOUBLE", params={"op":"call","args":{"N":21}})
+SAP(action="rfc", target="T000", params={"op":"read_table","fields":["MANDT"],"top":5})
+```
+
+Ops: `info`, `ping`, `describe`, `call`, `search`, `read_table`. Destination overrides
+in `params`: `host`, `sysnr`, `port`, `user` — otherwise the host and system number
+come from the configured ADT URL and the gateway is `3300 + sysnr`.

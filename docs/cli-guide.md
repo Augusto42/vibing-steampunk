@@ -2,6 +2,37 @@
 
 **vsp** provides a complete ABAP development toolchain from the terminal. Single binary, 28+ commands, 50+ Lua scripting functions. No SAP GUI, no Eclipse, no IDE required.
 
+## Classic RFC (`vsp rfc`)
+
+Calls RFC-enabled function modules over the SAP gateway using the SDK-free
+[open-rfc-go](https://github.com/oisee/open-rfc-go) client — no NW RFC SDK, no cgo.
+
+| Command | Purpose |
+|---|---|
+| `vsp rfc info` | `RFC_SYSTEM_INFO` — sysid, release, host, database |
+| `vsp rfc ping` | `RFC_PING` connection test |
+| `vsp rfc search '<mask>'` | find RFC-enabled FMs (`--all` includes non-RFC, `--group`, `--top`) |
+| `vsp rfc describe <FM>` | the FM interface as an MCP-tool JSON Schema |
+| `vsp rfc call <FM> '<json>'` | call an FM (`--file`, `--stdin` also accepted) |
+| `vsp rfc read-table <TABLE>` | `RFC_READ_TABLE` (`--where`, `--fields`, `--top`) |
+
+**Destination.** Derived from the selected system: host from its ADT URL, system
+number from the URL port (`80NN`, `443NN`, `5NN00`), gateway port `3300 + sysnr`.
+Override per system in `.vsp.json` with `rfc_host`, `rfc_sysnr`, `rfc_port`, or per
+command with `--rfc-host`, `--sysnr`, `--port`.
+
+**Credentials.** `rfc_user`/`rfc_password` (or `VSP_<SYSTEM>_RFC_PASSWORD`), else
+`SAP_USER`/`SAP_PASSWORD`, else the system's ADT user and password. Use `--rfc-user`
+to override for one call.
+
+```bash
+vsp rfc info
+vsp rfc search 'BAPI_USER_*'
+vsp rfc describe BAPI_USER_GET_DETAIL
+vsp rfc call BAPI_USER_GET_DETAIL '{"USERNAME":"DEVELOPER"}'
+vsp rfc read-table T000 --fields MANDT,MTEXT --top 5
+```
+
 ## Quick Start
 
 ```bash

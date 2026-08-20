@@ -13,6 +13,41 @@
 
 ## Hot Right Now
 
+### Classic RFC — Call Any Function Module, No SAP SDK
+
+vsp now speaks **classic RFC** next to ADT, through the pure-Go, SDK-free
+[open-rfc-go](https://github.com/oisee/open-rfc-go) client — no NW RFC SDK, no native
+library, no cgo. Same system, second protocol: ADT reads and writes code, RFC calls
+the business logic.
+
+```bash
+vsp rfc info                                     # RFC_SYSTEM_INFO (sysid, release, host)
+vsp rfc search 'BAPI_USER_*'                     # find RFC-enabled function modules
+vsp rfc describe STFC_STRUCTURE                  # FM interface as an MCP-tool JSON Schema
+vsp rfc call Z_DOUBLE '{"N":21}'                 # call any FM with JSON parameters
+vsp rfc read-table T000 --fields MANDT,MTEXT     # RFC_READ_TABLE
+```
+
+The destination is derived from the system you already configured: host from the ADT
+URL, system number from its port, gateway port `3300 + sysnr`. Override per system in
+`.vsp.json` (`rfc_host`, `rfc_sysnr`, `rfc_port`) or per command (`--rfc-host`,
+`--sysnr`, `--port`). RFC logon uses `rfc_user`/`rfc_password`, else `SAP_USER`/
+`SAP_PASSWORD`, else the system's own credentials.
+
+In MCP it is one more action on the single `SAP` tool — the tool space stays as small
+as it was:
+
+```
+SAP(action="rfc", params={"op":"info"})
+SAP(action="rfc", target="Z_DOUBLE", params={"op":"call","args":{"N":21}})
+SAP(action="rfc", target="STFC_CONNECTION")      # describe (default with a target)
+SAP(action="rfc", target="T000", params={"op":"read_table","fields":["MANDT"],"top":5})
+```
+
+Types are handled end to end — scalars (incl. STRING/XSTRING, DATE/TIME, packed
+DEC/TIMESTAMP, FLOAT), flat **and deep** structures and tables (xRFC) — and both the
+classic and fast serializations on the wire.
+
 ### Package Analysis Suite
 
 Five analysis commands that answer real questions about your ABAP packages:
@@ -261,6 +296,11 @@ vsp source CLAS ZCL_MY_CLASS --method GET_DATA   # read single method
 vsp context CLAS ZCL_FOO --depth 2               # source + dependency contracts
 vsp analyze ZCL_MY_CLASS                         # 13 lint rules (offline)
 
+# Classic RFC (no SAP SDK)
+vsp rfc info                                     # RFC system info
+vsp rfc call Z_DOUBLE '{"N":21}'                 # call any function module
+vsp rfc describe BAPI_USER_GET_DETAIL            # FM interface as JSON Schema
+
 # Tables & search
 vsp query T000 --top 5                           # query any table
 vsp search "ZCL_*" --type CLAS --max 50          # object search
@@ -290,6 +330,9 @@ See **[CLI Guide](docs/cli-guide.md)** for the complete reference with feature r
 - **Bootstrap from CLI**: `vsp install abapgit` + `vsp install zadt-vsp` — deploy dependencies to SAP systems directly from the command line. No SAP GUI needed.
 
 ## Key Features
+
+- **Classic RFC without the SAP SDK** — `vsp rfc` and the `rfc` action of the `SAP` MCP
+  tool call any RFC-enabled function module over the gateway, in pure Go.
 
 | Feature | Description |
 |---------|-------------|
