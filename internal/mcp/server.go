@@ -3,7 +3,12 @@ package mcp
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,8 +21,8 @@ import (
 // AsyncTask represents a background task status.
 type AsyncTask struct {
 	ID        string      `json:"id"`
-	Type      string      `json:"type"`       // "report", "export", etc.
-	Status    string      `json:"status"`     // "running", "completed", "error"
+	Type      string      `json:"type"`   // "report", "export", etc.
+	Status    string      `json:"status"` // "running", "completed", "error"
 	StartedAt time.Time   `json:"started_at"`
 	EndedAt   *time.Time  `json:"ended_at,omitempty"`
 	Result    interface{} `json:"result,omitempty"`
@@ -26,13 +31,13 @@ type AsyncTask struct {
 
 // Server wraps the MCP server with ADT client.
 type Server struct {
-	mcpServer      *server.MCPServer
-	adtClient      *adt.Client
-	amdpWSClient   *adt.AMDPWebSocketClient   // WebSocket-based AMDP client (ZADT_VSP)
-	debugWSClient  *adt.DebugWebSocketClient  // WebSocket-based debug client (ZADT_VSP)
-	config         *Config                    // Server configuration for session manager creation
-	featureProber  *adt.FeatureProber         // Feature detection system (safety network)
-	featureConfig  adt.FeatureConfig          // Feature configuration
+	mcpServer     *server.MCPServer
+	adtClient     *adt.Client
+	amdpWSClient  *adt.AMDPWebSocketClient  // WebSocket-based AMDP client (ZADT_VSP)
+	debugWSClient *adt.DebugWebSocketClient // WebSocket-based debug client (ZADT_VSP)
+	config        *Config                   // Server configuration for session manager creation
+	featureProber *adt.FeatureProber        // Feature detection system (safety network)
+	featureConfig adt.FeatureConfig         // Feature configuration
 
 	// Async task management
 	asyncTasks   map[string]*AsyncTask
@@ -65,11 +70,11 @@ type Config struct {
 	DisabledGroups string
 
 	// Safety configuration
-	ReadOnly         bool
-	BlockFreeSQL     bool
-	AllowedOps       string
-	DisallowedOps    string
-	AllowedPackages  []string
+	ReadOnly                bool
+	BlockFreeSQL            bool
+	AllowedOps              string
+	DisallowedOps           string
+	AllowedPackages         []string
 	EnableTransports        bool     // Explicitly enable transport management (default: disabled)
 	TransportReadOnly       bool     // Only allow read operations on transports (list, get)
 	AllowedTransports       []string // Whitelist specific transports (supports wildcards like "A4HK*")
@@ -229,9 +234,109 @@ func (s *Server) ServeStdio() error {
 }
 
 // ServeHTTP starts the MCP server as a Streamable HTTP endpoint.
+//
+// The endpoint exposes the whole ADT tool surface under the operator's SAP
+// credentials, so it is guarded twice:
+//
+//   - an API key (VSP_HTTP_API_KEY), compared in constant time. Without it a
+//     bind to anything but a loopback address is refused outright, because an
+//     unauthenticated remote caller would inherit those credentials.
+//   - Origin validation, so a page the operator merely visits cannot drive a
+//     loopback endpoint through DNS rebinding. Requests without an Origin (a
+//     normal API client) pass; a cross-origin browser request does not.
+//
+// GET /health answers without either check, for liveness probes.
 func (s *Server) ServeHTTP(addr string) error {
-	httpServer := server.NewStreamableHTTPServer(s.mcpServer)
-	return httpServer.Start(addr)
+	apiKey := strings.TrimSpace(os.Getenv("VSP_HTTP_API_KEY"))
+	if apiKey == "" && !isLoopbackAddr(addr) {
+		return fmt.Errorf("refusing to serve %s without authentication: set VSP_HTTP_API_KEY (it exposes every ADT tool under your SAP credentials)", addr)
+	}
+	if apiKey == "" {
+		fmt.Fprintf(os.Stderr, "[WARN] HTTP transport on %s has no API key: set VSP_HTTP_API_KEY. Loopback only, and Origin is still validated.\n", addr)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.Handle("/", requireAPIKey(apiKey, validateOrigin(server.NewStreamableHTTPServer(s.mcpServer))))
+
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return httpServer.ListenAndServe()
+}
+
+// requireAPIKey rejects requests without a matching bearer token. An empty key
+// disables the check (only reachable on a loopback bind, see ServeHTTP).
+func requireAPIKey(apiKey string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apiKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		presented := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if presented == "" {
+			presented = r.Header.Get("X-API-Key")
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(apiKey)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="vsp"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// validateOrigin blocks cross-origin browser requests, which is what makes a
+// loopback endpoint immune to DNS rebinding. A request with no Origin header is
+// not a browser page and passes through.
+func validateOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		u, err := url.Parse(origin)
+		if err != nil || !sameHost(u.Host, r.Host) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameHost compares an Origin's host with the request's Host, ignoring a
+// missing port on either side.
+func sameHost(originHost, requestHost string) bool {
+	strip := func(h string) string {
+		if host, _, err := net.SplitHostPort(h); err == nil {
+			return host
+		}
+		return h
+	}
+	return strings.EqualFold(strip(originHost), strip(requestHost))
+}
+
+// isLoopbackAddr reports whether a listen address is bound to loopback only.
+// An empty or wildcard host (":8080", "0.0.0.0:8080", "[::]:8080") is not.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // GetMCPServer returns the underlying MCP server (for custom transport setup).
