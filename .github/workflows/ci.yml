@@ -1,0 +1,69 @@
+name: CI
+
+# Every push to main and every pull request gets a build, vet, test and lint
+# signal. Nothing here talks to a SAP system: the live tests are behind the
+# `integration` build tag and stay out of CI on purpose.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build · vet · test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Also compile the integration-tagged tests, so a live test cannot rot
+      # unnoticed just because CI never runs it.
+      - name: Vet (integration tag)
+        run: go vet -tags integration ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Cross-compile check
+        run: |
+          for target in linux/amd64 linux/386 darwin/arm64 windows/amd64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
+          done
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m

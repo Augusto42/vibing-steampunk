@@ -15,6 +15,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	openrfc "github.com/oisee/open-rfc-go/rfc"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
@@ -38,6 +39,10 @@ type Server struct {
 	config        *Config                   // Server configuration for session manager creation
 	featureProber *adt.FeatureProber        // Feature detection system (safety network)
 	featureConfig adt.FeatureConfig         // Feature configuration
+
+	// Shared classic-RFC client (lazily dialled, reused across tool calls)
+	rfcMu     sync.Mutex
+	rfcShared *openrfc.Client
 
 	// Async task management
 	asyncTasks   map[string]*AsyncTask

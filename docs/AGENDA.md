@@ -16,17 +16,23 @@ items small enough to finish; nothing moves to the next sprint until the current
 one's exit criteria hold. Items marked **(maintainer)** need a human decision — an
 agent must not perform them.
 
-### Sprint 1 — Make the project reviewable (½ day) — *in progress*
+### Sprint 1 — Make the project reviewable (½ day) — ✅ *done*
 
 *Theme: a contributor's patch can be judged in minutes, and the front door is locked.*
 
 - [x] Authenticate the HTTP transport (API key + Origin validation + /health).
 - [x] Gate the live `ctxcomp` tests behind `//go:build integration`.
 - [x] Bump `open-rfc-go` (nested structures, pinned sessions, 32-bit builds).
-- [ ] `.github/workflows/ci.yml` — build, vet, `go test ./...`, lint, on PR and on push.
-- [ ] `parseActivationResult` — it parses nothing, so every activation reports success.
-- [ ] Use the pinned session in `internal/mcp/handlers_rfc.go` (it opens and closes a
-      client per call; `rfc.Client.Pin` is already available in the pinned version).
+- [x] `.github/workflows/ci.yml` — build, vet (both tag sets), `go test ./...`, a
+      four-target cross-compile check, and golangci-lint, on PR and on push to main.
+- [x] `parseActivationResult` — it understood only the wrapped checklist, so when ADT
+      returns `<chkl:messages>` as the document root (the usual shape) a failed
+      activation parsed to nothing and reported success. Both shapes now parse;
+      regression tests cover error, warning and empty responses.
+- [x] Reuse one RFC client across MCP calls (`internal/mcp/handlers_rfc.go` dialled and
+      closed one per call — an RFC logon per tool call). Calls that override the
+      destination still get their own; a dead shared connection is dropped so the next
+      call redials. `rfc.Session` pinning stays for the stateful debugger work.
 
 **Done when:** CI is green on `main` and reports a status on every PR; a clean
 checkout passes `go test ./...`; activation failures surface as failures.
@@ -90,6 +96,11 @@ ZADT_VSP, and `vsp` works against a system with HTTP disabled.
 `landscape.go` harvest into open-rfc-go, `rfcgen`, observability hooks, the generating
 "conscious" server, tRFC/qRFC, SNC.
 
+
+---
+
+*The sections below are the raw notes the sprints were distilled from; the sprint list
+above is the working plan.*
 
 ## Now — small, high value
 

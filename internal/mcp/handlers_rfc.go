@@ -7,6 +7,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -27,7 +28,7 @@ import (
 //	SAP(action="rfc", target="T000", params={"op":"read_table","fields":["MANDT"],"top":5})
 //
 // Destination overrides: params host / sysnr / port / user.
-func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
+func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (result *mcp.CallToolResult, handled bool, rfcErr error) {
 	if action != "rfc" {
 		return nil, false, nil
 	}
@@ -48,11 +49,18 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 		}
 	}
 
-	c, err := s.rfcClient(ctx, params)
+	c, release, err := s.rfcClientFor(ctx, params)
 	if err != nil {
 		return nil, true, err
 	}
-	defer c.Close(ctx)
+	defer release()
+
+	// A dead shared connection must not poison every later call.
+	defer func() {
+		if rfcErr != nil && (errors.Is(rfcErr, openrfc.ErrTransport) || errors.Is(rfcErr, openrfc.ErrClosed)) {
+			s.dropSharedRFC(ctx)
+		}
+	}()
 
 	switch op {
 	case "info":
@@ -121,9 +129,47 @@ func (s *Server) routeRFCAction(ctx context.Context, action, objectType, objectN
 	return nil, true, fmt.Errorf("unknown rfc op %q (info, ping, describe, call, search, read_table)", op)
 }
 
-// rfcClient dials RFC for this server's system, honouring per-call overrides and
-// the RFC settings of the default .vsp.json system.
-func (s *Server) rfcClient(ctx context.Context, params map[string]any) (*openrfc.Client, error) {
+// rfcClientFor returns a client for this call and a release function. Calls
+// without a destination override share one connection pool for the life of the
+// server — an RFC logon per tool call is slow and needless — while a call that
+// overrides host/sysnr/port/user gets its own client, closed on release.
+func (s *Server) rfcClientFor(ctx context.Context, params map[string]any) (*openrfc.Client, func(), error) {
+	overridden := getStringParam(params, "host") != "" || getStringParam(params, "sysnr") != "" ||
+		getStringParam(params, "user") != "" || intParam(params, "port", 0) != 0
+	if overridden {
+		c, err := s.dialRFC(ctx, params)
+		if err != nil {
+			return nil, nil, err
+		}
+		return c, func() { _ = c.Close(ctx) }, nil
+	}
+
+	s.rfcMu.Lock()
+	defer s.rfcMu.Unlock()
+	if s.rfcShared == nil {
+		c, err := s.dialRFC(ctx, params)
+		if err != nil {
+			return nil, nil, err
+		}
+		s.rfcShared = c
+	}
+	return s.rfcShared, func() {}, nil
+}
+
+// dropSharedRFC forgets a shared client whose connection died, so the next call
+// logs on again instead of failing forever.
+func (s *Server) dropSharedRFC(ctx context.Context) {
+	s.rfcMu.Lock()
+	defer s.rfcMu.Unlock()
+	if s.rfcShared != nil {
+		_ = s.rfcShared.Close(ctx)
+		s.rfcShared = nil
+	}
+}
+
+// dialRFC resolves the destination for this server's system, honouring per-call
+// overrides and the RFC settings of the default .vsp.json system.
+func (s *Server) dialRFC(ctx context.Context, params map[string]any) (*openrfc.Client, error) {
 	in := saprfc.Input{
 		URL:      s.config.BaseURL,
 		User:     s.config.Username,
