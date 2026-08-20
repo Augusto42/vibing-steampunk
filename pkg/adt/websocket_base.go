@@ -87,10 +87,7 @@ func (c *BaseWebSocketClient) Connect(ctx context.Context) error {
 	header.Set("Authorization", basicAuth(c.user, c.password))
 
 	// Try 1: Direct Basic Auth (works on most SAP systems)
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 30 * time.Second,
-		TLSClientConfig:  tlsConfig,
-	}
+	dialer := newWebSocketDialer(tlsConfig)
 
 	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
 
@@ -100,9 +97,12 @@ func (c *BaseWebSocketClient) Connect(ctx context.Context) error {
 	if err != nil && resp != nil && resp.StatusCode == http.StatusUnauthorized {
 		jar, _ := cookiejar.New(nil)
 		preAuthClient := &http.Client{
-			Jar:       jar,
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
-			Timeout:   30 * time.Second,
+			Jar: jar,
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+				Proxy:           http.ProxyFromEnvironment,
+			},
+			Timeout: 30 * time.Second,
 		}
 
 		authURL := fmt.Sprintf("%s/sap/bc/adt/core/discovery?sap-client=%s", c.baseURL, c.client)
@@ -408,4 +408,16 @@ func base64Encode(data []byte) string {
 		}
 	}
 	return string(result)
+}
+
+// newWebSocketDialer builds the dialer used for the ZADT_VSP upgrade. It honours
+// HTTP_PROXY/HTTPS_PROXY/NO_PROXY exactly as the ADT HTTP client does — behind a
+// corporate proxy the upgrade used to fail with no hint why, while every plain
+// HTTP call went through.
+func newWebSocketDialer(tlsConfig *tls.Config) websocket.Dialer {
+	return websocket.Dialer{
+		HandshakeTimeout: 30 * time.Second,
+		TLSClientConfig:  tlsConfig,
+		Proxy:            http.ProxyFromEnvironment,
+	}
 }
