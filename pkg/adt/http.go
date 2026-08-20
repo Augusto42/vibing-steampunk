@@ -282,60 +282,81 @@ func (t *Transport) retryRequest(ctx context.Context, path string, opts *Request
 }
 
 // fetchCSRFToken retrieves a CSRF token from the server.
-// Uses /core/discovery with HEAD for optimal performance (~25ms vs ~56s for GET on /discovery)
+//
+// HEAD on /core/discovery is the fast path (milliseconds, against tens of seconds
+// for a GET on /discovery on a slow system). Older releases — BASIS 740, ECC EhP7 —
+// answer that HEAD with 400 and no token at all, which used to make vsp unusable
+// against them, so a missing token falls back to GET. An authentication or
+// authorization failure is reported immediately: retrying cannot help.
 func (t *Transport) fetchCSRFToken(ctx context.Context) error {
-	reqURL, err := t.buildURL("/sap/bc/adt/core/discovery", nil)
+	token, status, err := t.probeCSRFToken(ctx, http.MethodHead)
 	if err != nil {
-		return fmt.Errorf("building URL: %w", err)
+		return err
 	}
-
-	// Use HEAD instead of GET for faster CSRF token fetch (~5s vs ~56s on slow systems)
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, reqURL, nil)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	// Set authentication
-	if t.config.HasBasicAuth() {
-		req.SetBasicAuth(t.config.Username, t.config.Password)
-	}
-	t.addCookies(req)
-	req.Header.Set("X-CSRF-Token", "fetch")
-	req.Header.Set("Accept", "*/*")
-
-	// Set session type header for stateful sessions
-	if t.config.SessionType == SessionStateful {
-		req.Header.Set("X-sap-adt-sessiontype", "stateful")
-	}
-
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("executing request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Drain body to allow connection reuse
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	// Note: HEAD may return 400 but still provides CSRF token in headers
-	// But 401/403 indicates auth failure and won't have a valid token
-
-	token := resp.Header.Get("X-CSRF-Token")
-	if token == "" || token == "Required" {
-		// Provide better error message based on status code
-		switch resp.StatusCode {
+	if !isCSRFToken(token) {
+		switch status {
 		case http.StatusUnauthorized:
 			return fmt.Errorf("authentication failed (401): check username/password")
 		case http.StatusForbidden:
 			return fmt.Errorf("access forbidden (403): check user authorizations")
-		default:
-			return fmt.Errorf("no CSRF token in response (HTTP %d)", resp.StatusCode)
+		}
+		var getStatus int
+		token, getStatus, err = t.probeCSRFToken(ctx, http.MethodGet)
+		if err != nil {
+			return err
+		}
+		if !isCSRFToken(token) {
+			switch getStatus {
+			case http.StatusUnauthorized:
+				return fmt.Errorf("authentication failed (401): check username/password")
+			case http.StatusForbidden:
+				return fmt.Errorf("access forbidden (403): check user authorizations")
+			default:
+				return fmt.Errorf("no CSRF token in response (HEAD %d, GET %d)", status, getStatus)
+			}
 		}
 	}
 
 	t.setCSRFToken(token)
 	return nil
 }
+
+// probeCSRFToken asks /core/discovery for a token with the given method and
+// returns the token (empty when the server did not supply one) and the status.
+func (t *Transport) probeCSRFToken(ctx context.Context, method string) (string, int, error) {
+	reqURL, err := t.buildURL("/sap/bc/adt/core/discovery", nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("building URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("creating request: %w", err)
+	}
+
+	if t.config.HasBasicAuth() {
+		req.SetBasicAuth(t.config.Username, t.config.Password)
+	}
+	t.addCookies(req)
+	req.Header.Set("X-CSRF-Token", "fetch")
+	req.Header.Set("Accept", "*/*")
+	if t.config.SessionType == SessionStateful {
+		req.Header.Set("X-sap-adt-sessiontype", "stateful")
+	}
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+	// Drain the body so the connection can be reused.
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	return resp.Header.Get("X-CSRF-Token"), resp.StatusCode, nil
+}
+
+// isCSRFToken reports whether the header value is an actual token rather than the
+// server's "Required" placeholder.
+func isCSRFToken(v string) bool { return v != "" && v != "Required" }
 
 // buildURL constructs the full URL for an API request.
 // overrideLang, if non-empty, overrides the configured session language for
