@@ -102,3 +102,6 @@ cookie-*
 # Third-party source drops evaluated in place
 quickjs/
 quickjs.zip
+
+# Local scratch, never committed (see .private/README.md)
+.private/
