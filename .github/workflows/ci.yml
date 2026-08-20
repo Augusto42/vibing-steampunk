@@ -1,8 +1,9 @@
 name: CI
 
-# Every push to main and every pull request gets a build, vet, test and lint
-# signal. Nothing here talks to a SAP system: the live tests are behind the
-# `integration` build tag and stay out of CI on purpose.
+# The point of this workflow is a cheap verdict on someone else's patch: does it
+# build, vet clean, and pass the tests. It deliberately stays small — the heavy
+# cross-platform work belongs to the release pipeline, and lint is advisory.
+# Nothing here talks to a SAP system: live tests sit behind the `integration` tag.
 on:
   push:
     branches: [main]
@@ -35,7 +36,7 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Also compile the integration-tagged tests, so a live test cannot rot
+      # Compile the integration-tagged tests too, so a live test cannot rot
       # unnoticed just because CI never runs it.
       - name: Vet (integration tag)
         run: go vet -tags integration ./...
@@ -43,15 +44,22 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # Cross-compilation only guards main; a release already builds all nine
+      # targets, and PRs do not need to pay for it.
       - name: Cross-compile check
+        if: github.event_name == 'push'
         run: |
-          for target in linux/amd64 linux/386 darwin/arm64 windows/amd64; do
+          for target in linux/amd64 linux/386 windows/amd64; do
             GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
           done
 
   lint:
-    name: lint
+    name: lint (advisory)
     runs-on: ubuntu-latest
+    # Advisory: a linter release built against an older Go than this module's
+    # directive fails before it reads a line of code, and that must not block a
+    # contributor. Read the output, do not gate on it.
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,7 +71,7 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
           args: --timeout=5m

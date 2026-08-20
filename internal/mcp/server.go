@@ -40,9 +40,11 @@ type Server struct {
 	featureProber *adt.FeatureProber        // Feature detection system (safety network)
 	featureConfig adt.FeatureConfig         // Feature configuration
 
-	// Shared classic-RFC client (lazily dialled, reused across tool calls)
-	rfcMu     sync.Mutex
-	rfcShared *openrfc.Client
+	// Shared classic-RFC client (lazily dialled, reused across tool calls, and
+	// pinged while idle so a gateway timeout does not kill it)
+	rfcMu       sync.Mutex
+	rfcShared   *openrfc.Client
+	rfcLastUsed time.Time
 
 	// Async task management
 	asyncTasks   map[string]*AsyncTask

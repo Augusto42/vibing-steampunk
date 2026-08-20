@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	openrfc "github.com/oisee/open-rfc-go/rfc"
@@ -152,8 +153,45 @@ func (s *Server) rfcClientFor(ctx context.Context, params map[string]any) (*open
 			return nil, nil, err
 		}
 		s.rfcShared = c
+		s.startRFCKeepAlive()
 	}
+	s.rfcLastUsed = time.Now()
 	return s.rfcShared, func() {}, nil
+}
+
+// rfcKeepAliveInterval is how often an idle shared connection is pinged. SAP
+// gateways and work processes drop conversations that go quiet, and an MCP
+// session can sit idle for a long time between a user's questions.
+const rfcKeepAliveInterval = 5 * time.Minute
+
+// startRFCKeepAlive pings the shared connection while it is idle, so the next
+// tool call does not pay for a fresh logon (or fail outright). It exits once the
+// shared client is gone. Must be called with rfcMu held.
+func (s *Server) startRFCKeepAlive() {
+	go func() {
+		ticker := time.NewTicker(rfcKeepAliveInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.rfcMu.Lock()
+			c := s.rfcShared
+			idle := time.Since(s.rfcLastUsed)
+			s.rfcMu.Unlock()
+			if c == nil {
+				return // the client was dropped; nothing to keep alive
+			}
+			if idle < rfcKeepAliveInterval {
+				continue // a real call kept it warm
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			_, err := c.Call(ctx, "RFC_PING", nil)
+			cancel()
+			if err != nil {
+				// The connection is gone: forget it so the next call redials.
+				s.dropSharedRFC(context.Background())
+				return
+			}
+		}
+	}()
 }
 
 // dropSharedRFC forgets a shared client whose connection died, so the next call
