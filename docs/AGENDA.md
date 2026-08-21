@@ -84,7 +84,7 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
 
 *Theme: turn today's proof-of-concept into features.*
 
-- [ ] `ZADT_DEBUG_*` facade — parameterised attach / step / stack / variables, modelled
+- [x] `ZADT_DEBUG_*` facade — parameterised attach / step / stack / variables, modelled
       on the test harness that already works over RFC (extends the existing ZADT_DEBUG
       group; no underscore straight after `Z`, per this landscape's convention).
 - [ ] `vsp-debugd` — a daemon owning a pinned `rfc.Session`, with the short-lived
@@ -109,7 +109,10 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
       BATCH_SCHEDULING_FAILED on this system even with SAP_ALL — XBP takes an
       explicit target server and works. Verified: a job reached status F, and a
       real spool list was read back.
-- [ ] Investigate ADT over RFC (`SADT_REST_RFC_ENDPOINT`) — vsp where ICF is closed.
+- [x] Investigate ADT over RFC (`SADT_REST_RFC_ENDPOINT`) — vsp where ICF is closed.
+      Done: `vsp rfc adt <METHOD> <URI>`. The blocker was ours — SAP wraps an
+      XSTRING in base64 at 76 columns, and our xRFC decoders rejected the
+      newlines, so every body over 57 bytes failed to decode.
 
 **Done when:** a breakpoint can be set, hit and inspected from an MCP client without
 ZADT_VSP, and `vsp` works against a system with HTTP disabled.

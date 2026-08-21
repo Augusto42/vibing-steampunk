@@ -34,6 +34,35 @@ and with them the message. Failures come back as `E_RC = 4` plus `E_MESSAGE`.
 **pinned** connection (`rfc.Client.Pin`), never through the pool — a pooled call
 lands in a different roll area and the session reference is gone.
 
+## Proven end to end
+
+On A4H, 2026-08-21, in this order:
+
+1. `vsp rfc debug` pins one conversation; `state` twice returns the same `roll`
+   with a rising `calls`, while two calls through the pool return two different
+   `roll` values and `calls = 1` — the pinning is real and the pool is not a
+   substitute.
+2. `bp SAPLZADT_DEBUG/LZADT_DEBUGU01 9` — the breakpoint lands in
+   `ABDBG_EXTDBPS` and reads back from a different session.
+3. `catch 150` blocks; `ZADT_DEBUG_LOOP` is then called **over a second RFC
+   connection**, stops at the breakpoint, and the listener returns it.
+4. The attach reports `procname ZADT_DEBUG_LOOP`, and the stack shows the real
+   RFC entry chain: `%_RFC_START` → `REMOTE_FUNCTION_CALL` → `ZADT_DEBUG_LOOP`.
+5. Three `step over` walk lines 9 → 14 → 15 → 17, the stack following each one.
+6. After `detach` the debuggee runs to completion — `TVARVC ZADT_DEBUG_COUNTER`
+   advanced, so its `UPDATE` and `COMMIT WORK` really executed.
+
+Two things learned there, both fixed:
+
+- **Never hand a TPDAPI table straight to `/UI2/CL_JSON`.** Serialising the raw
+  stack table hangs the call, and since the client is given a long timeout for
+  the blocking listen, the caller sits out its whole RFC timeout with the
+  debuggee still attached. `stack` projects five fields per frame instead.
+- **`detach` kills the conversation.** `END_DEBUGGER` ends the debugger's own
+  ABAP session with the debuggee's, so the transport reports
+  `CM_NO_DATA_RECEIVED` with no reply to read. That is the success case; the
+  driver treats a transport error on detach as "the session is gone".
+
 ## The one manual step: Remote-Enabled
 
 `ZADT_DEBUG_RFC` has to be flagged **Remote-Enabled Module** by hand:
