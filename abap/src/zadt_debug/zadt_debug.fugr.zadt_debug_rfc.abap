@@ -368,6 +368,14 @@ CLASS lcl_dbg IMPLEMENTATION.
     IF go_session IS BOUND.
       RAISE EXCEPTION TYPE cx_tpdapi_failure.
     ENDIF.
+    " A session may only attach once external debugging is activated for it.
+    " LISTEN does that on the way in, but a bare ATTACH — reconnecting to a
+    " debuggee someone else caught, or one found by polling ABDBG_ACTIVATION —
+    " would otherwise fail with a bare CX_TPDAPI_FAILURE.
+    IF gv_activated = abap_false.
+      service( )->activate_session_for_ext_debug( i_ide_user = sy-uname ).
+      gv_activated = abap_true.
+    ENDIF.
     go_session = service( )->attach_debuggee( i_debuggee_id = CONV #( i_debuggee_id ) ).
     gv_debuggee = i_debuggee_id.
 
