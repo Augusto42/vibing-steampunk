@@ -1,8 +1,3 @@
-CLASS zcl_adt_debug DEFINITION
-  PUBLIC
-  FINAL
-  CREATE PUBLIC .
-
 ************************************************************************
 * Debugger facade for the classic-RFC leg of vibing-steampunk.
 *
@@ -13,10 +8,14 @@ CLASS zcl_adt_debug DEFINITION
 * conversation gives exactly that, which is why this facade keeps its
 * state in CLASS-DATA rather than handing ids back to the caller.
 *
-* Interfaces are deliberately split: typed scalars go IN (so nothing on
-* this side has to parse JSON), and results come OUT as one JSON string
-* (so no DDIC structure has to be created for every payload shape).
+* One entry point rather than one module per operation, because the
+* Remote-Enabled flag is the one thing ADT cannot set — so the fewer
+* modules that need it set by hand, the better. Typed scalars go in
+* (nothing here parses JSON), and one JSON string comes out (so no DDIC
+* structure has to be created for every payload shape).
 ************************************************************************
+
+CLASS lcl_dbg DEFINITION FINAL CREATE PRIVATE.
 
   PUBLIC SECTION.
 
@@ -129,7 +128,7 @@ ENDCLASS.
 
 
 
-CLASS zcl_adt_debug IMPLEMENTATION.
+CLASS lcl_dbg IMPLEMENTATION.
 
 
   METHOD touch.
@@ -213,7 +212,7 @@ CLASS zcl_adt_debug IMPLEMENTATION.
     DATA(lv_user) = user( i_request_user ).
     DATA(lo_bp) = CAST if_tpdapi_bp_modify(
       bp_services( lv_user )->create_line_breakpoint(
-        i_main_program = CONV #( to_upper( i_program ) )
+        i_main_program = to_upper( i_program )
         i_line_nr      = i_line ) ).
 
     IF i_condition IS NOT INITIAL.
@@ -234,7 +233,10 @@ CLASS zcl_adt_debug IMPLEMENTATION.
     ls_out-line      = i_line.
     ls_out-user      = lv_user.
     ls_out-condition = i_condition.
-    ls_out-active    = COND #( WHEN lo_bp->is_active( ) IS NOT INITIAL THEN abap_true ELSE abap_false ).
+    " IS_ACTIVE is not among the aliases IF_TPDAPI_BP_MODIFY lifts from
+    " IF_TPDAPI_BP, so it has to be called through the interface.
+    ls_out-active    = COND #( WHEN lo_bp->if_tpdapi_bp~is_active( ) IS NOT INITIAL
+                               THEN abap_true ELSE abap_false ).
     r_json = json( ls_out ).
   ENDMETHOD.
 
@@ -320,14 +322,14 @@ CLASS zcl_adt_debug IMPLEMENTATION.
     ENDIF.
 
     DATA(lo_svc) = service( ).
-    lo_svc->activate_session_for_ext_debug( i_ide_user = CONV #( sy-uname ) ).
+    lo_svc->activate_session_for_ext_debug( i_ide_user = sy-uname ).
     gv_activated = abap_true.
 
     DATA lv_status TYPE string VALUE 'stopped'.
     TRY.
         lo_svc->start_listener_for_user(
           i_request_user = lv_user
-          i_ide_user     = CONV #( sy-uname )
+          i_ide_user     = sy-uname
           i_timeout      = lv_timeout ).
       CATCH cx_abdbg_actext_lis_timeout.
         lv_status = 'timeout'.
@@ -335,7 +337,7 @@ CLASS zcl_adt_debug IMPLEMENTATION.
 
     DATA(lt_debuggees) = lo_svc->get_waiting_debuggees(
       i_request_user = lv_user
-      i_ide_user     = CONV #( sy-uname ) ).
+      i_ide_user     = sy-uname ).
 
     DATA: BEGIN OF ls_out,
             status    TYPE string,
@@ -416,13 +418,10 @@ CLASS zcl_adt_debug IMPLEMENTATION.
 
   METHOD stack.
     touch( ).
-    DATA: BEGIN OF ls_out,
-            debuggee_id TYPE string,
-            frames      TYPE tpda_sys_callstack,
-          END OF ls_out.
-    ls_out-debuggee_id = gv_debuggee.
-    ls_out-frames      = session( )->get_stack_handler( )->get_stack( ).
-    r_json = json( ls_out ).
+    " The stack table's type is internal to the stack handler, so the frames
+    " are serialised on their own and spliced into the envelope by hand.
+    DATA(lv_frames) = json( session( )->get_stack_handler( )->get_stack( ) ).
+    r_json = |\{"debuggee_id":"{ gv_debuggee }","frames":{ lv_frames }\}|.
   ENDMETHOD.
 
 
@@ -433,7 +432,7 @@ CLASS zcl_adt_debug IMPLEMENTATION.
       TRY.
           go_session->get_control_services( )->end_debugger( ).
           lv_ended = abap_true.
-        CATCH cx_tpdapi_failure cx_tpdapi_not_attached ##NO_HANDLER.
+        CATCH cx_tpdapi_failure ##NO_HANDLER.   " NOT_ATTACHED is a subclass
       ENDTRY.
       CLEAR go_session.
     ENDIF.
@@ -457,3 +456,61 @@ CLASS zcl_adt_debug IMPLEMENTATION.
 
 
 ENDCLASS.
+
+
+FUNCTION ZADT_DEBUG_RFC
+  IMPORTING
+    VALUE(i_op) TYPE char20
+    VALUE(i_program) TYPE programm OPTIONAL
+    VALUE(i_line) TYPE i OPTIONAL
+    VALUE(i_user) TYPE xubname OPTIONAL
+    VALUE(i_debuggee_id) TYPE sysuuid_c32 OPTIONAL
+    VALUE(i_kind) TYPE char10 OPTIONAL
+    VALUE(i_timeout) TYPE i DEFAULT 60
+    VALUE(i_condition) TYPE string OPTIONAL
+    VALUE(i_all) TYPE xfeld OPTIONAL
+  EXPORTING
+    VALUE(e_json) TYPE string
+    VALUE(e_rc) TYPE i
+    VALUE(e_message) TYPE string.
+
+  TRY.
+      CASE to_lower( i_op ).
+        WHEN 'state'.
+          e_json = lcl_dbg=>state( ).
+        WHEN 'bp_set'.
+          e_json = lcl_dbg=>bp_set( i_program      = i_program
+                                    i_line         = i_line
+                                    i_request_user = i_user
+                                    i_condition    = i_condition ).
+        WHEN 'bp_list'.
+          e_json = lcl_dbg=>bp_list( i_request_user = i_user ).
+        WHEN 'bp_delete'.
+          e_json = lcl_dbg=>bp_delete( i_program      = i_program
+                                       i_line         = i_line
+                                       i_request_user = i_user
+                                       i_all          = COND #( WHEN i_all IS INITIAL
+                                                                THEN abap_false ELSE abap_true ) ).
+        WHEN 'listen'.
+          e_json = lcl_dbg=>listen( i_request_user = i_user
+                                    i_timeout      = i_timeout ).
+        WHEN 'attach'.
+          e_json = lcl_dbg=>attach( i_debuggee_id = i_debuggee_id ).
+        WHEN 'step'.
+          e_json = lcl_dbg=>step( i_kind = COND #( WHEN i_kind IS INITIAL THEN 'into' ELSE i_kind ) ).
+        WHEN 'stack'.
+          e_json = lcl_dbg=>stack( ).
+        WHEN 'detach'.
+          e_json = lcl_dbg=>detach( ).
+        WHEN OTHERS.
+          e_rc      = 8.
+          e_message = |unknown op '{ i_op }'; use state, bp_set, bp_list, bp_delete, | &&
+                      |listen, attach, step, stack, detach|.
+      ENDCASE.
+
+    CATCH cx_root INTO DATA(lx_error).
+      " An RFC exception would discard the exporting parameters and with them
+      " the message, so failures are reported in E_RC / E_MESSAGE instead.
+      e_rc      = 4.
+      e_message = lx_error->get_text( ).
+  ENDTRY.

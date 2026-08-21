@@ -9,65 +9,91 @@ The diagnosis is in [`docs/design/rfc-debugger-feasibility.md`](../../../docs/de
 In one line: `attach_debuggee( )` hands back an **object reference**, and every
 subsequent operation hangs off it, so attach and step must happen in the same
 ABAP roll area. The WebSocket exists only to provide that roll area. A pinned
-RFC conversation provides it natively — already proven on this landscape, by
-holding an enqueue lock across two calls on one `rfc.Client.Pin` session.
+RFC conversation provides it natively.
 
-## What is here
+## What is deployed
 
-| Object | Kind | Purpose |
+Everything lives in function group **`ZADT_DEBUG`**, package `$ZADT_DEBUG`.
+
+| Module | Source | Purpose |
 |---|---|---|
-| `ZCL_ADT_DEBUG` | class | all the logic; session state lives in `CLASS-DATA` |
-| `ZADT_DEBUG_STATE` | FM (RFC) | roll-area probe: same `roll` + rising `calls` proves the session held |
-| `ZADT_DEBUG_BP_SET` / `_BP_LIST` / `_BP_DEL` | FM (RFC) | external breakpoints — **stateless**, no debuggee needed |
-| `ZADT_DEBUG_LISTEN` | FM (RFC) | blocking listen, returns the waiting debuggees |
-| `ZADT_DEBUG_ATTACH` / `_STEP` / `_STACK` / `_DETACH` | FM (RFC) | the session-bound half |
-| `ZADT_DEBUG_LOOP` | FM (existing) | left as it is — it is the debuggee to aim a breakpoint at |
+| `ZADT_DEBUG_RFC` | `zadt_debug.fugr.zadt_debug_rfc.abap` | the whole facade: local class `lcl_dbg` over `IF_TPDAPI_*`, plus a dispatcher on `I_OP` |
+| `ZADT_DEBUG_STATE` | `zadt_debug.fugr.zadt_debug_state.abap` | roll-area probe on its own module |
+| `ZADT_DEBUG_LOOP` | (pre-existing) | left as it is — it is the debuggee to aim a breakpoint at |
 
-Interfaces are split on purpose: **typed scalars in, one JSON string out**. Nothing
-on the ABAP side parses JSON (`ZADT_VSP`'s regex JSON parser is the component this
-avoids), and no DDIC structure has to be created for every payload shape —
+`I_OP` is one of `state`, `bp_set`, `bp_list`, `bp_delete`, `listen`, `attach`,
+`step`, `stack`, `detach`. Typed scalars go in; one JSON string comes out, so
+nothing on the ABAP side parses JSON (`ZADT_VSP`'s regex JSON parser is the
+component this avoids) and no DDIC structure is needed per payload shape.
 `/UI2/CL_JSON` serialises the TPDAPI tables as they are.
 
-No module raises an RFC exception: an exception discards the exporting parameters
+No RFC exception is ever raised: an exception discards the exporting parameters
 and with them the message. Failures come back as `E_RC = 4` plus `E_MESSAGE`.
 
-## Deploying
+`bp_*` work standalone. `listen`/`attach`/`step`/`stack`/`detach` only work on a
+**pinned** connection (`rfc.Client.Pin`), never through the pool — a pooled call
+lands in a different roll area and the session reference is gone.
 
-The function group `ZADT_DEBUG` and the package `$ZADT_DEBUG` already exist on A4H;
-`ZADT_DEBUG_LOOP` is in the group. So the deployment is: create the class, then add
-nine function modules to the existing group.
+## The one manual step: Remote-Enabled
 
-1. `ZCL_ADT_DEBUG` — global class, package `$ZADT_DEBUG`, source from
-   `zcl_adt_debug.clas.abap`.
-2. Nine function modules in group `ZADT_DEBUG`, each flagged **Remote-Enabled
-   Module**, with the interfaces given in the header comments of
-   `zadt_debug.fugr.abap` and the body from the same file.
+`ZADT_DEBUG_RFC` has to be flagged **Remote-Enabled Module** by hand:
 
-Local (`$`) package, so no transport is involved.
+> SE37 → `ZADT_DEBUG_RFC` → Attributes → Processing Type → Remote-Enabled Module → activate
 
-Check it worked without a debuggee:
+ADT has no way to set it. Everything else here was created and activated over
+ADT; the flag lives in the function module's properties, and neither the
+`fmodules` creation payload nor a source PUT touches it. `TFDIR-FMODE` shows the
+result: `R` once it is set, blank until then.
+
+Then, from a pinned session:
 
 ```sh
-vsp rfc call ZADT_DEBUG_STATE          # -> {"roll":"…","calls":1,…,"available":true}
-vsp rfc call ZADT_DEBUG_BP_SET '{"I_PROGRAM":"SAPLZADT_DEBUG","I_LINE":10}'
-vsp rfc call ZADT_DEBUG_BP_LIST
+vsp rfc call ZADT_DEBUG_RFC '{"I_OP":"state"}'
+vsp rfc call ZADT_DEBUG_RFC '{"I_OP":"bp_set","I_PROGRAM":"SAPLZADT_DEBUG","I_LINE":10}'
+vsp rfc call ZADT_DEBUG_RFC '{"I_OP":"bp_list"}'
 ```
 
-`ZADT_DEBUG_STATE` called twice through the pool returns two different `roll`
-values and `calls = 1` both times — that is the pool doing its job, not a bug.
-On a pinned session the `roll` repeats and `calls` climbs.
+`state` called twice through the pool returns two different `roll` values and
+`calls = 1` both times — that is the pool doing its job, not a bug. On a pinned
+session the `roll` repeats and `calls` climbs.
+
+## What deploying this taught us about the ADT path
+
+Three findings, all reproducible on A4H (SAP_BASIS 758) through the vsp MCP server:
+
+1. **No class can be locked.** `POST …/oo/classes/<any>?_action=LOCK` returns
+   `MODIFICATION_SUPPORT=NoModification` — for a class we had just created, for
+   one in `$TMP`, and for `ZCL_VSP_APC_HANDLER`. Function groups and function
+   modules lock normally on the same system, same user, same session. So the
+   facade became a local class inside a function module include rather than the
+   global class it was written as. Worth its own issue: something about the class
+   resource's lock (an ABAP language version the client has to declare?) differs
+   from every other object type.
+2. **Locks do not survive between MCP tool calls.** Each call gets its own
+   stateful ADT session, so a `LOCK` in one call and an `UPDATE_SOURCE` in the
+   next fails with `ExceptionResourceInvalidLockHandle` — even though the lock
+   returns the same handle. Only the single-call workflows work: the high-level
+   `edit` and `EDITSOURCE` (which does GetSource → replace → syntax check → lock
+   → update → unlock → activate inside one call).
+3. **`EDITSOURCE` on a function module accepts more than the FUNCTION block.**
+   A `CLASS … DEFINITION`/`IMPLEMENTATION` written before `FUNCTION` compiles
+   into the function pool and activates. That is what makes a self-contained
+   facade in one module possible without touching the group's TOP include —
+   which, incidentally, cannot be locked either (`R3TR PROG LZADT_DEBUGTOP`:
+   "This syntax cannot be used for an object name").
 
 ## Authorizations
 
-The probing user on A4H is `SAP_ALL`, so nothing here demonstrates a
+The deploying user on A4H is `SAP_ALL`, so nothing here demonstrates a
 least-privilege setup. A real user needs `S_DEVELOP` with `ACTVT = 03` on
 `OBJTYPE = DEBUG`, and — to debug *another* user's session — the external
-debugging authority for that user. Worth an authorization trace before this is
-promised to anyone.
+debugging authority for that user. Note that SAP's own RFC-enabled debugger
+modules (`TPDAPI_TEST_*`) answer a missing authorization with a silent `RETURN`
+and an empty result, not an error.
 
 ## What is deliberately missing
 
-`ZADT_DEBUG_VARS`. The variable model (`IF_TPDAPI_DATA_{SIMPLE,STRUC,TABLE,OBJREF}`)
-needs a typed walk to be worth anything, and shipping the eight hard-coded `SY-*`
-fields `ZADT_VSP` returns today would be worse than shipping nothing. It comes
-once the loop above is verified against a live debuggee.
+`vars`. The variable model (`IF_TPDAPI_DATA_{SIMPLE,STRUC,TABLE,OBJREF}`) needs a
+typed walk to be worth anything, and shipping the eight hard-coded `SY-*` fields
+`ZADT_VSP` returns today would be worse than shipping nothing. It comes once the
+loop above is verified against a live debuggee.
