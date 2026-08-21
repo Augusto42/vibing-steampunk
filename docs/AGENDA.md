@@ -154,6 +154,46 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
 **Done when:** a breakpoint can be set, hit and inspected from an MCP client without
 ZADT_VSP, and `vsp` works against a system with HTTP disabled.
 
+### Sprint 5 — Execution truth: the debugger, and what really ran
+
+Design: [`docs/design/execution-trace.md`](design/execution-trace.md). The
+resources this needs are all present on A4H and all reachable through the RFC
+tunnel; the evidence is in that note.
+
+- [ ] **Make the README's "AI Debugger" line true.** It advertises "breakpoints,
+      listener, attach, step, inspect stack & variables". Breakpoints, listener,
+      attach, step and stack are real as of 2026-08-21 — over RFC, both through
+      SAP's ADT resources and through the ZADT_DEBUG facade. **Variables are
+      not implemented at all**, and the MCP debugger tools are still in
+      `DefaultDisabledTools`. Implement variables over
+      `/sap/bc/adt/debugger/variables`, wire the MCP tools to the working
+      engine, re-enable them, and restate the README line as exactly what each
+      path does.
+- [ ] **AMDP debugging — a spike.** `/sap/bc/adt/amdp/debugger/main` and
+      `…/debuggees/{id}/variables/{var}` are in the discovery document, with
+      `/sap/bc/adt/datapreview/amdpdebugger` for table cells. Answer three
+      questions and stop: does it tunnel, what HANA privileges does it want, and
+      does it need a live AMDP call to attach to.
+- [ ] **The measured call tree.** `vsp trace run <PROGRAM>` over
+      `/sap/bc/adt/runtime/traces/abaptraces/requests` — SAT does the work, we
+      read the tree. No stepping, so it runs against real workloads.
+- [ ] **Real graph vs extracted graph.** Diff the measured tree against vsp's
+      static graph and classify every edge: static-only (never exercised),
+      trace-only (**a dynamic call** — `CALL FUNCTION lv_name`, `PERFORM (f)`,
+      `SUBMIT (rep)`, an RFC destination), or both. This is the first genuinely
+      new insight and needs no debugger.
+- [ ] **Argument capture at code-unit boundaries**, via
+      `IF_TPDAPI_SESSION~GET_SCRIPT_HANDLER` — SAP's debugger scripting runs
+      inside the debuggee, so recording costs no round trip per step. Output is
+      the one JSONL record format from the design note. Values redacted by
+      default.
+- [ ] **Full statement-level history and replay.** Same format, more of it, with
+      a mandatory bound. Then replay: an ABAP unit test generated from a
+      recorded call, its captured inputs asserted against its captured outputs.
+- [ ] **`vsp trace study`** — the offline tool, in the shape of `rfc-viewer`:
+      reads the JSONL and never touches a system, shows the observed graph, the
+      diff, a per-unit argument view, and `--html` / `--serve`.
+
 ### Later (not scheduled)
 
 `landscape.go` harvest into open-rfc-go, `rfcgen`, observability hooks, the generating
