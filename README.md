@@ -41,6 +41,15 @@ correlate. You get ADT's own answers back: source URIs per stack frame, DYNP
 screen frames, the authorization flags, the action catalogue — and SAP labels
 the session `RFC session: <instance>` itself.
 
+**No RFC channel at all?** Then use `vsp adt debug`: the identical loop over one
+stateful HTTPS session. The debugger was never an RFC feature — listen, attach,
+stack and step are ADT resources, and RFC was one way to carry them. What they
+need is a *session*, and over HTTPS that is the stateful ICF session
+`sap-contextid` selects. Verified against A4H over plain HTTPS, with a cookie or
+a password and no gateway port in sight — which is the shape of every system
+where you can sign on to ADT but nobody will give you an RFC user
+([`docs/design/http-only-systems.md`](docs/design/http-only-systems.md)).
+
 There is also a typed, smaller-payload path over a little ABAP facade
 ([`abap/src/zadt_debug`](abap/src/zadt_debug/)) for systems where the ADT
 debugger resources are absent or blocked:

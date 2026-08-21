@@ -47,7 +47,11 @@ operations in `pkg/saprfc/adtdebug.go` are written against an envelope, not
 against RFC — pointing them at a stateful HTTP transport is a small change, and
 it gives a cookie-only system the same debugger.
 
-**Proposed:** `vsp adt debug`, the same REPL, transport chosen by flag.
+**Done**, 2026-08-21: `vsp adt debug` — the same REPL, the transport chosen by
+which command you run. Verified against A4H over plain HTTPS: the listener
+caught a debuggee raised by a function module called from elsewhere, attached to
+it, and returned the same five-frame stack the RFC path returns. Nothing in the
+debug path touched RFC.
 
 ### 2. Try the SOAP RFC endpoint
 
