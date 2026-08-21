@@ -16,6 +16,8 @@ GOLINT=golangci-lint
 # Build directories
 BUILD_DIR=build
 CMD_DIR=./cmd/vsp
+SSO_HELPER_DIR=./cmd/vsp-sso
+SSO_HELPER=$(BUILD_DIR)/vsp-sso.exe
 
 # Version info
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -39,7 +41,7 @@ CURRENT_OS=$(shell go env GOOS)
 CURRENT_ARCH=$(shell go env GOARCH)
 
 .PHONY: all build clean test lint fmt deps tidy help install run
-.PHONY: build-all build-all-all build-linux build-darwin build-windows
+.PHONY: build-all build-all-all build-linux build-darwin build-windows sso-helper
 .PHONY: deploy-windows sync-embedded release refresh-deps
 
 all: deps lint test build
@@ -51,7 +53,12 @@ build: ## Build the binary for current platform
 	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)
 	@echo "Built: $(BUILD_DIR)/$(BINARY_NAME)"
 
-build-all: ## Build for common platforms (linux-amd64, darwin-arm64, windows-amd64) + local ./build/vsp
+sso-helper: ## Build the Windows SSO capture helper (needed for browser SSO under WSL)
+	@mkdir -p $(BUILD_DIR)
+	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(SSO_HELPER) $(SSO_HELPER_DIR)
+	@echo "Built: $(SSO_HELPER)"
+
+build-all: sso-helper ## Build for common platforms (linux-amd64, darwin-arm64, windows-amd64) + local ./build/vsp
 	@mkdir -p $(BUILD_DIR)
 	@for platform in $(PLATFORMS_COMMON); do \
 		os=$${platform%/*}; \
@@ -67,7 +74,7 @@ build-all: ## Build for common platforms (linux-amd64, darwin-arm64, windows-amd
 	@echo "Build complete. Binaries in $(BUILD_DIR)/"
 	@ls -lh $(BUILD_DIR)/
 
-build-all-all: ## Build for ALL platforms (linux, darwin, windows - amd64, arm64, 386, arm)
+build-all-all: sso-helper ## Build for ALL platforms (linux, darwin, windows - amd64, arm64, 386, arm)
 	@mkdir -p $(BUILD_DIR)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
