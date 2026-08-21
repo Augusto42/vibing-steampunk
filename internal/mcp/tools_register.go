@@ -598,18 +598,18 @@ func (s *Server) registerDiagnosticsTools(shouldRegister func(string) bool) {
 func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 	if shouldRegister("SetBreakpoint") {
 		s.mcpServer.AddTool(mcp.NewTool("SetBreakpoint",
-			mcp.WithDescription("Set a breakpoint in ABAP code. Supports three types: 'line' (specific location), 'statement' (ABAP keyword), 'exception' (exception class). For class methods, use 'method' parameter for include-relative line numbers. Uses WebSocket connection to ZADT_VSP."),
+			mcp.WithDescription("Set an external breakpoint through SAP's ADT resources. Kinds: 'line' (an object and a line), 'statement' (an ABAP keyword), 'exception' (an exception class). The line is the line in the source as vsp shows it. Needs no ZADT_VSP and no other ABAP on the system."),
 			mcp.WithString("kind",
 				mcp.Description("Breakpoint type: 'line' (default), 'statement', or 'exception'"),
 			),
 			mcp.WithString("program",
-				mcp.Description("Program name for line breakpoints (e.g., 'ZADT_DBG_PROG' or 'ZCL_MY_CLASS')"),
-			),
-			mcp.WithString("method",
-				mcp.Description("Method name for class breakpoints. When specified, line number is relative to method start (line 1 = first line of METHOD implementation). Enables accurate breakpoints in class methods."),
+				mcp.Description("Object the breakpoint sits in — a program, class or function module name, or an ADT source URI"),
 			),
 			mcp.WithNumber("line",
-				mcp.Description("Line number for line breakpoints. Without 'method': pool-absolute line. With 'method': relative to method start."),
+				mcp.Description("Line number, counted in the object's own source as vsp reads it"),
+			),
+			mcp.WithString("condition",
+				mcp.Description("Optional ABAP condition; the breakpoint only stops when it is true (e.g., 'lv_count > 10')"),
 			),
 			mcp.WithString("statement",
 				mcp.Description("ABAP statement for statement breakpoints (e.g., 'CALL FUNCTION', 'SELECT', 'LOOP', 'CALL METHOD')"),
@@ -622,16 +622,16 @@ func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("GetBreakpoints") {
 		s.mcpServer.AddTool(mcp.NewTool("GetBreakpoints",
-			mcp.WithDescription("Get all breakpoints registered in the current debug session. Uses WebSocket connection to ZADT_VSP."),
+			mcp.WithDescription("List the breakpoints this session registered. ADT does not report breakpoints belonging to other clients, so this is not a system-wide list."),
 		), s.handleGetBreakpoints)
 	}
 
 	if shouldRegister("DeleteBreakpoint") {
 		s.mcpServer.AddTool(mcp.NewTool("DeleteBreakpoint",
-			mcp.WithDescription("Delete a breakpoint by ID. Uses WebSocket connection to ZADT_VSP."),
+			mcp.WithDescription("Delete a breakpoint by ID, or pass 'all' to remove every breakpoint this session registered."),
 			mcp.WithString("breakpoint_id",
 				mcp.Required(),
-				mcp.Description("ID of the breakpoint to delete"),
+				mcp.Description("ID of the breakpoint to delete, from SetBreakpoint or GetBreakpoints — or 'all'"),
 			),
 		), s.handleDeleteBreakpoint)
 	}
@@ -669,7 +669,7 @@ func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("DebuggerListen") {
 		s.mcpServer.AddTool(mcp.NewTool("DebuggerListen",
-			mcp.WithDescription("Start a debug listener that waits for a debuggee to hit a breakpoint. This is a BLOCKING call that uses long-polling. Returns when a debuggee is caught, timeout occurs, or a conflict is detected."),
+			mcp.WithDescription("Wait for a debuggee to hit a breakpoint, attach to it, and report where it stopped. BLOCKING: it returns when something stops or the timeout expires. Listen and attach are one call because a debuggee is only attachable while it waits. Breakpoints fire only for code running in ANOTHER session, so trigger the code from elsewhere while this waits."),
 			mcp.WithString("user",
 				mcp.Description("User to listen for (defaults to current user)"),
 			),
@@ -719,9 +719,9 @@ func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("DebuggerGetVariables") {
 		s.mcpServer.AddTool(mcp.NewTool("DebuggerGetVariables",
-			mcp.WithDescription("Get variable values during a debug session. Use '@ROOT' to get top-level variables, or specific variable IDs to get their values."),
+			mcp.WithDescription("Read variables at the current stop. With no argument it returns the stopped frame's own variables with their values; pass a composite id (from a previous answer) to expand a structure or table, or names to read specific ones."),
 			mcp.WithArray("variable_ids",
-				mcp.Description("Variable IDs to retrieve (e.g., ['@ROOT'] for top-level, or specific IDs like ['LV_COUNT', 'LS_DATA'])"),
+				mcp.Description("Leave empty for the locals; or a single composite id to expand; or variable names to read"),
 				mcp.Items(map[string]interface{}{"type": "string"}),
 			),
 		), s.handleDebuggerGetVariables)

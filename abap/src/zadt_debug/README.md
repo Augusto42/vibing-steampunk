@@ -120,9 +120,31 @@ debugging authority for that user. Note that SAP's own RFC-enabled debugger
 modules (`TPDAPI_TEST_*`) answer a missing authorization with a silent `RETURN`
 and an empty result, not an error.
 
-## What is deliberately missing
+## What this facade is still for (2026-08-21)
 
-`vars`. The variable model (`IF_TPDAPI_DATA_{SIMPLE,STRUC,TABLE,OBJREF}`) needs a
-typed walk to be worth anything, and shipping the eight hard-coded `SY-*` fields
-`ZADT_VSP` returns today would be worse than shipping nothing. It comes once the
-loop above is verified against a live debuggee.
+Most of it is now redundant, and that is a good outcome rather than wasted work.
+SAP's own ADT resources carry the whole debug loop — breakpoints included —
+over a pinned RFC conversation *and* over a stateful HTTPS session, so
+`listen`, `attach`, `step` and `stack` here duplicate what
+`/sap/bc/adt/debugger` already does with no Z code at all. Go stopped calling
+them; the ABAP stays because removing it from a live system costs more than it
+returns.
+
+Three operations remain worth having, and only one of them is small:
+
+- **`bp_list`** — the server's own view of the external breakpoints
+  (`ABDBG_EXTDBPS`). ADT answers its breakpoint GET with 200 and an empty body,
+  because in ADT the set is the IDE's state; this is the only way to see what
+  the *system* holds, including breakpoints another client set.
+- **`state`** — the roll-area probe. Two calls returning the same `roll` with a
+  rising `calls` is what proves a connection is really pinned; nothing else
+  demonstrates it.
+- **`detach`** as a broom — `STOP_LISTENER_FOR_USER` clears a stale
+  `ABDBG_LISTENER` row that would otherwise conflict with the next listener.
+  Note what it also does: it ends external debugging for the user, and the
+  external breakpoints go with it. A client that sets breakpoints and then
+  detaches deletes its own work — vsp detaches only when it actually listened
+  or attached, for exactly this reason.
+
+`vars` never had to be written here: the variable model comes typed from
+`/sap/bc/adt/debugger` `getVariables` / `getChildVariables`.

@@ -275,11 +275,11 @@ func DefaultDisabledTools() []string {
 		// AMDP/HANA Debugger - session management issues
 		"AMDPDebuggerStart", "AMDPDebuggerResume", "AMDPDebuggerStop",
 		"AMDPDebuggerStep", "AMDPGetVariables", "AMDPSetBreakpoint", "AMDPGetBreakpoints",
-		// ABAP Debugger - requires ZADT_VSP WebSocket, HTTP unreliable
-		"DebuggerListen", "DebuggerAttach", "DebuggerDetach",
-		"DebuggerStep", "DebuggerGetStack", "DebuggerGetVariables",
-		// Breakpoints - requires ZADT_VSP WebSocket
-		"SetBreakpoint", "GetBreakpoints", "DeleteBreakpoint",
+		// The ABAP debugger and its breakpoints were here until 2026-08-21,
+		// disabled because a stateless client cannot hold a debug session. The
+		// server holds one now (internal/mcp/handlers_debug_session.go) and both
+		// halves run against SAP's own ADT resources, over the RFC tunnel or over
+		// stateful HTTPS, with no ZADT_VSP and no Z code at all.
 		// UI5 write operations - need alternate API
 		"UI5CreateApp", "UI5DeleteApp", "UI5DeleteFile", "UI5UploadFile",
 	}

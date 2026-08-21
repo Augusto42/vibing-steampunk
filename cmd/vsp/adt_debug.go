@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 	"github.com/oisee/vibing-steampunk/pkg/saprfc"
@@ -38,18 +39,27 @@ function group — those are function modules and need an RFC channel:
   eclipse [SECONDS]  listen, attach to the first debuggee, show the stack
   estep [KIND]       into (default) | over | out | continue
   estack             the call stack
+  ebp <OBJECT> <LINE> [COND]
+                     set a line breakpoint through ADT — no Z code needed
+  ebps               the breakpoints this client has registered
+  eunbp <ID|all>     remove one breakpoint, or all of them
+  elocals            the current frame's own variables, with values
+  evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
+  echildren <ID>     expand a structure, a table or a synthetic root
+  eraw               print the next e-command as the XML SAP sent
   adt <METHOD> <URI> [NAME=VALUE …] [@bodyfile]
                      any ADT request on this same session`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		user, _ := cmd.Flags().GetString("user")
 		script, _ := cmd.Flags().GetString("command")
+		timeout, _ := cmd.Flags().GetInt("timeout")
 
 		params, err := resolveSystemParams(cmd)
 		if err != nil {
 			return err
 		}
-		transport, err := statefulADTTransport(params)
+		transport, err := statefulADTTransport(params, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}
@@ -95,11 +105,16 @@ function group — those are function modules and need an RFC channel:
 
 // statefulADTTransport builds one ADT transport and keeps it: a new transport
 // is a new session, and a new session has no debuggee attached.
-func statefulADTTransport(params *systemParams) (saprfc.ADTTransport, error) {
+func statefulADTTransport(params *systemParams, timeout time.Duration) (saprfc.ADTTransport, error) {
 	opts := []adt.Option{
 		adt.WithClient(params.Client),
 		adt.WithLanguage(params.Language),
 		adt.WithSessionType(adt.SessionStateful),
+		// The debugger's listener is a request that deliberately does not answer
+		// until something stops, so the client timeout has to outlast it. The
+		// stock 60s turns a 90s listen into "context deadline exceeded" and the
+		// caller never learns that the debuggee was fine.
+		adt.WithTimeout(timeout),
 	}
 	if params.Insecure {
 		opts = append(opts, adt.WithInsecureSkipVerify())
@@ -126,6 +141,7 @@ func statefulADTTransport(params *systemParams) (saprfc.ADTTransport, error) {
 func init() {
 	adtDebugCmd.Flags().String("user", "", "Whose debuggees to listen for (default: the logon user)")
 	adtDebugCmd.Flags().StringP("command", "c", "", "Run a semicolon-separated script instead of going interactive")
+	adtDebugCmd.Flags().Int("timeout", 300, "Seconds a single HTTP request may take; must exceed the listen timeout")
 	adtCmd.AddCommand(adtDebugCmd)
 	rootCmd.AddCommand(adtCmd)
 }

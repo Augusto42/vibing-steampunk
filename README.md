@@ -5,8 +5,10 @@
 > **ADT ↔ MCP Bridge**: Gives Claude (and other AI assistants) full access to SAP ADT APIs.
 > Read code, write code, debug, deploy, run tests — all through natural language (or DSL for automation).
 >
-> **New:** the ABAP debugger runs over classic RFC — breakpoints, attach, stepping, call stack —
-> through SAP's own ADT resources, with **nothing installed on the server** and no SAP SDK.
+> **New:** the whole ABAP debugger — breakpoints, attach, stepping, call stack **and variables** —
+> runs through SAP's own ADT resources over either a classic-RFC tunnel or a plain HTTPS
+> session, with **nothing installed on the server** and no SAP SDK. The MCP debugger tools
+> are enabled by default again, because the server now holds the session they always needed.
 >
 > See also: [OData ↔ MCP Bridge](https://github.com/oisee/odata_mcp_go) for SAP data access.
 >
@@ -26,10 +28,22 @@ natively, with no ICF, no CSRF, and no WebSocket upgrade.
 
 ```bash
 vsp rfc debug                                    # one pinned session, held for the whole loop
+dbg> ebp ZADT_DEBUG_LOOP 9                       # breakpoint, by object name — ADT resolves the URI
 dbg> eclipse 120                                 # listen, attach, stack — through SAP's own ADT resources
+dbg> elocals                                     # the stopped frame's variables, with values
 dbg> estep over
 dbg> estack
 ```
+
+The same six commands work in `vsp adt debug`, over HTTPS, against a system with
+no gateway port. An integration test runs that script over both transports and
+fails if they disagree about where the debuggee stopped or what it could see
+(`go test -tags=integration -run Conformance ./pkg/saprfc/`).
+
+From an MCP client the same loop is `SetBreakpoint` → `DebuggerListen` →
+`DebuggerGetVariables` → `DebuggerStep` → `DebuggerDetach`. `DebuggerListen`
+attaches for you: a debuggee is only attachable while it waits, so a caller that
+has to copy an id between two tool calls loses the race.
 
 **Nothing is installed on the server for this.** `eclipse` drives the very
 resources Eclipse uses — `/sap/bc/adt/debugger/listeners`, `/sap/bc/adt/debugger`,
@@ -50,9 +64,17 @@ a password and no gateway port in sight — which is the shape of every system
 where you can sign on to ADT but nobody will give you an RFC user
 ([`docs/design/http-only-systems.md`](docs/design/http-only-systems.md)).
 
+**Breakpoints need no ABAP either.** `POST /sap/bc/adt/debugger/breakpoints`
+answers 200 on both transports and writes the same `ABDBG_EXTDBPS` row a Z
+facade would. One asymmetry is real: SAP answers the *GET* with 200 and an empty
+body, because in ADT the breakpoint set is the IDE's state — Eclipse posts it
+whole rather than asking. So a client keeps its own record, and adding one
+breakpoint is a read-modify-write.
+
 There is also a typed, smaller-payload path over a little ABAP facade
 ([`abap/src/zadt_debug`](abap/src/zadt_debug/)) for systems where the ADT
-debugger resources are absent or blocked:
+debugger resources are absent or blocked — and for the one thing ADT will not
+answer, reading the server's own breakpoint table:
 
 ```bash
 dbg> bp SAPLZADT_DEBUG/LZADT_DEBUGU01 9          # external breakpoint (name the include!)
@@ -456,7 +478,7 @@ See **[CLI Guide](docs/cli-guide.md)** for the complete reference with feature r
 | **Context Compression** | Auto-compressed dependency contracts — 7–30x compression, built-in ABAP parser |
 | **Method-Level Surgery** | Read/edit individual methods — 95% token reduction vs full-class round-trips |
 | **ABAP LSP** | Built-in Language Server — real-time diagnostics, go-to-definition, context push |
-| **AI Debugger** | Breakpoints, listener, attach, step, inspect stack & variables |
+| **AI Debugger** | Breakpoints, listener, attach, step, stack, variables — over RFC or plain HTTPS, nothing installed on the server |
 | **RAP OData E2E** | Create CDS views, Service Definitions, Bindings → Publish OData services |
 | **AI-Powered RCA** | Root cause analysis with dumps, traces, profiler + code intelligence |
 | **DSL & Workflows** | Fluent Go API + YAML automation for CI/CD pipelines |
