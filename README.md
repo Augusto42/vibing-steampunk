@@ -89,9 +89,74 @@ called over a **second** RFC connection, the stack showed the real entry chain
 `%_RFC_START` → `REMOTE_FUNCTION_CALL` → the module, stepping walked it line by
 line, and afterwards the debuggee ran on and committed its work.
 
+**Variables are read *and* written.** `elocals` walks the debugger's variable
+tree to the stopped frame's own data; `eset LV_AMOUNT 900` puts a value back, and
+the next statement computes with it — measured on A4H, a value that arrived from
+the database as 46 became 901 downstream instead of 47. That turns the debugger
+into a scenario harness: reaching a state by arranging for the system to produce
+it is usually the hard part, and this skips it. It changes real execution,
+database writes included, so it is not something to do in somebody else's session
+without asking. `eframe` moves the cursor to another stack entry, so the caller's
+half of a call boundary is readable too.
+
+**Customer code by default.** A breakpoint set in a SAP standard program is
+accepted, given an id, and then never fires: without system debugging there is
+nowhere to stop. That is SAP's behaviour, not a filter of ours — `esys` turns it
+on for the cases that need it. Staying out costs less than it sounds, because a
+breakpoint on the line that *calls* a standard module captures what went in, and
+one on the line after captures what came back.
+
+**It catches web requests.** An external breakpoint fires for an ICF session just
+as it does for RFC: a function module triggered through `/sap/bc/soap/rfc` over
+plain HTTP was caught by a listener on an HTTPS debug session, with the whole web
+stack visible — `%_HTTP_START` → `HTTP_DISPATCH_REQUEST` →
+`CL_HTTP_SERVER->EXECUTE_REQUEST` → the SOAP handler → the module. An OData
+request is that same path with the Gateway handler, so debugging one needs
+nothing new.
+
 The read half needs no ABAP either: `vsp rfc debuggees`, `vsp rfc breakpoints`
 and `vsp rfc watch` read `ABDBG_ACTIVATION` and `ABDBG_EXTDBPS` directly — who is
 parked in the debugger and where, short dumps included.
+
+### What really ran: `vsp trace`
+
+A static call graph is a hypothesis. ABAP resolves `CALL FUNCTION lv_name`,
+`PERFORM (f)`, `CALL METHOD (m)` and every RFC destination at runtime, so only a
+measurement knows what a program actually called.
+
+```bash
+vsp trace run ZADT_DEBUG_LOOP --call     # arm a SAT trace, fire it, print the tree
+vsp trace list                           # traces this system holds
+vsp trace tree <ID> --json               # one JSON object per statement
+```
+
+SAT does the measuring and vsp reads the result, so it costs almost nothing and
+runs against real workloads. The tree it produced for a two-statement module
+already contains an edge no extraction would find:
+`PERFORM (ext) %_BEFORE_COMMIT → SAPMSSY0`.
+
+And the expensive half, for when the tree is not enough and you want the values:
+
+```bash
+vsp trace unit ZADT_DEBUG_LOOP --line 9 --call --values
+```
+
+anchors a breakpoint, waits for somebody to run the unit, then steps *over* its
+statements — never descending into what it calls — and writes one JSON object per
+stop. Against A4H that is the unit's whole data flow in seven records: line 9
+with `LV_LOW` empty, line 14 with `LV_LOW=44` once the SELECT had landed, line 15
+with `LV_COUNTER=45`, then an exit marker. Values are redacted to `«type:length»`
+unless `--values` is given, because a capture at a code boundary is business data
+by construction.
+
+It is a deliberate mode, and the numbers say why. A stop needs the step, the
+stack and the variables; as three requests that is 45ms, about 1300 stops a
+minute. `/sap/bc/adt/debugger/batch` takes all three as one multipart document
+and works through the tunnel: **14ms, some 4300 stops a minute**. Two other
+measured limits shape it — SAP allows **30 external breakpoints per user**, and
+stepping past the end of a unit whose caller is standard code ends the debuggee
+rather than stopping, which is why a recording ends with an explicit `exit`
+record instead of an error.
 
 The write-up, with everything that had to be learned on the way:
 [`reports/debugger-over-rfc.md`](https://github.com/oisee/open-rfc-go/blob/main/reports/debugger-over-rfc.md).
@@ -430,6 +495,12 @@ vsp analyze ZCL_MY_CLASS                         # 13 lint rules (offline)
 vsp rfc info                                     # RFC system info
 vsp rfc call Z_DOUBLE '{"N":21}'                 # call any function module
 vsp rfc describe BAPI_USER_GET_DETAIL            # FM interface as JSON Schema
+
+# Debugging and tracing (nothing installed on the server)
+vsp rfc debug                                    # debug REPL on a pinned RFC session
+vsp adt debug                                    # the same REPL over stateful HTTPS
+vsp trace run ZFOO --call                        # SAT trace: the measured call tree
+vsp trace unit ZFOO --line 12 --values           # record a unit, statement by statement
 
 # Tables & search
 vsp query T000 --top 5                           # query any table
@@ -1095,8 +1166,13 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 **Focused Mode Tools (100):**
 - **Search:** SearchObject, GrepObjects, GrepPackages
 - **Read:** GetSource, GetTable, GetTableContents, RunQuery, GetPackage, GetFunctionGroup, GetCDSDependencies
-- **Debugger:** DebuggerListen, DebuggerAttach, DebuggerDetach, DebuggerStep, DebuggerGetStack, DebuggerGetVariables
-  - *Note: Breakpoints now managed via WebSocket (ZADT_VSP)*
+- **Debugger:** DebuggerListen, DebuggerAttach, DebuggerDetach, DebuggerStep, DebuggerGetStack, DebuggerGetVariables, SetBreakpoint, GetBreakpoints, DeleteBreakpoint
+  - Enabled by default again since 2026-08-21. They run on a debug session the
+    server holds for itself — one pinned RFC conversation, or one stateful ADT
+    session where there is no gateway — and drive SAP's own ADT resources.
+    No ZADT_VSP, no WebSocket, no ABAP on the server.
+  - `DebuggerListen` attaches for you: a debuggee is only attachable while it
+    waits, so a caller that copies an id between two tool calls loses the race.
 - **Write:** WriteSource, EditSource, ImportFromFile, ExportToFile, MoveObject
 - **Dev:** SyntaxCheck, RunUnitTests, RunATCCheck, LockObject, UnlockObject
 - **Intelligence:** FindDefinition, FindReferences, GetContext
@@ -1130,8 +1206,11 @@ See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tool
 | ExecuteABAP | - | - | **Y** |
 | RAP OData (DDLS/SRVD/SRVB) | Y | - | **Y** |
 | OData Service Publish | Y | - | **Y** |
-| abapGit Export | Y | - | **Y** (WebSocket) |
-| Debugging | Y | Y | N |
+| abapGit Export | Y | - | **Y** (one RFC call) |
+| Debugging | Y | Y | **Y** (RFC *or* HTTPS, nothing installed) |
+| Breakpoints, variables, stepping | Y | Y | **Y** |
+| Writing variables mid-execution | Y | - | **Y** |
+| Runtime traces (SAT call tree) | Y | - | **Y** |
 
 </details>
 
@@ -1149,7 +1228,12 @@ See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tool
 
 ## Optional: WebSocket Handler (ZADT_VSP)
 
-vsp can optionally deploy a WebSocket handler to SAP for enhanced functionality like RFC calls:
+vsp can optionally deploy a WebSocket handler to SAP. It is no longer needed for
+debugging or for calling function modules — the debugger runs on SAP's own ADT
+resources and classic RFC is spoken natively — so this is now only of interest
+for the few things still built on it.
+
+
 
 ```bash
 # 1. Create package
@@ -1282,7 +1366,16 @@ vibing-steampunk/
 - [x] HTTP Streamable Transport - `--transport http` for non-stdio deployments
 - [x] mcp-go v0.47.0 - Latest MCP SDK
 
+### Completed (2026-08-21)
+- [x] **Debugger, finished and transport-neutral** — breakpoints, listener, attach, step, stack and variables through SAP's own ADT resources, over the RFC tunnel or plain stateful HTTPS, with nothing installed on the server. MCP tools re-enabled; the server holds the session itself, so no `vsp-debugd` was needed
+- [x] **Writing variables** (`eset`) and frame navigation (`eframe`)
+- [x] **Request batching** — `/sap/bc/adt/debugger/batch` cuts a recorded stop from 45ms to 14ms
+- [x] **`vsp trace`** — SAT runtime traces: the measured call tree, and `vsp trace unit` for a statement-by-statement recording with values
+- [x] **Transport conformance tests** — the same debug script and the same trace, run over both transports, required to agree
+
 ### Planned
+- [ ] Watchpoints (`CL_TPDA_ADT_RES_WATCHPOINTS`)
+- [ ] A held session for the Lua bindings, as the MCP server has
 - [ ] Message Server Logs
 - [ ] Background Job Management
 
@@ -1424,32 +1517,40 @@ AI Workflow:
   6. Deploy tests         → WriteSource to SAP system
 ```
 
-### What Works Today (v2.14)
+### What works today
 
-| Feature | Status | Command/Function |
-|---------|--------|------------------|
-| Set breakpoints | ✅ | `setBreakpoint(program, line)` |
-| Listen for debuggee | ✅ | `listen(timeout)` |
-| Attach/detach | ✅ | `attach(id)`, `detach()` |
-| Step execution | ✅ | `stepOver()`, `stepInto()`, `continue_()` |
-| Get variables | ✅ | `getVariables()` |
-| Get stack trace | ✅ | `getStack()` |
-| Save checkpoints | ✅ | `saveCheckpoint(name, data)` |
-| Load checkpoints | ✅ | `getCheckpoint(name)` |
-| Call graph analysis | ✅ | `getCallersOf()`, `getCalleesOf()` |
-| Short dump analysis | ✅ | `getDumps()`, `getDump(id)` |
+| Step | How | Status |
+|------|-----|--------|
+| Set a breakpoint | `vsp rfc debug` → `ebp <OBJECT> <LINE>`, or `SetBreakpoint` | Through SAP's ADT resources, no ABAP on the server |
+| Catch and attach | `eclipse`, or `DebuggerListen` | One call: a debuggee is attachable only while it waits |
+| Step | `estep over/into/out`, or `DebuggerStep` | `stepOver` keeps a recording inside its unit |
+| Read variables | `elocals`, `evars`, `echildren`, or `DebuggerGetVariables` | Typed; the walk from `@ROOT` is done for you |
+| **Write variables** | `eset <NAME> <VALUE>` | The next statement computes with the new value |
+| Move between frames | `eframe <STACK-URI>` | Reads the caller's half of a boundary |
+| Record a whole unit | `vsp trace unit <OBJECT> --line N` | JSONL, one object per stop, values redacted by default |
+| Measure what ran | `vsp trace run <OBJECT>` | SAT call tree, no stepping, real workloads |
+| Replay a captured call | `vsp rfc call <FM> '<captured json>'` | The RFC client is in the box; no ABAP test framework needed |
 
-### Coming in Future Phases
+All of it works over a pinned classic-RFC conversation **and** over a stateful
+HTTPS session. An integration test runs the same script through both and fails if
+they disagree (`go test -tags=integration -run Conformance ./pkg/saprfc/`).
 
-| Feature | Phase | Description |
-|---------|-------|-------------|
-| Variable history recording | 5.2 | ✅ Track all variable changes during execution |
-| Force Replay (state injection) | 5.5 | ✅ Inject saved state into live debug session |
-| Test case extraction | 6.1 | Automated input/output extraction from recordings |
-| ABAP test generator | 6.3 | Generate ABAP Unit classes from test cases |
-| Mock framework | 6.4 | ZCL_VSP_MOCK for DB/RFC mocking |
-| Isolated playground | 7.1 | Fast test execution with mocked dependencies |
-| Time-travel debugging | 8.1 | Navigate backwards through execution |
+**A caveat about the Lua bindings.** `vsp lua` exposes debugger functions, but its
+ADT client is the stateless one — and a debug session cannot survive a stateless
+client, which is precisely why the MCP debugger tools were disabled for so long.
+The working paths today are the two debug REPLs and the MCP tools; giving the Lua
+engine a held session is the obvious next step and is not done yet.
+
+### Not yet, and honestly labelled
+
+| Feature | What is missing |
+|---------|-----------------|
+| Watchpoints | `CL_TPDA_ADT_RES_WATCHPOINTS` exists on the system; vsp does not drive it yet. Breaking when a *value changes* would cost one watchpoint where today it costs a breakpoint per assignment — and a watchpoint on a `SY-` field is a boundary detector on its own: `SY-REPID` changes whenever control moves to another program, `SY-DYNNR` on every screen, `SY-SUBRC` and `SY-MSGNO` on every failure path. One of those could replace the whole thirty-breakpoint budget |
+| Test-case extraction | The recording format is there; grouping recorded calls into distinct scenarios is not |
+| ABAP Unit generation | Follows extraction |
+| SE37 test data | Stored in cluster table `EUFUNC`, so it cannot be written from outside — this one genuinely needs a small ABAP helper |
+| Mock framework, isolated playground | Design only ([VISION.md](VISION.md)) |
+| Time-travel (backwards) | Design only |
 
 ### Related Documentation
 
