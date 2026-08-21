@@ -137,6 +137,46 @@ func (d *Debugger) Listen(ctx context.Context, timeoutSeconds int) (json.RawMess
 	return d.Op(ctx, "listen", rfc.Params{"I_TIMEOUT": timeoutSeconds})
 }
 
+// WaitingDebuggee is one entry of the listen payload, as the facade serialises
+// IF_TPDAPI_SERVICE~TYP_TAB_DEBUGGEES.
+type WaitingDebuggee struct {
+	ID      string `json:"debuggee_id"`
+	User    string `json:"debuggee_user"`
+	Program string `json:"prg_curr"`
+	Include string `json:"incl_curr"`
+	Line    int    `json:"line_curr"`
+	Kind    string `json:"dbgee_kind"`
+}
+
+// ListenAndAttach blocks for a debuggee and attaches to the first one that
+// appears. It exists because listen and attach have to happen on the same
+// pinned session: a script cannot name a debuggee id it has not seen yet, and
+// starting a second command to attach would land in another roll area.
+// It returns the debuggee it took and the attach payload; a timeout with
+// nobody waiting yields a nil debuggee and no error.
+func (d *Debugger) ListenAndAttach(ctx context.Context, timeoutSeconds int) (*WaitingDebuggee, json.RawMessage, error) {
+	raw, err := d.Listen(ctx, timeoutSeconds)
+	if err != nil {
+		return nil, nil, err
+	}
+	var payload struct {
+		Status    string            `json:"status"`
+		Debuggees []WaitingDebuggee `json:"debuggees"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, nil, fmt.Errorf("reading the listen result: %w", err)
+	}
+	if len(payload.Debuggees) == 0 {
+		return nil, nil, nil
+	}
+	first := payload.Debuggees[0]
+	attached, err := d.Attach(ctx, first.ID)
+	if err != nil {
+		return &first, nil, err
+	}
+	return &first, attached, nil
+}
+
 // Attach binds this session to a waiting debuggee and reports where it stopped.
 func (d *Debugger) Attach(ctx context.Context, debuggeeID string) (json.RawMessage, error) {
 	return d.Op(ctx, "attach", rfc.Params{"I_DEBUGGEE_ID": debuggeeID})
