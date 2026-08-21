@@ -29,6 +29,16 @@ type SystemConfig struct {
 	CookieFile   string `json:"cookie_file,omitempty"`   // Path to Netscape-format cookie file
 	CookieString string `json:"cookie_string,omitempty"` // Inline cookie string
 
+	// Auth names the authentication method explicitly. Empty infers one from
+	// the fields above: cookies if present, otherwise user/password. Set it to
+	// "sso" to authenticate through a browser single sign-on handshake.
+	Auth string `json:"auth,omitempty"`
+
+	// SSO tunes browser single sign-on. Every field is optional — with auth set
+	// to "sso" and nothing else configured, vsp derives a trigger URL from this
+	// system's URL and lets the capture pick its own browser profile.
+	SSO *SSOSettings `json:"sso,omitempty"`
+
 	// Classic RFC (open-rfc-go) settings. The host defaults to the URL's host and
 	// the gateway port to 3300 + system number; set rfc_port to override directly.
 	// Credentials default to the RFC environment (SAP_USER/SAP_PASSWORD), then to
@@ -42,6 +52,51 @@ type SystemConfig struct {
 	// Optional safety settings per system
 	ReadOnly        bool     `json:"read_only,omitempty"`
 	AllowedPackages []string `json:"allowed_packages,omitempty"`
+}
+
+// SSOSettings configures browser single sign-on for one system.
+type SSOSettings struct {
+	// TriggerURL is the authentication-gated page whose loading starts the SSO
+	// redirect chain. Defaults to this system's ADT root, which every system
+	// vsp can talk to has. Point it elsewhere — a Fiori launchpad, say — on
+	// systems that gate single sign-on at a different entry point.
+	TriggerURL string `json:"trigger_url,omitempty"`
+
+	// Profile is the browser profile directory. A persistent one lets later
+	// refreshes reuse the identity provider's session. Under WSL the browser
+	// runs on the Windows side, so this must be a Windows path.
+	Profile string `json:"profile,omitempty"`
+
+	// Helper overrides the path to the Windows capture helper (vsp-sso.exe),
+	// which is how the browser step runs under WSL.
+	Helper string `json:"helper,omitempty"`
+
+	// OnExpiry decides what happens when a silent refresh cannot finish because
+	// the identity provider wants a human: "window" (the default) opens a
+	// browser window to sign in, "error" reports it and names the command to
+	// run instead. Prefer "error" where nobody is watching the screen.
+	OnExpiry string `json:"on_expiry,omitempty"`
+
+	// SilentTimeout and InteractiveTimeout override the capture budgets, as Go
+	// durations ("45s", "5m").
+	SilentTimeout      string `json:"silent_timeout,omitempty"`
+	InteractiveTimeout string `json:"interactive_timeout,omitempty"`
+}
+
+// UsesSSO reports whether this system authenticates through browser SSO.
+func (s *SystemConfig) UsesSSO() bool {
+	return strings.EqualFold(s.Auth, "sso")
+}
+
+// InteractiveOnExpiry reports whether a failed silent refresh may open a
+// browser window. Opening one is the default: the alternative leaves a session
+// broken until someone notices and runs a command by hand. A nil receiver means
+// nothing was configured, so the default applies.
+func (s *SSOSettings) InteractiveOnExpiry() bool {
+	if s == nil || s.OnExpiry == "" {
+		return true
+	}
+	return !strings.EqualFold(s.OnExpiry, "error")
 }
 
 // SystemsConfig is the root configuration containing all systems.
@@ -216,6 +271,11 @@ func ExampleConfig() string {
 				Client:          "100",
 				ReadOnly:        true,
 				AllowedPackages: []string{"Z*", "Y*"},
+			},
+			"sso": {
+				URL:    "https://sso.example.com",
+				Client: "100",
+				Auth:   "sso",
 			},
 		},
 	}
