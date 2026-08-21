@@ -107,6 +107,29 @@ parked in the debugger and where, short dumps included.
 The write-up, with everything that had to be learned on the way:
 [`reports/debugger-over-rfc.md`](https://github.com/oisee/open-rfc-go/blob/main/reports/debugger-over-rfc.md).
 
+### And the debugger is only the hard case — potentially all of ADT rides RFC
+
+`SADT_REST_RFC_ENDPOINT` takes a whole HTTP request, so **any** ADT resource is
+reachable over the gateway port: source read and write, activation, ATC, unit
+tests, transports, search, refactoring — the surface vsp already speaks, on a
+system where ICF is closed, HTTPS terminates somewhere inconvenient, or CSRF and
+cookies are a fight:
+
+```bash
+vsp rfc adt GET /sap/bc/adt/discovery                 # 200, 299 KB atomsvc
+vsp rfc adt GET /sap/bc/adt/programs/programs/RSUSR000/source/main
+vsp rfc adt POST /sap/bc/adt/atc/runs Content-Type=application/xml --body run.xml
+```
+
+Read paths are proven (discovery, program source with `ETag`/`Last-Modified`, a
+missing object answering ADT's own 404 document) and so is the debugger's
+stateful flow. The write paths are the interesting frontier: ADT locks are bound
+to an ABAP session — precisely what a short-lived HTTP client cannot hold, and
+why `LOCK` in one call and `UPDATE_SOURCE` in the next fails today — while a
+**pinned RFC conversation holds exactly that**. If lock-then-write survives two
+calls on one pinned session, editing over RFC becomes strictly more capable than
+editing over HTTP.
+
 ### Package Analysis Suite
 
 Five analysis commands that answer real questions about your ABAP packages:
