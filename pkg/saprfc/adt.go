@@ -96,10 +96,13 @@ func CallADTOn(ctx context.Context, c rfcCaller, req ADTRequest) (*ADTResponse, 
 	}
 	// ADT refuses a request without an Accept header outright — "Accept header
 	// missing", before the resource is even reached. Over HTTP that never shows
-	// up, because a browser or an HTTP client always sends one; a hand-built
-	// envelope has to say it itself.
+	// up, because every client sends one; a hand-built envelope has to say it
+	// itself. It has to be */* rather than a concrete type: ADT resources each
+	// answer in their own media type (discovery insists on atomsvc+xml, the
+	// debugger on its own vnd.sap.adt.* variants), so naming one type here
+	// turns "missing" into 406 Not Acceptable for every resource but that one.
 	if !hasAccept {
-		headers = append(headers, map[string]any{"NAME": "Accept", "VALUE": "application/xml"})
+		headers = append(headers, map[string]any{"NAME": "Accept", "VALUE": "*/*"})
 	}
 	body := req.Body
 	if body == nil {
