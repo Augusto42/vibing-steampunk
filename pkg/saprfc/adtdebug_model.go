@@ -3,6 +3,7 @@ package saprfc
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/oisee/vibing-steampunk/pkg/adt"
@@ -142,4 +143,49 @@ func FormatStack(info *adt.DebugStackInfo) string {
 			marker, e.StackPosition, e.ProgramName, e.IncludeName, e.Line, e.EventType, e.EventName)
 	}
 	return sb.String()
+}
+
+// SetVariable overwrites a variable in the stopped frame.
+//
+// The debugger is not only an observer: the value goes in and the next
+// statement computes with it. Proven on A4H over both transports — LV_LOW came
+// out of the database as 46, was overwritten with 900, and the following
+// statement produced 901 rather than 47.
+//
+// That is what makes a scenario harness possible: reach a point by whatever
+// route, then set the inputs to the case you actually want to exercise instead
+// of arranging for the system to produce it. Save what was there first if the
+// session is somebody else's — this changes real execution, including what it
+// writes to the database.
+func (d *Debugger) SetVariable(ctx context.Context, name, value string) error {
+	q := url.Values{}
+	q.Set("method", "setVariableValue")
+	q.Set("variableName", name)
+
+	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?"+q.Encode(),
+		[]ADTHeader{{Name: "Accept", Value: "text/plain"}}, []byte(value))
+	if err != nil {
+		return err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return adtError("setVariableValue", res)
+	}
+	return nil
+}
+
+// GoToFrame moves the debugger's cursor to another stack frame, so the
+// variables read next are that frame's own.
+//
+// It is how the caller's half of a call boundary is reached: stopped inside a
+// unit, step up one frame and the arguments as the caller sees them are
+// readable. The uri is a frame's StackURI from the stack document.
+func (d *Debugger) GoToFrame(ctx context.Context, stackURI string) error {
+	res, err := d.ADT(ctx, "PUT", stackURI, nil, nil)
+	if err != nil {
+		return err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return adtError("goToStack", res)
+	}
+	return nil
 }
