@@ -286,19 +286,21 @@ func (t *Transport) retryRequest(ctx context.Context, path string, opts *Request
 // HEAD on /core/discovery is the fast path (milliseconds, against tens of seconds
 // for a GET on /discovery on a slow system). Older releases — BASIS 740, ECC EhP7 —
 // answer that HEAD with 400 and no token at all, which used to make vsp unusable
-// against them, so a missing token falls back to GET. An authentication or
-// authorization failure is reported immediately: retrying cannot help.
+// against them, so a missing token falls back to GET.
+//
+// A 401 is reported at once: no method will fix a wrong password. A **403 is
+// not** — some systems refuse the HEAD and answer the GET perfectly well, so
+// short-circuiting there reintroduced exactly the unusability the fallback
+// exists to prevent. Let GET have its turn; if it is also forbidden, the error
+// below says so.
 func (t *Transport) fetchCSRFToken(ctx context.Context) error {
 	token, status, err := t.probeCSRFToken(ctx, http.MethodHead)
 	if err != nil {
 		return err
 	}
 	if !isCSRFToken(token) {
-		switch status {
-		case http.StatusUnauthorized:
+		if status == http.StatusUnauthorized {
 			return fmt.Errorf("authentication failed (401): check username/password")
-		case http.StatusForbidden:
-			return fmt.Errorf("access forbidden (403): check user authorizations")
 		}
 		var getStatus int
 		token, getStatus, err = t.probeCSRFToken(ctx, http.MethodGet)

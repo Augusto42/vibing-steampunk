@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -113,5 +114,47 @@ func TestFetchCSRFTokenRequiredPlaceholderFallsBack(t *testing.T) {
 	}
 	if got := tr.getCSRFToken(); got != "REAL-TOKEN" {
 		t.Fatalf("token = %q", got)
+	}
+}
+
+// A 403 on HEAD is not a verdict on the user's authorizations: some systems
+// refuse the HEAD and answer the GET perfectly well. Short-circuiting there
+// reintroduced exactly the unusability the GET fallback exists to prevent.
+func TestFetchCSRFTokenForbiddenHeadStillTriesGet(t *testing.T) {
+	var heads, gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			heads.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		gets.Add(1)
+		w.Header().Set("X-CSRF-Token", "TOKEN-FROM-GET")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	tr := newCSRFTestTransport(t, srv)
+	if err := tr.fetchCSRFToken(context.Background()); err != nil {
+		t.Fatalf("a 403 on HEAD must not stop the GET fallback: %v", err)
+	}
+	if got := tr.getCSRFToken(); got != "TOKEN-FROM-GET" {
+		t.Fatalf("token = %q", got)
+	}
+	if heads.Load() != 1 || gets.Load() != 1 {
+		t.Fatalf("expected one HEAD then one GET, got %d/%d", heads.Load(), gets.Load())
+	}
+}
+
+// A 403 from both methods is a real authorization failure and must say so.
+func TestFetchCSRFTokenForbiddenEverywhereFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	err := newCSRFTestTransport(t, srv).fetchCSRFToken(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("expected a 403 authorization error, got %v", err)
 	}
 }
