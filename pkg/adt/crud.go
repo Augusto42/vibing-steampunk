@@ -1,6 +1,7 @@
 package adt
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -57,17 +58,22 @@ func (c *Client) LockObject(ctx context.Context, objectURL string, accessMode st
 		return nil, err
 	}
 
-	// BTP / ABAP Cloud systems sometimes return a successful lock with
-	// MODIFICATION_SUPPORT="NoModification" — the lock acquired but the
-	// object is read-only via ADT (typical for SAP-delivered objects in
-	// hyperfocused mode, or systems where the user lacks the edit role).
-	// Without this guard the caller proceeds to PUT/POST and gets a
-	// confusing 423 InvalidLockHandle several seconds later. Surface it
-	// upfront so the user sees a clear, actionable error (issue #91).
-	if accessMode == "MODIFY" && strings.EqualFold(result.ModificationSupport, "NoModification") {
+	// MODIFICATION_SUPPORT="NoModification" alone does NOT mean "you cannot
+	// write". SAP returns it for local/customer objects that need no
+	// modification recording: verified against A4H, where LOCK on a local
+	// global class returns IS_LOCAL=X, MODIFICATION_SUPPORT=NoModification
+	// AND a valid LOCK_HANDLE — and the PUT of .../source/main that follows
+	// returns 200. Failing on the field alone (the original issue #91 guard)
+	// made every local object unwritable, and because the guard returned
+	// before unlocking, each attempt leaked the ENQUEUE it had just taken —
+	// the object then really was blocked, by our own orphan lock.
+	//
+	// A LOCK without a handle is the genuinely unusable case: nothing to
+	// write with, and nothing to release.
+	if accessMode == "MODIFY" && result.LockHandle == "" {
 		return nil, fmt.Errorf(
 			"object %s is not modifiable via ADT on this system "+
-				"(SAP returned modificationSupport=%q during LOCK). "+
+				"(SAP returned a LOCK with no lock handle, modificationSupport=%q). "+
 				"Common causes: read-only system class, missing developer/edit role, "+
 				"BTP ABAP Environment object outside the customer namespace, "+
 				"or hyperfocused mode locking the object as read-only",
@@ -95,6 +101,15 @@ func parseLockResult(data []byte) (*LockResult, error) {
 		Values values `xml:"values"`
 	}
 
+	// An ADT error comes back as an exception document, not a lock result —
+	// e.g. EU510 "User X is currently editing Y" when another session still
+	// holds the ENQUEUE. xml.Unmarshal parses that into an empty LockResult,
+	// which used to surface as a bogus modificationSupport="" / no handle
+	// instead of the real conflict. Report what SAP actually said.
+	if bytes.Contains(data, []byte("exc:exception")) {
+		return nil, lockExceptionError(data)
+	}
+
 	var resp abapResponse
 	if err := xml.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parsing lock response: %w", err)
@@ -109,6 +124,27 @@ func parseLockResult(data []byte) (*LockResult, error) {
 		IsLinkUp:            resp.Values.Data.IsLinkUp == "X",
 		ModificationSupport: resp.Values.Data.ModSupport,
 	}, nil
+}
+
+// lockExceptionError turns an ADT exception document returned by _action=LOCK
+// into a Go error carrying SAP's own message (EU510 lock conflicts, missing
+// authorization, unknown object).
+func lockExceptionError(data []byte) error {
+	type adtException struct {
+		Type struct {
+			ID string `xml:"id,attr"`
+		} `xml:"type"`
+		Message string `xml:"message"`
+	}
+
+	var exc adtException
+	if err := xml.Unmarshal(data, &exc); err != nil || exc.Message == "" {
+		return errors.New("locking object: SAP returned an ADT exception")
+	}
+	if exc.Type.ID != "" {
+		return fmt.Errorf("locking object: %s: %s", exc.Type.ID, exc.Message)
+	}
+	return fmt.Errorf("locking object: %s", exc.Message)
 }
 
 // UnlockObject releases an edit lock on an ABAP object.
@@ -1136,11 +1172,11 @@ func parsePublishResult(data []byte) (*PublishResult, error) {
 
 // CreateTableOptions defines options for creating a DDIC table.
 type CreateTableOptions struct {
-	Name          string       `json:"name"`          // Table name (uppercase, max 30 chars, must start with Z/Y)
-	Description   string       `json:"description"`   // Short description
-	Package       string       `json:"package"`       // Target package
-	Fields        []TableField `json:"fields"`        // Field definitions
-	Transport     string       `json:"transport,omitempty"` // Transport request (optional for $TMP)
+	Name          string       `json:"name"`                    // Table name (uppercase, max 30 chars, must start with Z/Y)
+	Description   string       `json:"description"`             // Short description
+	Package       string       `json:"package"`                 // Target package
+	Fields        []TableField `json:"fields"`                  // Field definitions
+	Transport     string       `json:"transport,omitempty"`     // Transport request (optional for $TMP)
 	DeliveryClass string       `json:"deliveryClass,omitempty"` // A=Application, C=Customizing, L=Temp, etc. (default: A)
 	TableCategory string       `json:"tableCategory,omitempty"` // TRANSPARENT (default), STRUCTURE, etc.
 }
