@@ -23,9 +23,28 @@ type Params struct {
 	Port     int    // gateway port (3300 + sysnr unless overridden)
 	Client   string
 	User     string
-	Password string
+	Password Secret
 	Language string
 }
+
+// Secret is a string that will not print itself. A logon password reaches a log
+// or an error message by accident, never on purpose: one %v on a struct that
+// happens to contain it is enough, and the struct grows the field long after
+// the format string was written. Making the type refuse to render closes that
+// whole class at compile time, and costs a conversion at the two places where
+// the value is genuinely needed.
+type Secret string
+
+const redacted = "[redacted]"
+
+func (Secret) String() string               { return redacted }
+func (Secret) GoString() string             { return redacted }
+func (Secret) MarshalText() ([]byte, error) { return []byte(redacted), nil }
+func (Secret) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`), nil }
+
+// Reveal returns the secret itself. Call it only where the value is handed to
+// the protocol — never into a log, an error, or a rendered structure.
+func (s Secret) Reveal() string { return string(s) }
 
 // Input carries what vsp knows about a system plus any explicit overrides.
 // Overrides win over the system's RFC settings, which win over the URL.
@@ -99,7 +118,7 @@ func Resolve(in Input) (Params, error) {
 		Port:     port,
 		Client:   firstNonEmpty(in.Client, "001"),
 		User:     user,
-		Password: password,
+		Password: Secret(password),
 		Language: lang[:1],
 	}, nil
 }
@@ -122,7 +141,7 @@ func OpenWithTimeout(ctx context.Context, p Params, timeout time.Duration) (*rfc
 		Service:          fmt.Sprintf("sapdp%02d", n),
 		Client:           p.Client,
 		User:             p.User,
-		Password:         p.Password,
+		Password:         p.Password.Reveal(),
 		Language:         p.Language,
 	})
 }

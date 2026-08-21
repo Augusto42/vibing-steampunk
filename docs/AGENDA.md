@@ -74,6 +74,43 @@ count is in single digits.
       JWT library; one key and cookie jar per session, not per request.
 - [ ] OAuth2 / XSUAA / BTP destinations / Cloud Connector (`Prolls`) — fix the
       `Proxy-Authorization`-on-`CONNECT` bug before adopting.
+**Acceptance criteria for anything auth-shaped**, applied to every harvested PR
+before it lands. These are ordinary secure-engineering rules, but each one below
+is here because a real system was found breaking it:
+
+- [ ] Secrets never reach a rendered string. A password/token field is a type
+      whose `String`/`GoString`/`MarshalText`/`MarshalJSON` are `[redacted]`,
+      with an explicit `Reveal()` at the one place the protocol needs it.
+      (Done for the RFC password; extend to the ADT config.)
+- [ ] The issuer is **pinned**, not read out of the token being validated.
+      Validating the issuer against a value taken from the unverified token
+      leaves only the audience check with teeth.
+- [ ] No flag, env var or config key can switch signature validation off. If a
+      bypass is unavoidable for local development, it takes several
+      simultaneous conditions, an allow-list, and is disabled in production
+      regardless.
+- [ ] Identity is derived from the authenticated session, never accepted from
+      the request body.
+- [ ] Credential parameter groups are all-or-nothing: the whole group or an
+      explicit error, never a silent fall-through to the next source. Our own
+      RFC chain (`rfc_user` → `SAP_USER` → the ADT credentials) violates this
+      today and produced a logon failure that read as a wrong password.
+- [ ] Misconfiguration is fatal and distinguishable from absence of
+      configuration. A typo in a system name must not degrade into "no
+      credentials, no error".
+- [ ] In a non-interactive environment, fail loudly rather than starting an
+      interactive flow that cannot complete.
+- [ ] Token caches are single-flighted and keyed on expiry with a refresh
+      buffer. The lock is for the user experience — one browser prompt — as
+      much as for efficiency.
+- [ ] Bearer tokens are asymmetrically signed, or short-lived. A symmetric
+      signature means every validator can mint tokens.
+- [ ] Discovery over `https` only, and exactly one retry after a challenge —
+      an unvalidated metadata URL is an SSRF hole.
+- [ ] The credential belongs to the process that talks to the system, not to
+      the agent. Where a proxy is possible, the agent gets a loopback URL and
+      never holds the secret at all.
+
 - [ ] **(maintainer)** Open a crediting issue for each author and invite the PR; the
       DCO makes that better than copying.
 
