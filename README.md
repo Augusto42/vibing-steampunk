@@ -125,13 +125,27 @@ vsp rfc adt POST /sap/bc/adt/atc/runs Content-Type=application/xml --body run.xm
 ```
 
 Read paths are proven (discovery, program source with `ETag`/`Last-Modified`, a
-missing object answering ADT's own 404 document) and so is the debugger's
-stateful flow. The write paths are the interesting frontier: ADT locks are bound
-to an ABAP session — precisely what a short-lived HTTP client cannot hold, and
-why `LOCK` in one call and `UPDATE_SOURCE` in the next fails today — while a
-**pinned RFC conversation holds exactly that**. If lock-then-write survives two
-calls on one pinned session, editing over RFC becomes strictly more capable than
-editing over HTTP.
+missing object answering ADT's own 404 document), and **so are the write paths**:
+
+```
+POST …/oo/classes/zcl_x?_action=LOCK&accessMode=MODIFY   → 200, a lock handle
+PUT  …/oo/classes/zcl_x/source/main?lockHandle=…         → 200   ← a separate request
+POST …/oo/classes/zcl_x?_action=UNLOCK&lockHandle=…      → 200
+POST /sap/bc/adt/activation?method=activate              → activated
+```
+
+An ADT lock is bound to an ABAP session — precisely what a short-lived HTTP
+client cannot hold, which is why `LOCK` in one call and `UPDATE_SOURCE` in the
+next fails with `InvalidLockHandle`, and why `EditSource` has to do everything
+inside a single call. A pinned RFC conversation holds exactly that session, so
+the handle is still valid on the next request.
+
+And the class used for the test is one the HTTP client **could not even lock**:
+it answers `MODIFICATION_SUPPORT=NoModification`, which is SAP saying "no
+modification assistant needed here", not "read-only". So editing over RFC is not
+merely equivalent to editing over HTTP — on that system it is strictly more
+capable. (Order matters: activate *after* unlock, or the object's own ENQUEUE
+answers `403 … is currently editing …`.)
 
 ### Package Analysis Suite
 
