@@ -30,6 +30,14 @@ configuration — `vsp adt debug` ran the whole debugger loop: the listener caug
 a debuggee, attached to it, and returned the stack. So on a cookie-only system
 the ADT route works with exactly what the browser already has.
 
+A ticket is **not bound to a hostname.** It is bound to the issuing system, the
+client and the user, and it is signed; the cookie's domain only constrains a
+*browser*. When the tool sets the header itself, any address that reaches the
+same system will do — the ticket used above was issued against one hostname and
+presented to another. (For a *different* system to accept it, that system needs
+the issuer's certificate in its ACL — `STRUSTSSO2` — and if
+`login/ticket_only_by_https` is set, plain HTTP is refused.)
+
 Two details worth knowing before you try it. The cookie value is **not plain
 base64**: SAP substitutes `!` for `/`, so a decoder must undo that (and the
 value is URL-encoded on top). And the readable header of the ticket carries the
@@ -81,16 +89,38 @@ caught a debuggee raised by a function module called from elsewhere, attached to
 it, and returned the same five-frame stack the RFC path returns. Nothing in the
 debug path touched RFC.
 
-### 2. Try the SOAP RFC endpoint
+### 2. The SOAP RFC endpoint — tested, and it works
 
 `/sap/bc/soap/rfc` is the classic ICF endpoint that exposes RFC-enabled function
-modules over HTTP. Where it is active, a cookie is enough to call **any**
-RFC-enabled FM — `RFC_READ_TABLE`, the XBP job BAPIs, our own facade — without
-the gateway port and without an RFC password. It is often switched off, and it
-is worth ten minutes to find out, because it would restore the whole RFC feature
-set on an HTTP-only system.
+modules over HTTP. It is often switched off; where it is active, **a cookie is
+enough to call any RFC-enabled function module**, with no gateway port and no
+RFC password.
 
-**Untested by us.** The probe is in the next section.
+Verified on A4H, 2026-08-21, authenticated by nothing but a logon ticket:
+
+```sh
+curl -X POST "http://host:50000/sap/bc/soap/rfc?sap-client=001"   -H 'Content-Type: text/xml; charset=utf-8' -H 'SOAPAction: ""'   -H "Cookie: MYSAPSSO2=$TICKET" --data-binary @- <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>
+  <RFC_SYSTEM_INFO xmlns="urn:sap-com:document:sap:rfc:functions"/>
+</soap:Body></soap:Envelope>
+XML
+```
+
+`RFC_PING`, `RFC_SYSTEM_INFO` (with its nested `RFCSI_EXPORT` structure) and our
+own `ZADT_DEBUG_RFC` facade all answered `200`. So on a cookie-only system this
+restores the whole RFC feature set: `RFC_READ_TABLE`, the XBP job BAPIs,
+breakpoint management — anything remote-enabled.
+
+Two limits. The endpoint is **stateless**: every call is its own ABAP session,
+so the facade's session-bound operations (attach, step) cannot work through it —
+which costs nothing, because the ADT route above already covers those over
+HTTPS. And the envelope is SOAP, so parameter marshalling is XML rather than the
+RFC codecs: a Go client for it is a modest amount of work, not free.
+
+**Worth building:** a third transport for `vsp rfc call` / `read-table` /
+`describe` that speaks this endpoint, so the RFC commands work unchanged on a
+system where the gateway is unreachable.
 
 ### 3. Let Eclipse hold the session
 
