@@ -286,6 +286,72 @@ var rfcSpoolCmd = &cobra.Command{
 	},
 }
 
+// The debugger's read half needs no ABAP on the server: the waiting debuggees
+// and the external breakpoints are ordinary transparent tables.
+
+var rfcDebuggeesCmd = &cobra.Command{
+	Use:   "debuggees",
+	Short: "List the ABAP sessions parked in the debugger, waiting to be attached",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		user, _ := cmd.Flags().GetString("user")
+		asJSON, _ := cmd.Flags().GetBool("json")
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			found, err := saprfc.WaitingDebuggees(ctx, c, user)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return emitRFC(found)
+			}
+			if len(found) == 0 {
+				fmt.Fprintln(os.Stderr, "nobody is waiting in the debugger")
+				return nil
+			}
+			for _, d := range found {
+				fmt.Println(d.Text())
+			}
+			return nil
+		})
+	},
+}
+
+var rfcBreakpointsCmd = &cobra.Command{
+	Use:   "breakpoints",
+	Short: "List the external breakpoints registered for a user",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		user, _ := cmd.Flags().GetString("user")
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			bps, err := saprfc.ExternalBreakpoints(ctx, c, user)
+			if err != nil {
+				return err
+			}
+			if len(bps) == 0 {
+				fmt.Fprintln(os.Stderr, "no external breakpoints are registered")
+				return nil
+			}
+			return emitRFC(bps)
+		})
+	},
+}
+
+var rfcWatchCmd = &cobra.Command{
+	Use:   "watch",
+	Short: "Watch for debuggees hitting a breakpoint, and report each one as it appears",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		user, _ := cmd.Flags().GetString("user")
+		every, _ := cmd.Flags().GetInt("interval")
+		forSecs, _ := cmd.Flags().GetInt("for")
+		return withRFC(cmd, func(ctx context.Context, c *rfc.Client) error {
+			return saprfc.WatchDebuggees(ctx, c, user,
+				time.Duration(every)*time.Second, time.Duration(forSecs)*time.Second,
+				func(d saprfc.Debuggee) { fmt.Println(d.Text()) })
+		})
+	},
+}
+
 var rfcSearchCmd = &cobra.Command{
 	Use:   "search <pattern>",
 	Short: "Find RFC-enabled function modules (name mask, * wildcard)",
@@ -440,6 +506,13 @@ func init() {
 	rfcRunCmd.Flags().Int("wait", 0, "Seconds to wait for the job to finish (0 = do not wait)")
 	rfcRunCmd.Flags().Bool("spool", false, "Fetch the spool list once the job has finished")
 	rfcSpoolCmd.Flags().Int("step", 1, "Job step number")
-	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcADTCmd, rfcExportCmd, rfcRunCmd, rfcSpoolCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd)
+	rfcDebuggeesCmd.Flags().String("user", "", "Only this user's debuggees (default: everyone)")
+	rfcDebuggeesCmd.Flags().Bool("json", false, "Emit JSON instead of one line per debuggee")
+	rfcBreakpointsCmd.Flags().String("user", "", "Whose breakpoints to list (default: everyone)")
+	rfcWatchCmd.Flags().String("user", "", "Only this user's debuggees (default: everyone)")
+	rfcWatchCmd.Flags().Int("interval", 2, "Seconds between polls")
+	rfcWatchCmd.Flags().Int("for", 0, "Stop after this many seconds (0 = until interrupted)")
+	rfcCmd.AddCommand(rfcInfoCmd, rfcPingCmd, rfcProbeCmd, rfcADTCmd, rfcExportCmd, rfcRunCmd, rfcSpoolCmd, rfcDescribeCmd, rfcCallCmd, rfcSearchCmd, rfcReadTableCmd,
+		rfcDebuggeesCmd, rfcBreakpointsCmd, rfcWatchCmd)
 	rootCmd.AddCommand(rfcCmd)
 }
