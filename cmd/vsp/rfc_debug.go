@@ -41,7 +41,8 @@ semicolon-separated script and exits. Commands:
   step [KIND]        into (default) | over | out | continue
   stack              the attached debuggee's call stack
   detach             end the debugger session and stop the listener
-  adt <METHOD> <URI> tunnel an ADT REST call through this same pinned session`,
+  adt <METHOD> <URI> [NAME=VALUE …]
+                     tunnel an ADT REST call through this same pinned session`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		user, _ := cmd.Flags().GetString("user")
@@ -163,9 +164,27 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		out, err = dbg.Stack(ctx)
 	case "adt":
 		if len(fields) < 3 {
-			return fmt.Errorf("usage: adt <METHOD> <URI>")
+			return fmt.Errorf("usage: adt <METHOD> <URI> [NAME=VALUE …]")
 		}
-		res, aerr := dbg.ADT(ctx, arg(1), arg(2), nil, nil)
+		var headers []saprfc.ADTHeader
+		hasAccept := false
+		for _, raw := range fields[3:] {
+			name, value, ok := strings.Cut(raw, "=")
+			if !ok {
+				return fmt.Errorf("a header must be NAME=VALUE, got %q", raw)
+			}
+			if strings.EqualFold(name, "accept") {
+				hasAccept = true
+			}
+			headers = append(headers, saprfc.ADTHeader{Name: name, Value: value})
+		}
+		// ADT rejects a request with no Accept header outright
+		// ("Accept header missing"), where an HTTP client would have sent one
+		// without being asked. Supply the generic one unless told otherwise.
+		if !hasAccept {
+			headers = append(headers, saprfc.ADTHeader{Name: "Accept", Value: "application/xml"})
+		}
+		res, aerr := dbg.ADT(ctx, arg(1), arg(2), headers, nil)
 		if aerr != nil {
 			return aerr
 		}
