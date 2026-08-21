@@ -30,7 +30,9 @@ Without arguments it opens an interactive session; with -c it runs a
 semicolon-separated script and exits. Commands:
 
   state              where this session landed, and whether it is pinned
-  bp <PROG> <LINE>   set an external line breakpoint
+  bp <PROG>[/<INCL>] <LINE> [CONDITION]
+                     set an external line breakpoint; name the include when
+                     the line is inside a function module or class method
   bps                list external breakpoints (with program and line)
   unbp [PROG [LINE]] delete breakpoints, or "unbp all"
   listen [SECONDS]   block until a debuggee stops (default 60)
@@ -102,16 +104,17 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 	)
 	switch strings.ToLower(fields[0]) {
 	case "help":
-		fmt.Fprintln(os.Stderr, "state | bp <PROG> <LINE> | bps | unbp [PROG [LINE]|all] | "+
+		fmt.Fprintln(os.Stderr, "state | bp <PROG>[/<INCL>] <LINE> [COND] | bps | unbp [PROG [LINE]|all] | "+
 			"listen [SECONDS] | attach <ID> | step [into|over|out|continue] | stack | detach | quit")
 		return nil
 	case "state":
 		out, err = dbg.State(ctx)
 	case "bp":
 		if len(fields) < 3 {
-			return fmt.Errorf("usage: bp <PROGRAM> <LINE>")
+			return fmt.Errorf("usage: bp <PROGRAM>[/<INCLUDE>] <LINE> [CONDITION]")
 		}
-		out, err = dbg.SetBreakpoint(ctx, arg(1), num(2), strings.Join(fields[3:], " "))
+		program, include, _ := strings.Cut(arg(1), "/")
+		out, err = dbg.SetBreakpoint(ctx, program, include, num(2), strings.Join(fields[3:], " "))
 	case "bps":
 		out, err = dbg.Breakpoints(ctx)
 	case "unbp":

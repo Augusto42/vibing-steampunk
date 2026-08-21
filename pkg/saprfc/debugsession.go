@@ -94,8 +94,14 @@ func (d *Debugger) State(ctx context.Context) (json.RawMessage, error) {
 }
 
 // SetBreakpoint registers an external line breakpoint for the session's user.
-func (d *Debugger) SetBreakpoint(ctx context.Context, program string, line int, condition string) (json.RawMessage, error) {
+// A line number alone is read against the main program, so a breakpoint inside
+// a function module or a class method needs its include named too — for
+// ZADT_DEBUG_LOOP that is program SAPLZADT_DEBUG, include LZADT_DEBUGU01.
+func (d *Debugger) SetBreakpoint(ctx context.Context, program, include string, line int, condition string) (json.RawMessage, error) {
 	args := rfc.Params{"I_PROGRAM": strings.ToUpper(program), "I_LINE": line}
+	if include != "" {
+		args["I_INCLUDE"] = strings.ToUpper(include)
+	}
 	if condition != "" {
 		args["I_CONDITION"] = condition
 	}
