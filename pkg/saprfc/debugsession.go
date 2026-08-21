@@ -29,6 +29,16 @@ type Debugger struct {
 	session *rfc.Session // nil when the debugger runs over HTTPS
 	adt     ADTTransport
 	user    string
+	// engaged records that this session listened or attached, and therefore has
+	// something to tear down. It is not bookkeeping for its own sake: detach
+	// calls STOP_LISTENER_FOR_USER, which ends external debugging for the user
+	// and takes the external breakpoints with it. A session that only set
+	// breakpoints must close without it, or it deletes its own work — which is
+	// exactly what `vsp rfc debug -c "bp …"` did until this existed.
+	engaged bool
+	// How this session registered its ADT listener, kept so the teardown can
+	// name the same triple back.
+	listenUser, ideID, terminalID string
 }
 
 // NewDebugger pins a connection out of the pool and keeps it until Close. The
@@ -56,9 +66,17 @@ func NewADTDebugger(transport ADTTransport, user string) *Debugger {
 // conversation otherwise, and a stale ABDBG_LISTENER row blocks the next attach.
 func (d *Debugger) Close(ctx context.Context) error {
 	if d.session == nil {
-		return nil // an HTTPS session owns no pooled connection to give back
+		// No pooled connection to give back — but an ADT-only session still owns
+		// a debuggee and a listener row on the server, and nothing else will
+		// release them.
+		if d.engaged {
+			_ = d.ADTDetach(ctx)
+		}
+		return nil
 	}
-	_, _ = d.Detach(ctx)
+	if d.engaged {
+		_, _ = d.Detach(ctx)
+	}
 	err := d.session.Close()
 	d.session = nil
 	return err
@@ -159,6 +177,7 @@ func (d *Debugger) DeleteBreakpoints(ctx context.Context, program string, line i
 // conversation for its whole duration, so the client call timeout has to be
 // longer than the ABAP timeout — see rfctool.OpenWithTimeout.
 func (d *Debugger) Listen(ctx context.Context, timeoutSeconds int) (json.RawMessage, error) {
+	d.engaged = true
 	return d.Op(ctx, "listen", rfc.Params{"I_TIMEOUT": timeoutSeconds})
 }
 
@@ -207,6 +226,7 @@ func (d *Debugger) ListenAndAttach(ctx context.Context, timeoutSeconds int) (*Wa
 
 // Attach binds this session to a waiting debuggee and reports where it stopped.
 func (d *Debugger) Attach(ctx context.Context, debuggeeID string) (json.RawMessage, error) {
+	d.engaged = true
 	return d.Op(ctx, "attach", rfc.Params{"I_DEBUGGEE_ID": debuggeeID})
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oisee/open-rfc-go/rfc"
+	"github.com/oisee/vibing-steampunk/pkg/adt"
 	"github.com/oisee/vibing-steampunk/pkg/saprfc"
 	"github.com/spf13/cobra"
 )
@@ -47,8 +48,10 @@ semicolon-separated script and exits. Commands:
                      with no Z code on the server: listen, attach, stack
   estep [KIND]       ADT step: into (default) | over | return | continue
   estack             ADT call stack
+  elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
-  echildren [ID …]   expand a structure/table variable by parent id`,
+  echildren <ID>     expand a structure, a table or a synthetic root
+  eraw               print the next e-command as the XML SAP sent`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		user, _ := cmd.Flags().GetString("user")
@@ -104,6 +107,10 @@ const adtTerminalID = "56535000000000000000000000006462"
 // from --user, defaulting to the connection's logon user.
 var rfcDebugUser string
 
+// rfcDebugRaw makes the next e-command print SAP's XML instead of the model.
+// It is one-shot: reading a document raw is a debugging act, not a mode.
+var rfcDebugRaw bool
+
 // runDebugCommand executes one line of the little command language.
 func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) error {
 	fields := strings.Fields(line)
@@ -125,10 +132,16 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		out json.RawMessage
 		err error
 	)
-	switch strings.ToLower(fields[0]) {
+	verb := strings.ToLower(fields[0])
+	if verb != "eraw" {
+		// One command's worth of raw output, then back to the model.
+		defer func() { rfcDebugRaw = false }()
+	}
+	switch verb {
 	case "help":
 		fmt.Fprintln(os.Stderr, "state | bp <PROG>[/<INCL>] <LINE> [COND] | bps | unbp [PROG [LINE]|all] | "+
-			"listen [SECONDS] | catch [SECONDS] | attach <ID> | step [into|over|out|continue] | stack | detach | quit")
+			"listen [SECONDS] | catch [SECONDS] | attach <ID> | step [into|over|out|continue] | stack | detach | quit\n"+
+			"eclipse [SECONDS] | estep [KIND] | estack | elocals | evars [NAME …] | echildren <ID> | eraw | adt <METHOD> <URI>")
 		return nil
 	case "state":
 		out, err = dbg.State(ctx)
@@ -200,7 +213,15 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		if cerr != nil {
 			return cerr
 		}
-		fmt.Println(string(stack.Body))
+		if rfcDebugRaw {
+			fmt.Println(string(stack.Body))
+			return nil
+		}
+		info, perr := adt.ParseStackXML(stack.Body)
+		if perr != nil {
+			return perr
+		}
+		fmt.Print(saprfc.FormatStack(info))
 		return nil
 	case "estep":
 		kind := map[string]string{
@@ -217,25 +238,67 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		fmt.Println(string(res.Body))
 		return nil
 	case "estack":
-		res, serr := dbg.ADTStack(ctx)
+		if rfcDebugRaw {
+			res, serr := dbg.ADTStack(ctx)
+			if serr != nil {
+				return serr
+			}
+			fmt.Println(string(res.Body))
+			return nil
+		}
+		info, serr := dbg.StackInfo(ctx)
 		if serr != nil {
 			return serr
 		}
-		fmt.Println(string(res.Body))
+		fmt.Print(saprfc.FormatStack(info))
+		return nil
+	case "eraw":
+		rfcDebugRaw = true
+		fmt.Fprintln(os.Stderr, "raw XML for the next e-command")
+		return nil
+	case "elocals":
+		vars, verr := dbg.Locals(ctx)
+		if verr != nil {
+			return verr
+		}
+		fmt.Print(saprfc.FormatVariables(vars))
 		return nil
 	case "evars":
-		res, verr := dbg.ADTVariables(ctx, fields[1:])
+		if rfcDebugRaw {
+			res, verr := dbg.ADTVariables(ctx, fields[1:])
+			if verr != nil {
+				return verr
+			}
+			fmt.Println(string(res.Body))
+			return nil
+		}
+		vars, verr := dbg.Vars(ctx, fields[1:])
 		if verr != nil {
 			return verr
 		}
-		fmt.Println(string(res.Body))
+		fmt.Print(saprfc.FormatVariables(vars))
 		return nil
 	case "echildren":
-		res, verr := dbg.ADTChildVariables(ctx, fields[1:])
+		if arg(1) == "" {
+			return fmt.Errorf("usage: echildren <PARENT_ID> — an id from elocals or evars")
+		}
+		if rfcDebugRaw {
+			res, verr := dbg.ADTChildVariables(ctx, fields[1:])
+			if verr != nil {
+				return verr
+			}
+			fmt.Println(string(res.Body))
+			return nil
+		}
+		info, verr := dbg.Expand(ctx, arg(1))
 		if verr != nil {
 			return verr
 		}
-		fmt.Println(string(res.Body))
+		if info == nil {
+			fmt.Println("nothing under", arg(1))
+			return nil
+		}
+		fmt.Print(saprfc.FormatVariables(info.Variables))
 		return nil
 	case "adt":
 		if len(fields) < 3 {

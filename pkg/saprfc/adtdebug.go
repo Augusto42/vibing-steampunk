@@ -46,6 +46,10 @@ type adtDebuggeeList struct {
 // ADTListen posts the blocking listener and returns the debuggee that stopped,
 // or nil when the wait timed out with nobody there.
 func (d *Debugger) ADTListen(ctx context.Context, user, ideID, terminalID string, timeoutSeconds int) (*ADTDebuggee, error) {
+	d.engaged = true
+	// Remembered for the teardown: a listener is removed by naming the exact
+	// triple it was registered with, and a row left behind blocks the next one.
+	d.listenUser, d.ideID, d.terminalID = strings.ToUpper(user), ideID, terminalID
 	q := url.Values{}
 	q.Set("debuggingMode", "user")
 	q.Set("requestUser", strings.ToUpper(user))
@@ -76,6 +80,7 @@ func (d *Debugger) ADTListen(ctx context.Context, user, ideID, terminalID string
 
 // ADTAttach attaches this session to a waiting debuggee.
 func (d *Debugger) ADTAttach(ctx context.Context, debuggeeID, user string) (*ADTResponse, error) {
+	d.engaged = true
 	q := url.Values{}
 	q.Set("method", "attach")
 	q.Set("debuggeeId", debuggeeID)
@@ -164,6 +169,41 @@ func (d *Debugger) ADTChildVariables(ctx context.Context, parents []string) (*AD
 func xmlEsc(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(s)
+}
+
+// ADTDetach ends an ADT debug session: it releases the debuggee and removes the
+// listener registration.
+//
+// It exists because closing the client is not enough on the HTTP route. Over RFC
+// the facade's detach ends external debugging for the user and the debuggee runs
+// on; over HTTPS there is no facade, so a session that simply exits leaves its
+// debuggee suspended in a work process until the caller's own timeout fires —
+// which is what it looked like from the other side: an RFC call that never
+// answered.
+func (d *Debugger) ADTDetach(ctx context.Context) error {
+	if !d.engaged {
+		return nil
+	}
+	// SAP's own word for "let it go" is detach; a release that does not know it
+	// still has to release the debuggee, so continue is the fallback rather than
+	// terminateDebuggee, which would kill the user's session outright.
+	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?method=detach",
+		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+	if err != nil || res.Status < 200 || res.Status >= 300 {
+		_, _ = d.ADTStep(ctx, "stepContinue")
+	}
+	if d.terminalID != "" {
+		q := url.Values{}
+		q.Set("debuggingMode", "user")
+		q.Set("requestUser", d.listenUser)
+		q.Set("ideId", d.ideID)
+		q.Set("terminalId", d.terminalID)
+		if _, lerr := d.ADT(ctx, "DELETE", "/sap/bc/adt/debugger/listeners?"+q.Encode(), nil, nil); lerr != nil {
+			return lerr
+		}
+	}
+	d.engaged = false
+	return nil
 }
 
 // ADTStep executes one step: stepInto, stepOver, stepReturn, stepContinue.
