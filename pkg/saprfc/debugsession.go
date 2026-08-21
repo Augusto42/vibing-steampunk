@@ -26,7 +26,8 @@ const FacadeFunction = "ZADT_DEBUG_RFC"
 
 // Debugger drives the ABAP debugger over one pinned RFC conversation.
 type Debugger struct {
-	session *rfc.Session
+	session *rfc.Session // nil when the debugger runs over HTTPS
+	adt     ADTTransport
 	user    string
 }
 
@@ -37,7 +38,17 @@ func NewDebugger(ctx context.Context, c *rfc.Client, user string) (*Debugger, er
 	if err != nil {
 		return nil, fmt.Errorf("pinning a connection for the debug session: %w", err)
 	}
-	return &Debugger{session: session, user: strings.ToUpper(strings.TrimSpace(user))}, nil
+	d := &Debugger{session: session, user: strings.ToUpper(strings.TrimSpace(user))}
+	d.adt = RFCTunnel(session)
+	return d, nil
+}
+
+// NewADTDebugger drives the debugger over ADT's own resources on some other
+// transport — in practice a stateful HTTPS session, for systems that have no
+// RFC channel. The ZADT_DEBUG facade operations are unavailable there, because
+// they are function modules; everything named ADT* works unchanged.
+func NewADTDebugger(transport ADTTransport, user string) *Debugger {
+	return &Debugger{adt: transport, user: strings.ToUpper(strings.TrimSpace(user))}
 }
 
 // Close releases the pinned connection. It first tries to leave the system
@@ -45,7 +56,7 @@ func NewDebugger(ctx context.Context, c *rfc.Client, user string) (*Debugger, er
 // conversation otherwise, and a stale ABDBG_LISTENER row blocks the next attach.
 func (d *Debugger) Close(ctx context.Context) error {
 	if d.session == nil {
-		return nil
+		return nil // an HTTPS session owns no pooled connection to give back
 	}
 	_, _ = d.Detach(ctx)
 	err := d.session.Close()
@@ -56,7 +67,8 @@ func (d *Debugger) Close(ctx context.Context) error {
 // Op runs one facade operation and returns its JSON payload.
 func (d *Debugger) Op(ctx context.Context, op string, args rfc.Params) (json.RawMessage, error) {
 	if d.session == nil {
-		return nil, fmt.Errorf("the debug session is closed")
+		return nil, fmt.Errorf("%s needs the ZADT_DEBUG facade, which is a function "+
+			"module — this session speaks ADT only. Use the ADT operations instead", op)
 	}
 	params := rfc.Params{"I_OP": op}
 	if d.user != "" {
@@ -92,10 +104,10 @@ func (d *Debugger) Op(ctx context.Context, op string, args rfc.Params) (json.Raw
 // the roll area is the pinned conversation, so the standard surface should work
 // with no Z code at all — the open question this makes testable.
 func (d *Debugger) ADT(ctx context.Context, method, uri string, headers []ADTHeader, body []byte) (*ADTResponse, error) {
-	if d.session == nil {
+	if d.adt == nil {
 		return nil, fmt.Errorf("the debug session is closed")
 	}
-	return CallADTOn(ctx, d.session, ADTRequest{Method: method, URI: uri, Headers: headers, Body: body})
+	return d.adt.Do(ctx, ADTRequest{Method: method, URI: uri, Headers: headers, Body: body})
 }
 
 // State returns the facade's view of this session: which roll area it landed
