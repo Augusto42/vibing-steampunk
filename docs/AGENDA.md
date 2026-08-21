@@ -211,9 +211,15 @@ tunnel; the evidence is in that note.
       `/sap/bc/adt/datapreview/amdpdebugger` for table cells. Answer three
       questions and stop: does it tunnel, what HANA privileges does it want, and
       does it need a live AMDP call to attach to.
-- [ ] **The measured call tree.** `vsp trace run <PROGRAM>` over
-      `/sap/bc/adt/runtime/traces/abaptraces/requests` — SAT does the work, we
-      read the tree. No stepping, so it runs against real workloads.
+- [x] **The measured call tree.** Done 2026-08-21. `vsp trace run|list|tree|
+      requests|rm` over `/sap/bc/adt/runtime/traces/abaptraces`, on either
+      transport (`pkg/saprfc/trace.go`); `--json` emits the per-statement
+      stream. Two facts that are not in any documentation: a request without a
+      `parametersId` is forced to full aggregation, so a *tree* always costs a
+      POST to `/parameters` first, and the query parameters are camelCase —
+      lowercase ones are accepted and ignored. Aim a request at a named object:
+      "any object, any process type, this user" traces vsp's own session, which
+      is what the first attempt recorded.
 - [ ] **Real graph vs extracted graph.** Diff the measured tree against vsp's
       static graph and classify every edge: static-only (never exercised),
       trace-only (**a dynamic call** — `CALL FUNCTION lv_name`, `PERFORM (f)`,
