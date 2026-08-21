@@ -20,15 +20,43 @@ established and which need testing on such a system.
 So the short answer: **unless the session also carries `MYSAPSSO2`, a cookie
 does not become an RFC logon.** Expect no classic RFC on such a system.
 
-### What it would take to support ticket logon
+### Measured, 2026-08-21, on A4H
 
-The ticket travels as a field of the CPIC logon in place of the password. We
-know the shape of the logon we send today because we captured it; we have never
-captured a ticket logon, so the field is unknown to us. It is a research task of
-exactly the kind `cmd/rfc-lab` exists for: point an SM59 destination configured
-for ticket logon (or a SAP GUI session with SSO) at the sniffer, capture the
-logon, and read it. Until someone does that, treat ticket-based RFC as *not
-supported* rather than *not possible*.
+A logon ticket issued by the web logon was tested directly. Two results.
+
+**Over HTTP it is a complete credential.** With nothing but
+`MYSAPSSO2=<ticket>` as a cookie — no user, no password anywhere in the
+configuration — `vsp adt debug` ran the whole debugger loop: the listener caught
+a debuggee, attached to it, and returned the stack. So on a cookie-only system
+the ADT route works with exactly what the browser already has.
+
+Two details worth knowing before you try it. The cookie value is **not plain
+base64**: SAP substitutes `!` for `/`, so a decoder must undo that (and the
+value is URL-encoded on top). And the readable header of the ticket carries the
+user, the client, the system id and the creation time in UTF-16, which is a
+quick way to check *whose* ticket you are holding and how old it is.
+
+**Over RFC the system would accept it; our client cannot send it.** The relevant
+profile parameters on this system, read with `TH_GET_PARAMETER`:
+
+| Parameter | Value |
+|---|---|
+| `login/create_sso2_ticket` | `2` — tickets are issued, with a digital signature |
+| `login/accept_sso2_ticket` | `1` — **logon by ticket is accepted** |
+| `login/ticket_expiration_time` | `8:00` |
+
+So the gate is on our side. SAP's own client libraries take the ticket as a
+connection parameter (`MYSAPSSO2`; JCo spells it `jco.client.mysapsso2`), which
+means the protocol carries it — we have simply never captured a logon that does,
+so the field is unknown to us.
+
+**How to find out, with the kit we already have.** An SM59 type-3 destination
+has a *Send SAP Logon Ticket* flag. Set it on a destination that points at
+`cmd/rfc-lab`'s sniffer, call anything through it from a session that holds a
+ticket, and the ticket-bearing logon lands in the capture; `cmd/rfc-viewer`
+then shows the field. After that, supporting it is a small change to the logon
+builder. Until someone does that, treat ticket-based RFC as **not supported**
+rather than not possible.
 
 ## What to do instead, in order of effort
 
