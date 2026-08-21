@@ -47,6 +47,8 @@ function group — those are function modules and need an RFC channel:
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
   echildren <ID>     expand a structure, a table or a synthetic root
+  eset <NAME> <VALUE>  overwrite a variable in the stopped frame
+  eframe <STACK-URI>   move the cursor to another frame
   erec [MAX]         record from here: one JSON object per stop
   evalues            record real values instead of «type:length» placeholders
   eraw               print the next e-command as the XML SAP sent

@@ -58,6 +58,10 @@ semicolon-separated script and exits. Commands:
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
   echildren <ID>     expand a structure, a table or a synthetic root
+  eset <NAME> <VALUE>
+                     overwrite a variable in the stopped frame — the next
+                     statement computes with the new value
+  eframe <STACK-URI> move the cursor to another frame, to read its variables
   erec [MAX]         record from here: one JSON object per stop, stepping over
                      calls until the unit is left (default 200 stops)
   evalues            record real values instead of «type:length» placeholders
@@ -320,6 +324,24 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			return berr
 		}
 		fmt.Print(saprfc.FormatBreakpoints(bps))
+		return nil
+	case "eset":
+		if len(fields) < 3 {
+			return fmt.Errorf("usage: eset <NAME> <VALUE> — overwrites a variable in the stopped frame")
+		}
+		if serr := dbg.SetVariable(ctx, strings.ToUpper(arg(1)), strings.Join(fields[2:], " ")); serr != nil {
+			return serr
+		}
+		fmt.Fprintf(os.Stderr, "%s set\n", strings.ToUpper(arg(1)))
+		return nil
+	case "eframe":
+		if arg(1) == "" {
+			return fmt.Errorf("usage: eframe <STACK-URI> — from estack, to read another frame's variables")
+		}
+		if ferr := dbg.GoToFrame(ctx, arg(1)); ferr != nil {
+			return ferr
+		}
+		fmt.Fprintln(os.Stderr, "cursor moved; elocals now reads that frame")
 		return nil
 	case "erec":
 		// The recorder: walk from here and write one JSON object per stop.
