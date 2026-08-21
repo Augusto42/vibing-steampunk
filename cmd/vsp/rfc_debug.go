@@ -58,6 +58,9 @@ semicolon-separated script and exits. Commands:
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
   echildren <ID>     expand a structure, a table or a synthetic root
+  erec [MAX]         record from here: one JSON object per stop, stepping over
+                     calls until the unit is left (default 200 stops)
+  evalues            record real values instead of «type:length» placeholders
   eraw               print the next e-command as the XML SAP sent`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -113,6 +116,11 @@ const adtTerminalID = "56535000000000000000000000006462"
 // rfcDebugUser is whose debuggees the ADT flow listens for; the REPL sets it
 // from --user, defaulting to the connection's logon user.
 var rfcDebugUser string
+
+// rfcDebugValues turns off redaction. A recording is business data by
+// construction, so the shape of a value is reported and the value is not,
+// unless somebody asks for it on purpose.
+var rfcDebugValues bool
 
 // rfcDebugSystem allows breakpoints in SAP's own code to fire. Off by default,
 // matching what the system does anyway.
@@ -312,6 +320,27 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			return berr
 		}
 		fmt.Print(saprfc.FormatBreakpoints(bps))
+		return nil
+	case "erec":
+		// The recorder: walk from here and write one JSON object per stop.
+		max := num(1)
+		if max <= 0 {
+			max = 200
+		}
+		n, rerr := dbg.Record(ctx, saprfc.RecordOptions{MaxStops: max, Redact: !rfcDebugValues},
+			func(r saprfc.StopRecord) error {
+				b, merr := json.Marshal(r)
+				if merr != nil {
+					return merr
+				}
+				fmt.Println(string(b))
+				return nil
+			})
+		fmt.Fprintf(os.Stderr, "%d stops recorded\n", n)
+		return rerr
+	case "evalues":
+		rfcDebugValues = !rfcDebugValues
+		fmt.Fprintf(os.Stderr, "record real values: %v\n", rfcDebugValues)
 		return nil
 	case "eraw":
 		rfcDebugRaw = true

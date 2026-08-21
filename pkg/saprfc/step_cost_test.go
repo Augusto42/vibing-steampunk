@@ -89,6 +89,20 @@ func TestStepCost(t *testing.T) {
 				perStep = time.Since(start) / time.Duration(steps)
 			}
 
+			// The same three things as one multipart request, which is what a
+			// capture mode actually issues.
+			batched := 0
+			start = time.Now()
+			for i := 0; i < rounds; i++ {
+				if _, err := dbg.CaptureStep(ctx, ""); err != nil {
+					t.Fatalf("batched capture %d: %v", i, err)
+				}
+				batched++
+			}
+			perBatch := time.Since(start) / time.Duration(batched)
+
+			t.Logf("%s: batched stack+locals %v/op — %.0f stops/minute",
+				tc.name, perBatch.Round(time.Millisecond), 60.0/perBatch.Seconds())
 			t.Logf("%s: stack %v/op · locals %v/op (2 calls) · step %v/op over %d steps",
 				tc.name, perStack.Round(time.Millisecond), perLocals.Round(time.Millisecond),
 				perStep.Round(time.Millisecond), steps)
