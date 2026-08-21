@@ -41,7 +41,7 @@ semicolon-separated script and exits. Commands:
   step [KIND]        into (default) | over | out | continue
   stack              the attached debuggee's call stack
   detach             end the debugger session and stop the listener
-  adt <METHOD> <URI> [NAME=VALUE …]
+  adt <METHOD> <URI> [NAME=VALUE …] [@bodyfile]
                      tunnel an ADT REST call through this same pinned session
   eclipse [SECONDS]  the same loop through SAP's own ADT debugger resources,
                      with no Z code on the server: listen, attach, stack
@@ -227,14 +227,25 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		}
 		// A missing Accept is filled in by the tunnel itself.
 		var headers []saprfc.ADTHeader
+		var body []byte
 		for _, raw := range fields[3:] {
+			if strings.HasPrefix(raw, "@") {
+				// @path — the request body, read from a file, because a source
+				// document does not fit on one prompt line.
+				content, rerr := os.ReadFile(strings.TrimPrefix(raw, "@"))
+				if rerr != nil {
+					return rerr
+				}
+				body = content
+				continue
+			}
 			name, value, ok := strings.Cut(raw, "=")
 			if !ok {
-				return fmt.Errorf("a header must be NAME=VALUE, got %q", raw)
+				return fmt.Errorf("a header must be NAME=VALUE (or @file for a body), got %q", raw)
 			}
 			headers = append(headers, saprfc.ADTHeader{Name: name, Value: value})
 		}
-		res, aerr := dbg.ADT(ctx, arg(1), arg(2), headers, nil)
+		res, aerr := dbg.ADT(ctx, arg(1), arg(2), headers, body)
 		if aerr != nil {
 			return aerr
 		}
