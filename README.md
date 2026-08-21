@@ -68,6 +68,26 @@ natively, with no ICF, no CSRF, and no WebSocket upgrade.
 
 ```bash
 vsp rfc debug                                    # one pinned session, held for the whole loop
+dbg> eclipse 120                                 # listen, attach, stack — through SAP's own ADT resources
+dbg> estep over
+dbg> estack
+```
+
+**Nothing is installed on the server for this.** `eclipse` drives the very
+resources Eclipse uses — `/sap/bc/adt/debugger/listeners`, `/sap/bc/adt/debugger`,
+`/sap/bc/adt/debugger/stack` — tunnelled through `SADT_REST_RFC_ENDPOINT`. The
+only reason a normal tool cannot use them is that ADT keeps the debug session in
+an ABAP roll area, reachable again only through a `sap-contextid` cookie; over a
+pinned RFC conversation the roll area *is* the session, so there is nothing to
+correlate. You get ADT's own answers back: source URIs per stack frame, DYNP
+screen frames, the authorization flags, the action catalogue — and SAP labels
+the session `RFC session: <instance>` itself.
+
+There is also a typed, smaller-payload path over a little ABAP facade
+([`abap/src/zadt_debug`](abap/src/zadt_debug/)) for systems where the ADT
+debugger resources are absent or blocked:
+
+```bash
 dbg> bp SAPLZADT_DEBUG/LZADT_DEBUGU01 9          # external breakpoint (name the include!)
 dbg> catch 150                                   # wait for a hit, attach, show the stack
 dbg> step over
@@ -75,16 +95,17 @@ dbg> stack
 dbg> detach
 ```
 
-Proven live on A4H: the breakpoint was hit by a function module called over a
-**second** RFC connection, the stack showed the real entry chain `%_RFC_START` →
-`REMOTE_FUNCTION_CALL` → the module, three steps walked it line by line, and
-afterwards the debuggee ran on and committed its work.
+Both paths are proven live on A4H: the breakpoint was hit by a function module
+called over a **second** RFC connection, the stack showed the real entry chain
+`%_RFC_START` → `REMOTE_FUNCTION_CALL` → the module, stepping walked it line by
+line, and afterwards the debuggee ran on and committed its work.
 
-The server side is a small function group, [`abap/src/zadt_debug`](abap/src/zadt_debug/) —
-one RFC entry point over `IF_TPDAPI_*`, typed scalars in and JSON out. The read
-half needs no ABAP at all: `vsp rfc debuggees`, `vsp rfc breakpoints` and
-`vsp rfc watch` read `ABDBG_ACTIVATION` and `ABDBG_EXTDBPS` directly, short dumps
-included.
+The read half needs no ABAP either: `vsp rfc debuggees`, `vsp rfc breakpoints`
+and `vsp rfc watch` read `ABDBG_ACTIVATION` and `ABDBG_EXTDBPS` directly — who is
+parked in the debugger and where, short dumps included.
+
+The write-up, with everything that had to be learned on the way:
+[`reports/debugger-over-rfc.md`](https://github.com/oisee/open-rfc-go/blob/main/reports/debugger-over-rfc.md).
 
 ### Package Analysis Suite
 
