@@ -86,9 +86,20 @@ func CallADTOn(ctx context.Context, c rfcCaller, req ADTRequest) (*ADTResponse, 
 	if !strings.HasPrefix(req.URI, "/") {
 		return nil, fmt.Errorf("ADT URI must be absolute, got %q", req.URI)
 	}
-	headers := make([]any, 0, len(req.Headers))
+	headers := make([]any, 0, len(req.Headers)+1)
+	hasAccept := false
 	for _, h := range req.Headers {
+		if strings.EqualFold(h.Name, "accept") {
+			hasAccept = true
+		}
 		headers = append(headers, map[string]any{"NAME": h.Name, "VALUE": h.Value})
+	}
+	// ADT refuses a request without an Accept header outright — "Accept header
+	// missing", before the resource is even reached. Over HTTP that never shows
+	// up, because a browser or an HTTP client always sends one; a hand-built
+	// envelope has to say it itself.
+	if !hasAccept {
+		headers = append(headers, map[string]any{"NAME": "Accept", "VALUE": "application/xml"})
 	}
 	body := req.Body
 	if body == nil {
