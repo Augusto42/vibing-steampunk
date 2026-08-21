@@ -222,6 +222,19 @@ tunnel; the evidence is in that note.
       reads the JSONL and never touches a system, shows the observed graph, the
       diff, a per-unit argument view, and `--html` / `--serve`.
 
+### Backlog — a logon-ticket reader
+
+- [ ] **Parse and validate an SAP logon ticket** (`MYSAPSSO2` / assertion), from
+      the format decoded live on 2026-08-21 (open-rfc-go
+      `docs/discoveries/http-destination-logon-modes.md`): cookie-normalise
+      (`!`->`/`, URL-unescape), base64-decode, walk the TLV, expose user /
+      client / issuing system / creation time / recipient (assertion) /
+      signature presence. Reading one lets every HTTP path (ADT, the SOAP RFC
+      endpoint) fail with a clear "this ticket is for user X on system Y, issued
+      Z, expired" instead of a bare rejection, and pick the right route knowing
+      the target. Small and self-contained. Does **not** unlock ticket-based
+      classic-RFC logon — that CPIC field is still unobserved.
+
 ### Later (not scheduled)
 
 `landscape.go` harvest into open-rfc-go, `rfcgen`, observability hooks, the generating
