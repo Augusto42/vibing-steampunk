@@ -77,7 +77,25 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 		return nil, err
 	}
 
-	// 5. Lock object
+	// 5. Syntax check, before the lock and deliberately so. A syntax check does
+	// not need one, and it is a *stateless* request: sent while a lock is held it
+	// ends the stateful session the lock lives in, and the write that follows
+	// fails with 423 InvalidLockHandle. EditSource has always had this order;
+	// the deploy path did not, which is where the 423 reports came from.
+	syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
+	if err != nil {
+		return &DeployResult{
+			FilePath:   filePath,
+			ObjectURL:  objectURL,
+			ObjectName: info.ObjectName,
+			ObjectType: string(info.ObjectType),
+			Success:    false,
+			Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
+			Message:    fmt.Sprintf("Object created but syntax check failed: %v", err),
+		}, nil
+	}
+
+	// 6. Lock object
 	lockResult, err := c.LockObject(ctx, objectURL, "MODIFY")
 	if err != nil {
 		return &DeployResult{
@@ -99,19 +117,6 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 		}
 	}()
 
-	// 6. Syntax check (optional pre-check)
-	syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
-	if err != nil {
-		return &DeployResult{
-			FilePath:   filePath,
-			ObjectURL:  objectURL,
-			ObjectName: info.ObjectName,
-			ObjectType: string(info.ObjectType),
-			Success:    false,
-			Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
-			Message:    fmt.Sprintf("Object created but syntax check failed: %v", err),
-		}, nil
-	}
 
 	if len(syntaxErrors) > 0 {
 		// Convert syntax errors to strings
@@ -224,7 +229,39 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 		return nil, err
 	}
 
-	// 4. Lock object
+	// 4. Syntax check first — see the note above: a stateless request sent while
+	// the object is locked ends the session the lock belongs to.
+	if !isClassInclude {
+		syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
+		if err != nil {
+			return &DeployResult{
+				FilePath:   filePath,
+				ObjectURL:  objectURL,
+				ObjectName: info.ObjectName,
+				ObjectType: string(info.ObjectType),
+				Success:    false,
+				Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
+				Message:    fmt.Sprintf("Syntax check failed: %v", err),
+			}, nil
+		}
+		if len(syntaxErrors) > 0 {
+			errorMsgs := make([]string, len(syntaxErrors))
+			for i, e := range syntaxErrors {
+				errorMsgs[i] = fmt.Sprintf("Line %d: %s", e.Line, e.Text)
+			}
+			return &DeployResult{
+				FilePath:     filePath,
+				ObjectURL:    objectURL,
+				ObjectName:   info.ObjectName,
+				ObjectType:   string(info.ObjectType),
+				Success:      false,
+				SyntaxErrors: errorMsgs,
+				Message:      fmt.Sprintf("Source has %d syntax errors", len(syntaxErrors)),
+			}, nil
+		}
+	}
+
+	// 5. Lock object
 	lockResult, err := c.LockObject(ctx, objectURL, "MODIFY")
 	if err != nil {
 		return &DeployResult{
@@ -245,39 +282,6 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 			_ = c.UnlockObject(ctx, objectURL, lockResult.LockHandle)
 		}
 	}()
-
-	// 5. Syntax check (skip for class includes - will check after update)
-	if !isClassInclude {
-		syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
-		if err != nil {
-			return &DeployResult{
-				FilePath:   filePath,
-				ObjectURL:  objectURL,
-				ObjectName: info.ObjectName,
-				ObjectType: string(info.ObjectType),
-				Success:    false,
-				Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
-				Message:    fmt.Sprintf("Syntax check failed: %v", err),
-			}, nil
-		}
-
-		if len(syntaxErrors) > 0 {
-			// Convert syntax errors to strings
-			errorMsgs := make([]string, len(syntaxErrors))
-			for i, e := range syntaxErrors {
-				errorMsgs[i] = fmt.Sprintf("Line %d: %s", e.Line, e.Text)
-			}
-			return &DeployResult{
-				FilePath:     filePath,
-				ObjectURL:    objectURL,
-				ObjectName:   info.ObjectName,
-				ObjectType:   string(info.ObjectType),
-				Success:      false,
-				SyntaxErrors: errorMsgs,
-				Message:      fmt.Sprintf("Source has %d syntax errors", len(syntaxErrors)),
-			}, nil
-		}
-	}
 
 	// 6. Write source
 	if isClassInclude {
