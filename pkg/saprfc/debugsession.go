@@ -3,6 +3,7 @@ package saprfc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -46,7 +47,7 @@ func (d *Debugger) Close(ctx context.Context) error {
 	if d.session == nil {
 		return nil
 	}
-	_, _ = d.Op(ctx, "detach", nil)
+	_, _ = d.Detach(ctx)
 	err := d.session.Close()
 	d.session = nil
 	return err
@@ -200,6 +201,16 @@ func (d *Debugger) Stack(ctx context.Context) (json.RawMessage, error) {
 
 // Detach ends the debugger session and stops the listener, leaving no
 // ABDBG_LISTENER row behind.
+//
+// END_DEBUGGER tears down the debugger's own ABAP session along with the
+// debuggee's, so the conversation usually dies mid-answer: the transport
+// reports CM_NO_DATA_RECEIVED and there is no reply to read. That is the
+// successful outcome, not a failure — the session is gone either way, so the
+// pinned connection is dropped rather than returned to the pool.
 func (d *Debugger) Detach(ctx context.Context) (json.RawMessage, error) {
-	return d.Op(ctx, "detach", nil)
+	out, err := d.Op(ctx, "detach", nil)
+	if err != nil && errors.Is(err, rfc.ErrTransport) {
+		return nil, nil
+	}
+	return out, err
 }
