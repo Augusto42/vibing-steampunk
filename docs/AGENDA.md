@@ -152,8 +152,11 @@ a BTP system with OAuth2, both configured from `.vsp.json`.
 - [x] `ZADT_DEBUG_*` facade — parameterised attach / step / stack / variables, modelled
       on the test harness that already works over RFC (extends the existing ZADT_DEBUG
       group; no underscore straight after `Z`, per this landscape's convention).
-- [ ] `vsp-debugd` — a daemon owning a pinned `rfc.Session`, with the short-lived
-      MCP/CLI calls talking to it; revives the disabled debugger tools.
+- [~] `vsp-debugd` — a daemon owning a pinned `rfc.Session`. The MCP half of its
+      purpose is served: the MCP server holds the session itself, which is
+      simpler than a daemon and needs no IPC. A daemon is still what would let
+      *separate CLI invocations* share one debug session; that is now a
+      convenience rather than the thing blocking the tools.
 - [x] abapGit over RFC — `vsp rfc export <PACKAGE>` serializes a package to an
       abapGit ZIP with one call to abapGit's own `Z_ABAPGIT_SERIALIZE_PACKAGE`,
       replacing the `vsp export` → APC WebSocket → `ZCL_VSP_GIT_SERVICE` →
@@ -188,15 +191,21 @@ Design: [`docs/design/execution-trace.md`](design/execution-trace.md). The
 resources this needs are all present on A4H and all reachable through the RFC
 tunnel; the evidence is in that note.
 
-- [ ] **Make the README's "AI Debugger" line true.** It advertises "breakpoints,
-      listener, attach, step, inspect stack & variables". Breakpoints, listener,
-      attach, step and stack are real as of 2026-08-21 — over RFC, both through
-      SAP's ADT resources and through the ZADT_DEBUG facade. **Variables are
-      not implemented at all**, and the MCP debugger tools are still in
-      `DefaultDisabledTools`. Implement variables over
-      `/sap/bc/adt/debugger/variables`, wire the MCP tools to the working
-      engine, re-enable them, and restate the README line as exactly what each
-      path does.
+- [x] **Make the README's "AI Debugger" line true.** Done 2026-08-21.
+      Variables are implemented and typed (`Locals` walks @ROOT -> @LOCALS so a
+      caller need not know the id scheme); breakpoints turned out to need no Z
+      code either — `POST /sap/bc/adt/debugger/breakpoints` answers 200 on both
+      transports, and pkg/adt's "403 on newer SAP" was the stateless client, not
+      the release. The MCP tools are off `DefaultDisabledTools` and run on a
+      session the server holds itself (`internal/mcp/handlers_debug_session.go`),
+      so no `vsp-debugd` is needed for them. Driven live end to end: breakpoint,
+      catch, locals, step 9 -> 14 with LV_LOW becoming 27, detach.
+      Three bugs the cross-transport testing found, all fixed: a session deleted
+      the breakpoints it had just set (detach ends external debugging for the
+      user); the HTTPS route left its debuggee suspended until the caller timed
+      out; and `vsp adt debug` could not outlast its own listener.
+      An integration test now runs one script over both transports and requires
+      them to agree (`-run Conformance ./pkg/saprfc/`).
 - [ ] **AMDP debugging — a spike.** `/sap/bc/adt/amdp/debugger/main` and
       `…/debuggees/{id}/variables/{var}` are in the discovery document, with
       `/sap/bc/adt/datapreview/amdpdebugger` for table cells. Answer three
