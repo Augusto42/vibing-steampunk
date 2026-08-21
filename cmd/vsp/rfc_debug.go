@@ -46,7 +46,9 @@ semicolon-separated script and exits. Commands:
   eclipse [SECONDS]  the same loop through SAP's own ADT debugger resources,
                      with no Z code on the server: listen, attach, stack
   estep [KIND]       ADT step: into (default) | over | return | continue
-  estack             ADT call stack`,
+  estack             ADT call stack
+  evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
+  echildren [ID …]   expand a structure/table variable by parent id`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		user, _ := cmd.Flags().GetString("user")
@@ -218,6 +220,20 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		res, serr := dbg.ADTStack(ctx)
 		if serr != nil {
 			return serr
+		}
+		fmt.Println(string(res.Body))
+		return nil
+	case "evars":
+		res, verr := dbg.ADTVariables(ctx, fields[1:])
+		if verr != nil {
+			return verr
+		}
+		fmt.Println(string(res.Body))
+		return nil
+	case "echildren":
+		res, verr := dbg.ADTChildVariables(ctx, fields[1:])
+		if verr != nil {
+			return verr
 		}
 		fmt.Println(string(res.Body))
 		return nil

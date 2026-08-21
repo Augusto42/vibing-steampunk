@@ -112,6 +112,60 @@ func (d *Debugger) ADTStack(ctx context.Context) (*ADTResponse, error) {
 	return res, nil
 }
 
+// ADTVariables reads named variables from the attached debuggee. The names it
+// wants are the ones the stack and child-variable calls hand back — @ROOT and
+// @DATAAGING are the two roots that always exist, a local is just its name.
+func (d *Debugger) ADTVariables(ctx context.Context, names []string) (*ADTResponse, error) {
+	if len(names) == 0 {
+		names = []string{"@ROOT", "@DATAAGING"}
+	}
+	var items []string
+	for _, n := range names {
+		items = append(items, "<STPDA_ADT_VARIABLE><ID>"+xmlEsc(n)+"</ID></STPDA_ADT_VARIABLE>")
+	}
+	body := []byte(`<?xml version="1.0" encoding="UTF-8"?><asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA>` +
+		strings.Join(items, "") + `</DATA></asx:values></asx:abap>`)
+	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?method=getVariables",
+		[]ADTHeader{{Name: "Accept", Value: "application/vnd.sap.as+xml"},
+			{Name: "Content-Type", Value: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.Variables"}}, body)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status != 200 {
+		return res, adtError("variables", res)
+	}
+	return res, nil
+}
+
+// ADTChildVariables expands a structure or table variable by parent id.
+func (d *Debugger) ADTChildVariables(ctx context.Context, parents []string) (*ADTResponse, error) {
+	if len(parents) == 0 {
+		parents = []string{"@ROOT", "@DATAAGING"}
+	}
+	var items []string
+	for _, p := range parents {
+		items = append(items, "<STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>"+xmlEsc(p)+"</PARENT_ID></STPDA_ADT_VARIABLE_HIERARCHY>")
+	}
+	body := []byte(`<?xml version="1.0" encoding="UTF-8"?><asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA><HIERARCHIES>` +
+		strings.Join(items, "") + `</HIERARCHIES></DATA></asx:values></asx:abap>`)
+	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?method=getChildVariables",
+		[]ADTHeader{{Name: "Accept", Value: "application/vnd.sap.as+xml"},
+			{Name: "Content-Type", Value: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.ChildVariables"}}, body)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status != 200 {
+		return res, adtError("childVariables", res)
+	}
+	return res, nil
+}
+
+// xmlEsc escapes the few characters that matter inside an element body.
+func xmlEsc(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(s)
+}
+
 // ADTStep executes one step: stepInto, stepOver, stepReturn, stepContinue.
 func (d *Debugger) ADTStep(ctx context.Context, method string) (*ADTResponse, error) {
 	q := url.Values{}
