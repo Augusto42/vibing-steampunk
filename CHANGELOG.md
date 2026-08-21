@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.41.0] - 2026-08-21
+### Bug Fixes
+
+- **rfc:** WHERE splitting, wide-table fallback, one shared ReadTable ([`9528ba1`](https://github.com/oisee/vibing-steampunk/commit/9528ba1d9ed97b48bd199eac7129390953db40ab))
+- **mcp:** Authenticate the HTTP transport; gate live tests; add the agenda ([`b4f6ffe`](https://github.com/oisee/vibing-steampunk/commit/b4f6ffe1afd6841d8dd819596116e2ba7adff2d7))
+- **mcp:** Ping the idle RFC connection every minute ([`4930926`](https://github.com/oisee/vibing-steampunk/commit/4930926db3a7c81c53d73452607067d68e2c9ddb))
+- **adt:** CSRF GET fallback and proxy-aware WebSocket dialing ([`6b136b7`](https://github.com/oisee/vibing-steampunk/commit/6b136b7a9b36959a5d87dff96f013acb55ffc4b0))
+- **adt,mcp:** Message classes are writable again; ship the Apache notice ([`4a9e01f`](https://github.com/oisee/vibing-steampunk/commit/4a9e01f0a9c1d6776e707ccd45e6baeaee0faee0))
+- **debug:** A breakpoint inside a function module needs its include ([`7b8d518`](https://github.com/oisee/vibing-steampunk/commit/7b8d5181b84ecdcb4814d9916e5ced18b4f7ed35))
+- **debug:** Attach must activate external debugging for its own session ([`a40156b`](https://github.com/oisee/vibing-steampunk/commit/a40156bb244c5b2eebde098827e126046dd12d57))
+- **debug:** Read the stop location TPDAPI actually sends ([`698a6e4`](https://github.com/oisee/vibing-steampunk/commit/698a6e4094b033be4eb6c6c7cba4318ea5866b30))
+- **debug:** Project the stack instead of serialising TPDAPI's own table ([`f787d01`](https://github.com/oisee/vibing-steampunk/commit/f787d013bffa268364fc1aa52b04dc27a8b4fe2c))
+- **debug:** A closed conversation is how detach succeeds ([`520f854`](https://github.com/oisee/vibing-steampunk/commit/520f85461c7372b9c21b76f59f6de8e4ed7fbf4d))
+- **debug:** The adt command must send headers ([`5b32cd3`](https://github.com/oisee/vibing-steampunk/commit/5b32cd3087ba916af2aab37205a14865b8123028))
+- **debug:** Detach sweeps a stale listener even from a fresh session ([`efb1135`](https://github.com/oisee/vibing-steampunk/commit/efb1135534a9103cedad1557a7361826716f8bc0))
+- **adt:** Send an Accept header through the RFC tunnel ([`f95098e`](https://github.com/oisee/vibing-steampunk/commit/f95098e5514b9f9fc89d0248207024bbe0597b87))
+- **adt:** Default Accept to */* , not a concrete type ([`d6a208a`](https://github.com/oisee/vibing-steampunk/commit/d6a208acb5185b581cdd818d9f9135c3a7d41024))
+
+
+### Features
+
+- **rfc:** Vsp rfc probe — fingerprint a system, including what the user may call ([`6169305`](https://github.com/oisee/vibing-steampunk/commit/61693054f12efad18e4acb301f40abb718fbede8))
+- **rfc:** Vsp rfc export — abapGit ZIP in one call ([`60aacbf`](https://github.com/oisee/vibing-steampunk/commit/60aacbfe33d338ef769be8c6f6f298ad01ea68e6))
+- **rfc:** Run reports as background jobs, and read job spools ([`eef5f81`](https://github.com/oisee/vibing-steampunk/commit/eef5f814eb61f9dadae0f3f96a4ceeff5cc005fd))
+- **rfc:** ADT REST over the classic-RFC tunnel — `vsp rfc adt` ([`676ebe3`](https://github.com/oisee/vibing-steampunk/commit/676ebe39b5c1bbc6a4e6d8ace61140a00b6f0170))
+- **rfc:** The debugger's read half, and the ZADT_DEBUG facade source ([`45298ad`](https://github.com/oisee/vibing-steampunk/commit/45298adc4b9e81d5e76c8a044e125d6326f3c6f1))
+- **abap:** ZADT_DEBUG facade over TPDAPI, deployed to A4H ([`a4552e5`](https://github.com/oisee/vibing-steampunk/commit/a4552e57c94212dfea90614302f16bb6ffaea97d))
+- **rfc:** Drive the ABAP debugger over a pinned session ([`5837e73`](https://github.com/oisee/vibing-steampunk/commit/5837e73089a3b5df352d72a5afc4a0745db8c92c))
+- **debug:** Catch — listen and attach on the same pinned session ([`f555b7f`](https://github.com/oisee/vibing-steampunk/commit/f555b7ffa2e6e64e0aac5ab88ebb9ded67505137))
+- **rfc:** Tunnel ADT REST through the pinned debug session ([`d1e407c`](https://github.com/oisee/vibing-steampunk/commit/d1e407ca125f110b4fdb010457e3a984cb1c9dcb))
+- **debug:** Drive SAP's own ADT debugger over the RFC tunnel ([`6a7c6ed`](https://github.com/oisee/vibing-steampunk/commit/6a7c6ed9b49751c42beda7d5b431625272f06e51))
+- **debug:** A body for adt requests, from a file ([`0bbc94f`](https://github.com/oisee/vibing-steampunk/commit/0bbc94fefdc9142a98130b8c6dfe87f81e331c9d))
+
+
+
 ## [2.40.0] - 2026-08-20
 ### Bug Fixes
 
