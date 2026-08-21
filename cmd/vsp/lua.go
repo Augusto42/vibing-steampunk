@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/oisee/vibing-steampunk/pkg/saprfc"
 	"github.com/oisee/vibing-steampunk/pkg/scripting"
 	"github.com/spf13/cobra"
 )
@@ -16,12 +19,22 @@ var luaCmd = &cobra.Command{
 Without arguments, starts an interactive Lua REPL.
 With a script file, executes the script.
 
-Available modules:
-  - All MCP tools (searchObject, getSource, setBreakpoint, etc.)
-  - Debug session management (listen, attach, stepOver, etc.)
-  - Checkpoints (saveCheckpoint, injectCheckpoint)
-  - JSON encoding/decoding
-  - print, sleep utilities
+Scripts get one debug session, held for the life of the script and opened only
+if something asks for it — a pinned RFC conversation, or a stateful ADT session
+where there is no gateway.
+
+  Breakpoints   setBreakpoint(object, line, condition), setStatementBP("CALL BADI"),
+                setExceptionBP("CX_SY_ZERODIVIDE"), setMessageBP("00", "001", "E"),
+                getBreakpoints(), deleteBreakpoint(id), clearBreakpoints(),
+                systemDebugging(true)   -- SAP's own code, off by default
+  Session       listen(seconds) -- waits and attaches; attach(id), detach()
+  Movement      stepOver(), stepInto(), stepReturn(), continue_(), runToLine(uri)
+  State         locals(), getVariable("LV_X"), setVariable("LV_X", "42"),
+                expand(id), getStack(), frame(stackUri)
+  Recording     record(maxStops, withValues) -- one table per stop
+  Everything else: searchObject, getSource, runUnitTests, query, lint, ...
+
+See examples/lua/ for a script that captures a unit and then changes its inputs.
 
 Examples:
   # Start interactive REPL
@@ -68,6 +81,35 @@ func runLua(cmd *cobra.Command, args []string) error {
 	// Create Lua engine
 	engine := scripting.NewLuaEngine(client)
 	defer engine.Close()
+
+	// A debug session, opened only if the script asks for one. Debugging needs a
+	// session that survives between calls, which the ordinary ADT client above
+	// is not; this hands the engine one when it is wanted and costs nothing when
+	// it is not.
+	engine.SetDebuggerFactory(func(ctx context.Context) (*saprfc.Debugger, func(), error) {
+		dest, err := rfcDestinationFor(cmd)
+		if err == nil {
+			c, derr := saprfc.OpenWithTimeout(ctx, dest, 5*time.Minute)
+			if derr == nil {
+				dbg, perr := saprfc.NewDebugger(ctx, c, dest.User)
+				if perr == nil {
+					return dbg, func() { _ = c.Close(ctx) }, nil
+				}
+				_ = c.Close(ctx)
+			}
+		}
+		// No gateway, or no RFC user: the same debugger over a stateful ADT
+		// session instead.
+		sys, serr := resolveSystemParams(cmd)
+		if serr != nil {
+			return nil, nil, fmt.Errorf("no debug session: neither RFC nor a stateful ADT session could be opened: %w", serr)
+		}
+		transport, terr := statefulADTTransport(sys, 5*time.Minute)
+		if terr != nil {
+			return nil, nil, fmt.Errorf("no debug session over HTTPS either: %w", terr)
+		}
+		return saprfc.NewADTDebugger(transport, sys.User), func() {}, nil
+	})
 
 	// Set output for verbose mode
 	if luaVerbose {

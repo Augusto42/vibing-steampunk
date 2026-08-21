@@ -425,9 +425,28 @@ func withRFCDest(cmd *cobra.Command, fn func(context.Context, *rfc.Client, saprf
 }
 
 func withRFCDestTimeout(cmd *cobra.Command, timeout time.Duration, fn func(context.Context, *rfc.Client, saprfc.Params) error) error {
-	params, err := resolveSystemParams(cmd)
+	dest, err := rfcDestinationFor(cmd)
 	if err != nil {
 		return err
+	}
+	ctx := context.Background()
+	c, err := saprfc.OpenWithTimeout(ctx, dest, timeout)
+	if err != nil {
+		return fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
+	}
+	defer c.Close(ctx)
+	return fn(ctx, c, dest)
+}
+
+// rfcDestinationFor resolves where RFC calls from this command go: the system's
+// settings, its .vsp.json RFC section, the environment, and any flag override.
+// It is separate from the dialling so that callers which are not RFC commands —
+// the Lua engine, which only wants a destination if a script asks to debug — can
+// use the same resolution without inheriting the RFC flag set.
+func rfcDestinationFor(cmd *cobra.Command) (saprfc.Params, error) {
+	params, err := resolveSystemParams(cmd)
+	if err != nil {
+		return saprfc.Params{}, err
 	}
 	in := saprfc.Input{
 		URL: params.URL, User: params.User, Password: params.Password,
@@ -451,18 +470,12 @@ func withRFCDestTimeout(cmd *cobra.Command, timeout time.Duration, fn func(conte
 
 	dest, err := saprfc.Resolve(in)
 	if err != nil {
-		return err
+		return saprfc.Params{}, err
 	}
 	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
 		fmt.Fprintf(os.Stderr, "[INFO] RFC %s:%d (sysnr %s) client %s user %s\n", dest.Host, dest.Port, dest.Sysnr, dest.Client, dest.User)
 	}
-	ctx := context.Background()
-	c, err := saprfc.OpenWithTimeout(ctx, dest, timeout)
-	if err != nil {
-		return fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
-	}
-	defer c.Close(ctx)
-	return fn(ctx, c, dest)
+	return dest, nil
 }
 
 func emitRFC(v any) error {

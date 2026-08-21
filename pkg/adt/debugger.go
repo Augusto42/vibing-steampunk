@@ -16,15 +16,24 @@ import (
 // BreakpointKind represents the type of breakpoint.
 type BreakpointKind string
 
+// The four kinds SAP's breakpoint resource accepts, confirmed against A4H on
+// 2026-08-21 by sending each and reading what came back:
+//
+//	line       KIND=0.SOURCETYPE=ABAP.MAIN_PROGRAM=…
+//	statement  KIND=1.STATEMENT=CALL FUNCTION
+//	exception  KIND=5.EXCEPTION_CLASS=CX_SY_ZERODIVIDE
+//	message    KIND=12.MSGID=00.MSGNO=001.MSGTY=E
+//
+// There is no "badi" kind — SAP answers "Invalid breakpoint kind badi". A BAdI
+// call is caught as a statement breakpoint on CALL BADI, which is what SAP's own
+// debugger does. Nor is there a kind for enhancements or methods here; a method
+// is reached by a line breakpoint in its source, and a watchpoint is a different
+// resource (/sap/bc/adt/debugger/watchpoints) that vsp does not drive yet.
 const (
-	BreakpointKindLine        BreakpointKind = "line"
-	BreakpointKindStatement   BreakpointKind = "statement"
-	BreakpointKindException   BreakpointKind = "exception"
-	BreakpointKindMessage     BreakpointKind = "message"
-	BreakpointKindBadi        BreakpointKind = "badi"        // Business Add-In breakpoint
-	BreakpointKindEnhancement BreakpointKind = "enhancement" // Enhancement point breakpoint
-	BreakpointKindWatchpoint  BreakpointKind = "watchpoint"  // Data watchpoint (variable change)
-	BreakpointKindMethod      BreakpointKind = "method"      // Method/function entry breakpoint
+	BreakpointKindLine      BreakpointKind = "line"
+	BreakpointKindStatement BreakpointKind = "statement"
+	BreakpointKindException BreakpointKind = "exception"
+	BreakpointKindMessage   BreakpointKind = "message"
 )
 
 // BreakpointScope determines the lifetime of a breakpoint.
@@ -91,30 +100,21 @@ func getTerminalID() string {
 
 // Breakpoint represents an ABAP debugger breakpoint.
 type Breakpoint struct {
-	ID          string         `json:"id"`
-	Kind        BreakpointKind `json:"kind"`
-	Enabled     bool           `json:"enabled"`
-	URI         string         `json:"uri,omitempty"`         // ADT URI for line breakpoints
-	Line        int            `json:"line,omitempty"`        // Line number for line breakpoints
-	Condition   string         `json:"condition,omitempty"`   // Optional condition expression
-	Statement   string         `json:"statement,omitempty"`   // Statement type for statement breakpoints
-	Exception   string         `json:"exception,omitempty"`   // Exception class for exception breakpoints
-	MessageID   string         `json:"messageId,omitempty"`   // Message ID for message breakpoints
-	MessageType string         `json:"messageType,omitempty"` // Message type (E, W, I, S, A)
-	MessageArea string         `json:"messageArea,omitempty"` // Message class/area (e.g., "00", "SY")
-
-	// BAdi and Enhancement breakpoints
-	BadiName        string `json:"badiName,omitempty"`        // BAdi definition name
-	EnhancementSpot string `json:"enhancementSpot,omitempty"` // Enhancement spot name
-	EnhancementImpl string `json:"enhancementImpl,omitempty"` // Enhancement implementation name
-
-	// Watchpoint (data breakpoint)
-	Variable       string `json:"variable,omitempty"`       // Variable name to watch
-	WatchCondition string `json:"watchCondition,omitempty"` // When to trigger: "change", "read", "any"
-
-	// Method breakpoint
-	ClassName  string `json:"className,omitempty"`  // Class name for method breakpoint
-	MethodName string `json:"methodName,omitempty"` // Method name for method breakpoint
+	ID        string         `json:"id"`
+	Kind      BreakpointKind `json:"kind"`
+	Enabled   bool           `json:"enabled"`
+	URI       string         `json:"uri,omitempty"`       // ADT URI for line breakpoints
+	Line      int            `json:"line,omitempty"`      // Line number for line breakpoints
+	Condition string         `json:"condition,omitempty"` // Optional condition expression
+	Statement string         `json:"statement,omitempty"` // Statement type for statement breakpoints
+	Exception string         `json:"exception,omitempty"` // Exception class for exception breakpoints
+	// A message breakpoint needs all three of these. Sending only two earns a
+	// 400 naming the one that is missing — "Attribute 'msgNo' expected" — which
+	// is how the omission here was found; every message breakpoint vsp sent
+	// before that was rejected.
+	MessageID     string `json:"messageId,omitempty"`     // message class, e.g. "00"
+	MessageNumber string `json:"messageNumber,omitempty"` // message number, e.g. "001"
+	MessageType   string `json:"messageType,omitempty"`   // E, W, I, S, A
 
 	// Read-only fields returned by SAP
 	ActualLine int    `json:"actualLine,omitempty"` // Actual line after adjustment
@@ -342,8 +342,8 @@ func buildBreakpointRequestXML(req *BreakpointRequest) (string, error) {
 				enabledAttr, xmlEscape(bp.Statement)))
 
 		case BreakpointKindMessage:
-			bpElements = append(bpElements, fmt.Sprintf(`<breakpoint kind="message" %s msgId="%s" msgTy="%s"/>`,
-				enabledAttr, xmlEscape(bp.MessageID), xmlEscape(bp.MessageType)))
+			bpElements = append(bpElements, fmt.Sprintf(`<breakpoint kind="message" %s msgId="%s" msgNo="%s" msgTy="%s"/>`,
+				enabledAttr, xmlEscape(bp.MessageID), xmlEscape(bp.MessageNumber), xmlEscape(bp.MessageType)))
 		}
 	}
 
