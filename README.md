@@ -48,6 +48,44 @@ Types are handled end to end — scalars (incl. STRING/XSTRING, DATE/TIME, packe
 DEC/TIMESTAMP, FLOAT), flat **and deep** structures and tables (xRFC) — and both the
 classic and fast serializations on the wire.
 
+And RFC does things ADT cannot:
+
+```bash
+vsp rfc probe                                    # what is this system, and what may this user do here
+vsp rfc export ZPACKAGE -o pkg.zip               # abapGit ZIP in one call
+vsp rfc run RSPARAM --wait 60 --spool            # run a report as a background job, read its spool
+vsp rfc adt GET /sap/bc/adt/discovery            # ADT REST tunnelled through RFC, for when ICF is closed
+vsp rfc debuggees                                # who is parked in the debugger, and where
+```
+
+### The ABAP Debugger over RFC
+
+The debugger needs one thing above all: a **stable ABAP session**.
+`attach_debuggee( )` returns an object reference, and step, stack, and variables
+all hang off it — which is why a debug loop spread over independent HTTP calls
+kept losing its debuggee. A pinned classic-RFC conversation *is* that session,
+natively, with no ICF, no CSRF, and no WebSocket upgrade.
+
+```bash
+vsp rfc debug                                    # one pinned session, held for the whole loop
+dbg> bp SAPLZADT_DEBUG/LZADT_DEBUGU01 9          # external breakpoint (name the include!)
+dbg> catch 150                                   # wait for a hit, attach, show the stack
+dbg> step over
+dbg> stack
+dbg> detach
+```
+
+Proven live on A4H: the breakpoint was hit by a function module called over a
+**second** RFC connection, the stack showed the real entry chain `%_RFC_START` →
+`REMOTE_FUNCTION_CALL` → the module, three steps walked it line by line, and
+afterwards the debuggee ran on and committed its work.
+
+The server side is a small function group, [`abap/src/zadt_debug`](abap/src/zadt_debug/) —
+one RFC entry point over `IF_TPDAPI_*`, typed scalars in and JSON out. The read
+half needs no ABAP at all: `vsp rfc debuggees`, `vsp rfc breakpoints` and
+`vsp rfc watch` read `ABDBG_ACTIVATION` and `ABDBG_EXTDBPS` directly, short dumps
+included.
+
 ### Package Analysis Suite
 
 Five analysis commands that answer real questions about your ABAP packages:
