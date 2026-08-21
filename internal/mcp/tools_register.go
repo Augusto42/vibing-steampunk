@@ -959,6 +959,13 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
 			mcp.WithString("parent_name",
 				mcp.Description("Parent name (required for function modules - the function group name)"),
 			),
+			// Function module options (FUGR/FF)
+			mcp.WithBoolean("rfc_enabled",
+				mcp.Description("For FUGR/FF: make the module remote-enabled (RFC). Remote-enabled modules must pass every parameter by value"),
+			),
+			mcp.WithString("source",
+				mcp.Description("For FUGR/FF: full module source including the signature (FUNCTION ... IMPORTING VALUE(iv_x) TYPE i ... ENDFUNCTION.) - a function module's interface lives in its source"),
+			),
 			// RAP-specific options
 			mcp.WithString("service_definition",
 				mcp.Description("For SRVB: the service definition name to bind"),

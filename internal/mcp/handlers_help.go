@@ -80,6 +80,8 @@ Service binding:
 
 Create object:
   SAP(action="create", target="OBJECT", params={"object_type": "CLAS/OC", "name": "ZCL_NEW", "description": "New class", "package_name": "$TMP"})
+  SAP(action="create", target="OBJECT", params={"object_type": "FUGR/F", "name": "ZVSP_DEMO", "description": "Demo group", "package_name": "$TMP"})
+  SAP(action="create", target="OBJECT", params={"object_type": "FUGR/FF", "name": "ZVSP_DEMO_FM", "parent_name": "ZVSP_DEMO", "description": "RFC demo", "package_name": "$TMP", "rfc_enabled": true, "source": "FUNCTION zvsp_demo_fm\n  IMPORTING VALUE(iv_n) TYPE i\n  EXPORTING VALUE(ev_result) TYPE i.\n  ev_result = iv_n * 2.\nENDFUNCTION."})
   SAP(action="create", target="DEVC", params={"name": "$ZNEW", "description": "New package"})
   SAP(action="create", target="TABL", params={"name": "ZTABLE", "description": "New table", "fields": "[...]", "package": "$TMP"})
   SAP(action="create", target="CLONE", params={"object_type": "CLAS", "source_name": "ZCL_OLD", "target_name": "ZCL_NEW", "package": "$TMP"})
