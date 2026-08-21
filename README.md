@@ -5,6 +5,9 @@
 > **ADT ↔ MCP Bridge**: Gives Claude (and other AI assistants) full access to SAP ADT APIs.
 > Read code, write code, debug, deploy, run tests — all through natural language (or DSL for automation).
 >
+> **New:** the ABAP debugger runs over classic RFC — breakpoints, attach, stepping, call stack —
+> through SAP's own ADT resources, with **nothing installed on the server** and no SAP SDK.
+>
 > See also: [OData ↔ MCP Bridge](https://github.com/oisee/odata_mcp_go) for SAP data access.
 >
 > **Want to review or test?** Start here: **[Reviewer Guide](docs/reviewer-guide.md)** — 8 hands-on tasks, no SAP needed.
@@ -13,52 +16,7 @@
 
 ## Hot Right Now
 
-### Classic RFC — Call Any Function Module, No SAP SDK
-
-vsp now speaks **classic RFC** next to ADT, through the pure-Go, SDK-free
-[open-rfc-go](https://github.com/oisee/open-rfc-go) client — no NW RFC SDK, no native
-library, no cgo. Same system, second protocol: ADT reads and writes code, RFC calls
-the business logic.
-
-```bash
-vsp rfc info                                     # RFC_SYSTEM_INFO (sysid, release, host)
-vsp rfc search 'BAPI_USER_*'                     # find RFC-enabled function modules
-vsp rfc describe STFC_STRUCTURE                  # FM interface as an MCP-tool JSON Schema
-vsp rfc call Z_DOUBLE '{"N":21}'                 # call any FM with JSON parameters
-vsp rfc read-table T000 --fields MANDT,MTEXT     # RFC_READ_TABLE
-```
-
-The destination is derived from the system you already configured: host from the ADT
-URL, system number from its port, gateway port `3300 + sysnr`. Override per system in
-`.vsp.json` (`rfc_host`, `rfc_sysnr`, `rfc_port`) or per command (`--rfc-host`,
-`--sysnr`, `--port`). RFC logon uses `rfc_user`/`rfc_password`, else `SAP_USER`/
-`SAP_PASSWORD`, else the system's own credentials.
-
-In MCP it is one more action on the single `SAP` tool — the tool space stays as small
-as it was:
-
-```
-SAP(action="rfc", params={"op":"info"})
-SAP(action="rfc", target="Z_DOUBLE", params={"op":"call","args":{"N":21}})
-SAP(action="rfc", target="STFC_CONNECTION")      # describe (default with a target)
-SAP(action="rfc", target="T000", params={"op":"read_table","fields":["MANDT"],"top":5})
-```
-
-Types are handled end to end — scalars (incl. STRING/XSTRING, DATE/TIME, packed
-DEC/TIMESTAMP, FLOAT), flat **and deep** structures and tables (xRFC) — and both the
-classic and fast serializations on the wire.
-
-And RFC does things ADT cannot:
-
-```bash
-vsp rfc probe                                    # what is this system, and what may this user do here
-vsp rfc export ZPACKAGE -o pkg.zip               # abapGit ZIP in one call
-vsp rfc run RSPARAM --wait 60 --spool            # run a report as a background job, read its spool
-vsp rfc adt GET /sap/bc/adt/discovery            # ADT REST tunnelled through RFC, for when ICF is closed
-vsp rfc debuggees                                # who is parked in the debugger, and where
-```
-
-### The ABAP Debugger over RFC
+### The ABAP Debugger over RFC — Nothing Installed on the Server
 
 The debugger needs one thing above all: a **stable ABAP session**.
 `attach_debuggee( )` returns an object reference, and step, stack, and variables
@@ -106,6 +64,51 @@ parked in the debugger and where, short dumps included.
 
 The write-up, with everything that had to be learned on the way:
 [`reports/debugger-over-rfc.md`](https://github.com/oisee/open-rfc-go/blob/main/reports/debugger-over-rfc.md).
+
+### Classic RFC — Call Any Function Module, No SAP SDK
+
+vsp now speaks **classic RFC** next to ADT, through the pure-Go, SDK-free
+[open-rfc-go](https://github.com/oisee/open-rfc-go) client — no NW RFC SDK, no native
+library, no cgo. Same system, second protocol: ADT reads and writes code, RFC calls
+the business logic.
+
+```bash
+vsp rfc info                                     # RFC_SYSTEM_INFO (sysid, release, host)
+vsp rfc search 'BAPI_USER_*'                     # find RFC-enabled function modules
+vsp rfc describe STFC_STRUCTURE                  # FM interface as an MCP-tool JSON Schema
+vsp rfc call Z_DOUBLE '{"N":21}'                 # call any FM with JSON parameters
+vsp rfc read-table T000 --fields MANDT,MTEXT     # RFC_READ_TABLE
+```
+
+The destination is derived from the system you already configured: host from the ADT
+URL, system number from its port, gateway port `3300 + sysnr`. Override per system in
+`.vsp.json` (`rfc_host`, `rfc_sysnr`, `rfc_port`) or per command (`--rfc-host`,
+`--sysnr`, `--port`). RFC logon uses `rfc_user`/`rfc_password`, else `SAP_USER`/
+`SAP_PASSWORD`, else the system's own credentials.
+
+In MCP it is one more action on the single `SAP` tool — the tool space stays as small
+as it was:
+
+```
+SAP(action="rfc", params={"op":"info"})
+SAP(action="rfc", target="Z_DOUBLE", params={"op":"call","args":{"N":21}})
+SAP(action="rfc", target="STFC_CONNECTION")      # describe (default with a target)
+SAP(action="rfc", target="T000", params={"op":"read_table","fields":["MANDT"],"top":5})
+```
+
+Types are handled end to end — scalars (incl. STRING/XSTRING, DATE/TIME, packed
+DEC/TIMESTAMP, FLOAT), flat **and deep** structures and tables (xRFC) — and both the
+classic and fast serializations on the wire.
+
+And RFC does things ADT cannot:
+
+```bash
+vsp rfc probe                                    # what is this system, and what may this user do here
+vsp rfc export ZPACKAGE -o pkg.zip               # abapGit ZIP in one call
+vsp rfc run RSPARAM --wait 60 --spool            # run a report as a background job, read its spool
+vsp rfc adt GET /sap/bc/adt/discovery            # ADT REST tunnelled through RFC, for when ICF is closed
+vsp rfc debuggees                                # who is parked in the debugger, and where
+```
 
 ### And the debugger is only the hard case — potentially all of ADT rides RFC
 
