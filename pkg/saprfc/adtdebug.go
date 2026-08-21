@@ -46,6 +46,14 @@ type adtDebuggeeList struct {
 // ADTListen posts the blocking listener and returns the debuggee that stopped,
 // or nil when the wait timed out with nobody there.
 func (d *Debugger) ADTListen(ctx context.Context, user, ideID, terminalID string, timeoutSeconds int) (*ADTDebuggee, error) {
+	// An empty user means this session's own, not "everybody": ADT registers the
+	// listener under the name it is given, and a listener registered under no
+	// name matches nothing — it waits out its whole timeout and reports that
+	// nobody stopped, which is indistinguishable from a breakpoint that did not
+	// fire.
+	if strings.TrimSpace(user) == "" {
+		user = d.user
+	}
 	d.engaged = true
 	// Remembered for the teardown: a listener is removed by naming the exact
 	// triple it was registered with, and a row left behind blocks the next one.
@@ -192,12 +200,23 @@ func (d *Debugger) ADTDetach(ctx context.Context) error {
 	if err != nil || res.Status < 200 || res.Status >= 300 {
 		_, _ = d.ADTStep(ctx, "stepContinue")
 	}
-	if d.terminalID != "" {
+	if user := d.listenUser; user != "" {
+		// The listener is removed by naming the user and nothing else. In user
+		// debugging mode SAP does not store the ideId and terminalId it was
+		// given: ABDBG_LISTENER holds IDE_ID = the user and TERMINAL_ID =
+		// '%_USER', so a DELETE quoting our own ids matches no row, the
+		// registration survives, and it silently swallows the next debuggee —
+		// a second listen on the same session then waits out its whole timeout
+		// while the debuggee stops for a listener that no longer exists.
+		//
+		// Removing it this way ends external debugging for the user, and the
+		// user's external breakpoints go with it. That is SAP's behaviour, not a
+		// choice available to us: the two are the same act. So a detach leaves a
+		// clean slate, and anything that wants to catch a second debuggee arms
+		// its breakpoints again first.
 		q := url.Values{}
 		q.Set("debuggingMode", "user")
-		q.Set("requestUser", d.listenUser)
-		q.Set("ideId", d.ideID)
-		q.Set("terminalId", d.terminalID)
+		q.Set("requestUser", user)
 		if _, lerr := d.ADT(ctx, "DELETE", "/sap/bc/adt/debugger/listeners?"+q.Encode(), nil, nil); lerr != nil {
 			return lerr
 		}
