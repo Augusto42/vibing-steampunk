@@ -23,3 +23,13 @@ func ParseAttachXML(data []byte) (*DebugAttachResult, error) { return parseAttac
 
 // ParseStepXML reads a step response.
 func ParseStepXML(data []byte) (*DebugStepResult, error) { return parseStepResponse(data) }
+
+// BuildBreakpointRequestXML renders the breakpoint request document.
+func BuildBreakpointRequestXML(req *BreakpointRequest) (string, error) {
+	return buildBreakpointRequestXML(req)
+}
+
+// ParseBreakpointResponseXML reads what SAP answers a breakpoint request with.
+func ParseBreakpointResponseXML(data []byte) (*BreakpointResponse, error) {
+	return parseBreakpointResponse(data)
+}

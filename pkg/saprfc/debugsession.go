@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/oisee/open-rfc-go/rfc"
+	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
 // The debugger's session half — listen, attach, step, stack — only works when
@@ -39,6 +40,10 @@ type Debugger struct {
 	// How this session registered its ADT listener, kept so the teardown can
 	// name the same triple back.
 	listenUser, ideID, terminalID string
+	// The breakpoints this session posted. ADT's breakpoint resource does not
+	// answer a GET, so the client is the only record of its own set — and one
+	// is needed, because a POST replaces the set rather than adding to it.
+	bpSet []adt.Breakpoint
 }
 
 // NewDebugger pins a connection out of the pool and keeps it until Close. The

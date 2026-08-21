@@ -39,6 +39,10 @@ function group — those are function modules and need an RFC channel:
   eclipse [SECONDS]  listen, attach to the first debuggee, show the stack
   estep [KIND]       into (default) | over | out | continue
   estack             the call stack
+  ebp <OBJECT> <LINE> [COND]
+                     set a line breakpoint through ADT — no Z code needed
+  ebps               the breakpoints this client has registered
+  eunbp <ID|all>     remove one breakpoint, or all of them
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
   echildren <ID>     expand a structure, a table or a synthetic root

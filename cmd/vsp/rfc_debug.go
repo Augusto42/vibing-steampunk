@@ -48,6 +48,11 @@ semicolon-separated script and exits. Commands:
                      with no Z code on the server: listen, attach, stack
   estep [KIND]       ADT step: into (default) | over | return | continue
   estack             ADT call stack
+  ebp <OBJECT> <LINE> [COND]
+                     set a line breakpoint through ADT — no Z code needed;
+                     OBJECT is a name the repository knows, or an ADT URI
+  ebps               the breakpoints this client has registered
+  eunbp <ID|all>     remove one breakpoint, or all of them
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
   echildren <ID>     expand a structure, a table or a synthetic root
@@ -251,6 +256,40 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			return serr
 		}
 		fmt.Print(saprfc.FormatStack(info))
+		return nil
+	case "ebp":
+		if len(fields) < 3 {
+			return fmt.Errorf("usage: ebp <OBJECT|ADT-URI> <LINE> [CONDITION]")
+		}
+		bps, berr := dbg.ADTAddBreakpoint(ctx, arg(1), num(2), strings.Join(fields[3:], " "))
+		if berr != nil {
+			return berr
+		}
+		fmt.Print(saprfc.FormatBreakpoints(bps))
+		return nil
+	case "ebps":
+		bps, berr := dbg.ADTBreakpoints(ctx)
+		if berr != nil {
+			return berr
+		}
+		fmt.Print(saprfc.FormatBreakpoints(bps))
+		return nil
+	case "eunbp":
+		if arg(1) == "" {
+			return fmt.Errorf("usage: eunbp <ID|all>")
+		}
+		if strings.EqualFold(arg(1), "all") {
+			if berr := dbg.ADTClearBreakpoints(ctx); berr != nil {
+				return berr
+			}
+			fmt.Fprintln(os.Stderr, "all breakpoints removed")
+			return nil
+		}
+		bps, berr := dbg.ADTDropBreakpoint(ctx, arg(1))
+		if berr != nil {
+			return berr
+		}
+		fmt.Print(saprfc.FormatBreakpoints(bps))
 		return nil
 	case "eraw":
 		rfcDebugRaw = true
