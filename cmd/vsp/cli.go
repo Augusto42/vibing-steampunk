@@ -43,6 +43,13 @@ type systemParams struct {
 
 	TransportAttribute string
 
+	// Safety, as declared for this system. The CLI used to drop these on the
+	// floor: a system marked read_only in .vsp.json was fully writable from
+	// every subcommand, because only the MCP server ever applied a safety
+	// config to its client.
+	ReadOnly        bool
+	AllowedPackages []string
+
 	Cache     bool
 	CachePath string
 }
@@ -104,6 +111,8 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			CookieFile:         sys.CookieFile,
 			CookieString:       sys.CookieString,
 			TransportAttribute: sys.TransportAttribute,
+			ReadOnly:           sys.ReadOnly,
+			AllowedPackages:    sys.AllowedPackages,
 			Cache:              sys.Cache,
 			CachePath:          sys.CachePath,
 		}, nil
@@ -135,6 +144,8 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 		Language:           getEnvOrDefault("SAP_LANGUAGE", "EN"),
 		Insecure:           os.Getenv("SAP_INSECURE") == "true",
 		TransportAttribute: resolveTransportAttributeFromEnv(),
+		ReadOnly:           strings.EqualFold(os.Getenv("SAP_READ_ONLY"), "true"),
+		AllowedPackages:    splitList(os.Getenv("SAP_ALLOWED_PACKAGES")),
 		Cache:              cacheEnabled,
 		CachePath:          cachePath,
 	}, nil
@@ -147,11 +158,38 @@ func resolveTransportAttributeFromEnv() string {
 	return ""
 }
 
+// splitList parses a comma-separated environment value into a list.
+func splitList(v string) []string {
+	var out []string
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // getClient creates an ADT client from system params.
 func getClient(params *systemParams) (*adt.Client, error) {
 	opts := []adt.Option{
 		adt.WithClient(params.Client),
 		adt.WithLanguage(params.Language),
+	}
+
+	// Carry the system's declared safety into the client. Without this a
+	// read_only system is only read-only when the MCP server is talking; every
+	// CLI subcommand wrote happily, which is the opposite of what the setting
+	// says and the opposite of what a careful person would assume.
+	safety := adt.UnrestrictedSafetyConfig()
+	restricted := false
+	if params.ReadOnly {
+		safety.ReadOnly, restricted = true, true
+	}
+	if len(params.AllowedPackages) > 0 {
+		safety.AllowedPackages, restricted = params.AllowedPackages, true
+	}
+	if restricted {
+		opts = append(opts, adt.WithSafety(safety))
 	}
 	if params.Insecure {
 		opts = append(opts, adt.WithInsecureSkipVerify())
