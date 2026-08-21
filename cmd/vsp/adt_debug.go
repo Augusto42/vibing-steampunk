@@ -42,6 +42,7 @@ function group — those are function modules and need an RFC channel:
   ebp <OBJECT> <LINE> [COND]
                      set a line breakpoint through ADT — no Z code needed
   ebps               the breakpoints this client has registered
+  esys               toggle breakpoints inside SAP standard code (off by default)
   eunbp <ID|all>     remove one breakpoint, or all of them
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)

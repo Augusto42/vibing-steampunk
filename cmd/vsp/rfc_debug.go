@@ -52,6 +52,8 @@ semicolon-separated script and exits. Commands:
                      set a line breakpoint through ADT — no Z code needed;
                      OBJECT is a name the repository knows, or an ADT URI
   ebps               the breakpoints this client has registered
+  esys               toggle breakpoints inside SAP standard code (off by
+                     default — SAP refuses to stop there without it)
   eunbp <ID|all>     remove one breakpoint, or all of them
   elocals            the current frame's own variables, with values
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
@@ -111,6 +113,10 @@ const adtTerminalID = "56535000000000000000000000006462"
 // rfcDebugUser is whose debuggees the ADT flow listens for; the REPL sets it
 // from --user, defaulting to the connection's logon user.
 var rfcDebugUser string
+
+// rfcDebugSystem allows breakpoints in SAP's own code to fire. Off by default,
+// matching what the system does anyway.
+var rfcDebugSystem bool
 
 // rfcDebugRaw makes the next e-command print SAP's XML instead of the model.
 // It is one-shot: reading a document raw is a debugging act, not a mode.
@@ -257,6 +263,13 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		}
 		fmt.Print(saprfc.FormatStack(info))
 		return nil
+	case "esys":
+		// Standard code is off by default because SAP keeps it off: a breakpoint
+		// in a system program is accepted and then never fires.
+		rfcDebugSystem = !rfcDebugSystem
+		dbg.SystemDebugging(rfcDebugSystem)
+		fmt.Fprintf(os.Stderr, "breakpoints in SAP standard code: %v\n", rfcDebugSystem)
+		return nil
 	case "ebp":
 		if len(fields) < 3 {
 			return fmt.Errorf("usage: ebp <OBJECT|ADT-URI> <LINE> [CONDITION]")
@@ -266,6 +279,15 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			return berr
 		}
 		fmt.Print(saprfc.FormatBreakpoints(bps))
+		for _, r := range dbg.Rejected() {
+			// SAP does not echo the uri of a line it refused, so name what was
+			// asked for rather than printing an empty one.
+			where := r.URI
+			if where == "" {
+				where = fmt.Sprintf("%s:%d", strings.ToUpper(arg(1)), num(2))
+			}
+			fmt.Fprintf(os.Stderr, "! not placed: %s — %s\n", where, r.ErrorMessage)
+		}
 		return nil
 	case "ebps":
 		bps, berr := dbg.ADTBreakpoints(ctx)

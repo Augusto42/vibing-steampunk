@@ -31,13 +31,13 @@ import (
 // through method parameters") is deliberately out of scope for v2a.1 —
 // it is the v2a.2 / v3 phase and needs its own design.
 type CodeLiteralCall struct {
-	SourceObject   string            `json:"source_object"` // e.g. "CLAS:ZCL_FOO"
-	Target         string            `json:"target"`        // table name
-	Fields         map[string]string `json:"fields"`        // key field → literal (both upper-cased)
-	Row            int               `json:"row"`
-	Via            string            `json:"via"`             // "CALL_FUNCTION:APPL_LOG_INIT"
-	Kind           string            `json:"kind"`            // "known_call" for v2a-min; "direct_select" later
-	IncompleteKey  bool              `json:"incomplete_key"`  // true if code supplied fewer fields than keyFields
+	SourceObject  string            `json:"source_object"` // e.g. "CLAS:ZCL_FOO"
+	Target        string            `json:"target"`        // table name
+	Fields        map[string]string `json:"fields"`        // key field → literal (both upper-cased)
+	Row           int               `json:"row"`
+	Via           string            `json:"via"`            // "CALL_FUNCTION:APPL_LOG_INIT"
+	Kind          string            `json:"kind"`           // "known_call" for v2a-min; "direct_select" later
+	IncompleteKey bool              `json:"incomplete_key"` // true if code supplied fewer fields than keyFields
 }
 
 // extractCodeLiterals runs the ABAP parser on the given source and returns

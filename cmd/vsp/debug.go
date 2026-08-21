@@ -581,6 +581,11 @@ func (s *debugSession) listBreakpoints() error {
 
 	fmt.Println("\nBreakpoints:")
 	for _, bp := range bps.Breakpoints {
+		// A listing shows what is placed; a refusal belongs to whoever asked
+		// for the placement, not to a later reader.
+		if bp.ID == "" {
+			continue
+		}
 		fmt.Printf("  %s: %s (kind: %s)\n", bp.ID, bp.URI, bp.Kind)
 	}
 	fmt.Println()

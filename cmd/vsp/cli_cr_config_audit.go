@@ -482,10 +482,10 @@ func collectCodeTablesFromScope(ctx context.Context, client *adt.Client, liveObj
 // Covered/Missing/Orphan buckets on the metadata plane.
 //
 // Query plan (no regex, everything through DDIC tables):
-//   1. DD03L WHERE TABNAME IN (<batch>) → (TABNAME, FIELDNAME, ROLLNAME)
-//   2. DD04L WHERE ROLLNAME IN (<batch>) → (ROLLNAME, DOMNAME)
-//   3. DD01L WHERE DOMNAME IN (<batch>) → (DOMNAME, ENTITYTAB)   [check table]
-//   4. DD07L WHERE DOMNAME IN (<batch>) → (DOMNAME, DOMVALUE_L)  [fixed values]
+//  1. DD03L WHERE TABNAME IN (<batch>) → (TABNAME, FIELDNAME, ROLLNAME)
+//  2. DD04L WHERE ROLLNAME IN (<batch>) → (ROLLNAME, DOMNAME)
+//  3. DD01L WHERE DOMNAME IN (<batch>) → (DOMNAME, ENTITYTAB)   [check table]
+//  4. DD07L WHERE DOMNAME IN (<batch>) → (DOMNAME, DOMVALUE_L)  [fixed values]
 //
 // Batched to 5 names per IN clause to respect SAP freestyle 255-char limit.
 func walkDDICMetadata(ctx context.Context, client *adt.Client, tables map[string]bool, cache *auditCache) (map[string]graph.MetadataRef, error) {
