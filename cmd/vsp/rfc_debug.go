@@ -42,17 +42,27 @@ semicolon-separated script and exits. Commands:
   stack              the attached debuggee's call stack
   detach             end the debugger session and stop the listener
   adt <METHOD> <URI> [NAME=VALUE …]
-                     tunnel an ADT REST call through this same pinned session`,
+                     tunnel an ADT REST call through this same pinned session
+  eclipse [SECONDS]  the same loop through SAP's own ADT debugger resources,
+                     with no Z code on the server: listen, attach, stack
+  estep [KIND]       ADT step: into (default) | over | return | continue
+  estack             ADT call stack`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		user, _ := cmd.Flags().GetString("user")
 		script, _ := cmd.Flags().GetString("command")
 		timeout, _ := cmd.Flags().GetInt("timeout")
 
-		return withRFCTimeout(cmd, time.Duration(timeout)*time.Second, func(ctx context.Context, c *rfc.Client) error {
+		return withRFCDestTimeout(cmd, time.Duration(timeout)*time.Second, func(ctx context.Context, c *rfc.Client, dest saprfc.Params) error {
 			dbg, err := saprfc.NewDebugger(ctx, c, user)
 			if err != nil {
 				return err
+			}
+			// ADT wants the user named in the query string; the ABAP facade can
+			// default it to SY-UNAME server-side, /debugger/listeners cannot.
+			rfcDebugUser = user
+			if rfcDebugUser == "" {
+				rfcDebugUser = dest.User
 			}
 			defer func() { _ = dbg.Close(ctx) }()
 
@@ -83,6 +93,14 @@ semicolon-separated script and exits. Commands:
 		})
 	},
 }
+
+// adtTerminalID identifies this client to ADT's listener registry. ADT wants a
+// 32-character id; it only has to be stable and distinct, not meaningful.
+const adtTerminalID = "56535000000000000000000000006462"
+
+// rfcDebugUser is whose debuggees the ADT flow listens for; the REPL sets it
+// from --user, defaulting to the connection's logon user.
+var rfcDebugUser string
 
 // runDebugCommand executes one line of the little command language.
 func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) error {
@@ -162,6 +180,47 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		out, err = dbg.Step(ctx, arg(1))
 	case "stack":
 		out, err = dbg.Stack(ctx)
+	case "eclipse":
+		seconds := num(1)
+		if seconds <= 0 {
+			seconds = 120
+		}
+		fmt.Fprintf(os.Stderr, "ADT listener, up to %ds…\n", seconds)
+		who, stack, cerr := dbg.ADTCatch(ctx, rfcDebugUser, "vsp", adtTerminalID, seconds)
+		if who == nil && cerr == nil {
+			fmt.Fprintln(os.Stderr, "nobody stopped")
+			return nil
+		}
+		if who != nil {
+			fmt.Fprintf(os.Stderr, "%s (%s) at %s/%s:%d — %s %s\n",
+				who.ID, who.User, who.Program, who.Include, who.Line, who.Type, who.Name)
+		}
+		if cerr != nil {
+			return cerr
+		}
+		fmt.Println(string(stack.Body))
+		return nil
+	case "estep":
+		kind := map[string]string{
+			"": "stepInto", "into": "stepInto", "over": "stepOver",
+			"out": "stepReturn", "return": "stepReturn", "continue": "stepContinue",
+		}[strings.ToLower(arg(1))]
+		if kind == "" {
+			return fmt.Errorf("step kinds: into, over, out, continue")
+		}
+		res, serr := dbg.ADTStep(ctx, kind)
+		if serr != nil {
+			return serr
+		}
+		fmt.Println(string(res.Body))
+		return nil
+	case "estack":
+		res, serr := dbg.ADTStack(ctx)
+		if serr != nil {
+			return serr
+		}
+		fmt.Println(string(res.Body))
+		return nil
 	case "adt":
 		if len(fields) < 3 {
 			return fmt.Errorf("usage: adt <METHOD> <URI> [NAME=VALUE …]")
