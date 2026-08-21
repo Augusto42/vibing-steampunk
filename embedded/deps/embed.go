@@ -64,6 +64,38 @@ func GetDependencyZIP(name string) []byte {
 	}
 }
 
+// RequireDependencyZIP returns a dependency's bytes, or an error saying exactly
+// what is wrong and what to do about it.
+//
+// The distinction it draws is the one that used to be missed: a dependency can
+// be *known* and still be empty, because the archive is embedded at build time
+// and this build was made without it. A nil check alone lets those zero bytes
+// through, and the caller then unpacks nothing and reports success — the worst
+// possible outcome for an install command.
+func RequireDependencyZIP(name string) ([]byte, error) {
+	zipData := GetDependencyZIP(name)
+	if zipData == nil {
+		var known []string
+		for _, d := range GetAvailableDependencies() {
+			known = append(known, d.Name)
+		}
+		return nil, fmt.Errorf("unknown dependency %q; this build knows: %s",
+			name, strings.Join(known, ", "))
+	}
+	if len(zipData) == 0 {
+		pkg := "$ABAPGIT"
+		for _, d := range GetAvailableDependencies() {
+			if strings.EqualFold(d.Name, name) && d.Package != "" {
+				pkg = d.Package
+			}
+		}
+		return nil, fmt.Errorf("dependency %q is not embedded in this build (the archive is empty). "+
+			"Produce it from a system that already has it — `vsp rfc export '%s' -o %s.zip` — then either "+
+			"deploy that file directly, or place it in embedded/deps/ and rebuild", name, pkg, name)
+	}
+	return zipData, nil
+}
+
 // ABAPFile represents a parsed ABAP source file from abapGit ZIP.
 type ABAPFile struct {
 	// File info
@@ -85,15 +117,15 @@ type ABAPFile struct {
 func DeploymentOrder(files []ABAPFile) []ABAPFile {
 	// Priority order for object types
 	typePriority := map[string]int{
-		"INTF": 1, // Interfaces first (no dependencies)
-		"DOMA": 2, // Domains
-		"DTEL": 3, // Data elements
-		"TABL": 4, // Tables/structures
-		"DDLS": 5, // CDS views
-		"CLAS": 6, // Classes (depend on interfaces)
-		"PROG": 7, // Programs
-		"FUGR": 8, // Function groups
-		"FUNC": 9, // Function modules
+		"INTF": 1,  // Interfaces first (no dependencies)
+		"DOMA": 2,  // Domains
+		"DTEL": 3,  // Data elements
+		"TABL": 4,  // Tables/structures
+		"DDLS": 5,  // CDS views
+		"CLAS": 6,  // Classes (depend on interfaces)
+		"PROG": 7,  // Programs
+		"FUGR": 8,  // Function groups
+		"FUNC": 9,  // Function modules
 		"BDEF": 10, // Behavior definitions
 		"SRVD": 11, // Service definitions
 		"SRVB": 12, // Service bindings
@@ -321,11 +353,11 @@ func ExtractDescription(xmlContent string) string {
 
 // DeploymentPlan represents the plan for deploying a dependency.
 type DeploymentPlan struct {
-	Dependency  string
-	Package     string
-	TotalFiles  int
+	Dependency   string
+	Package      string
+	TotalFiles   int
 	TotalObjects int
-	Objects     []DeploymentObject
+	Objects      []DeploymentObject
 }
 
 // DeploymentObject represents a single object to deploy.

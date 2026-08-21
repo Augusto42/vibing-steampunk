@@ -83,17 +83,13 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	var sourceName string
 
 	if copyEmbedded != "" {
-		// Use embedded dependency
-		zipData = deps.GetDependencyZIP(copyEmbedded)
-		if zipData == nil {
-			available := deps.GetAvailableDependencies()
-			var names []string
-			for _, d := range available {
-				if d.Available {
-					names = append(names, d.Name)
-				}
-			}
-			return fmt.Errorf("embedded dependency '%s' not found. Available: %s", copyEmbedded, strings.Join(names, ", "))
+		// Use embedded dependency. RequireDependencyZIP refuses an archive that
+		// is embedded but empty, which a nil check let through — and an empty
+		// archive unpacks to nothing and reports success.
+		var derr error
+		zipData, derr = deps.RequireDependencyZIP(copyEmbedded)
+		if derr != nil {
+			return derr
 		}
 		sourceName = copyEmbedded + " (embedded)"
 	} else {

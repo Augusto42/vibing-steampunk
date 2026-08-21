@@ -61,16 +61,12 @@ func (s *Server) handleDeployZip(ctx context.Context, request mcp.CallToolReques
 	}
 
 	// Get ZIP data
-	zipData := deps.GetDependencyZIP(source)
-	if zipData == nil {
-		available := deps.GetAvailableDependencies()
-		var names []string
-		for _, d := range available {
-			if d.Available {
-				names = append(names, d.Name)
-			}
-		}
-		return newToolResultError(fmt.Sprintf("Source '%s' not found. Available: %s", source, strings.Join(names, ", "))), nil
+	// An embedded archive can be known and still be empty, because it is baked in
+	// at build time; unpacking those zero bytes reports a successful deployment
+	// of nothing.
+	zipData, derr := deps.RequireDependencyZIP(source)
+	if derr != nil {
+		return newToolResultError(derr.Error()), nil
 	}
 
 	var sb strings.Builder
