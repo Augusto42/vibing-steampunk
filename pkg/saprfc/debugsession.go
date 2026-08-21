@@ -86,6 +86,18 @@ func (d *Debugger) Op(ctx context.Context, op string, args rfc.Params) (json.Raw
 	return json.RawMessage(payload), nil
 }
 
+// ADT tunnels one ADT REST request through this pinned session. Eclipse drives
+// the debugger over exactly these resources, and the only reason a stateless
+// client cannot is that ADT keeps the debug session in an ABAP roll area. Here
+// the roll area is the pinned conversation, so the standard surface should work
+// with no Z code at all — the open question this makes testable.
+func (d *Debugger) ADT(ctx context.Context, method, uri string, headers []ADTHeader, body []byte) (*ADTResponse, error) {
+	if d.session == nil {
+		return nil, fmt.Errorf("the debug session is closed")
+	}
+	return CallADTOn(ctx, d.session, ADTRequest{Method: method, URI: uri, Headers: headers, Body: body})
+}
+
 // State returns the facade's view of this session: which roll area it landed
 // in, how many calls it has served, and whether a debuggee is attached. Two
 // calls on one Debugger must report the same "roll" and a rising "calls" — if
