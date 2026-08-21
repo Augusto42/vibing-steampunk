@@ -484,13 +484,15 @@ CLASS lcl_dbg IMPLEMENTATION.
       ENDTRY.
       CLEAR go_session.
     ENDIF.
-    IF gv_activated = abap_true.
-      TRY.
-          service( )->stop_listener_for_user( i_request_user = sy-uname ).
-        CATCH cx_tpdapi_failure ##NO_HANDLER.
-      ENDTRY.
-      gv_activated = abap_false.
-    ENDIF.
+    " Always try to stop the listener, not only when this session started one.
+    " A conversation that died mid-call (END_DEBUGGER closes it, and so does any
+    " transport failure) leaves its ABDBG_LISTENER row behind, and that row then
+    " conflicts with the next listener. DETACH is the broom.
+    TRY.
+        service( )->stop_listener_for_user( i_request_user = sy-uname ).
+      CATCH cx_tpdapi_failure ##NO_HANDLER.
+    ENDTRY.
+    gv_activated = abap_false.
     CLEAR: gv_debuggee, gv_bp_context, go_bp.
 
     DATA: BEGIN OF ls_out,
