@@ -1,6 +1,6 @@
 # ADT over RFC: a real REST request through the classic-RFC tunnel
 
-*Findings, 2026-08-21. Verified live against A4H (`a4h.desude.su`, SAP_BASIS 758,
+*Findings, 2026-08-21. Verified live against A4H (`devsys2.example.local`, SAP_BASIS 758,
 kernel 793, client 001). Companion to [`rfc-opportunities.md`](rfc-opportunities.md).*
 
 **It works.** `GET /sap/bc/adt/discovery` returns HTTP 200 with a 299,191-byte
