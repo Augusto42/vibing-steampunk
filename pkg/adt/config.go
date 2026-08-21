@@ -54,6 +54,12 @@ type Config struct {
 	// ReauthFunc is called on 401 to re-authenticate (e.g., re-run SAML dance).
 	// Returns fresh cookies for the SAP system. Only used when HasBasicAuth() is false.
 	ReauthFunc func(ctx context.Context) (map[string]string, error)
+
+	// ReauthTimeout caps one re-authentication attempt. Zero uses the default,
+	// which suits a re-auth that runs unattended. Raise it where the flow may
+	// stop to ask a human something — a browser sign-in with a second factor
+	// takes far longer than any machine-to-machine handshake.
+	ReauthTimeout time.Duration
 }
 
 // Option is a functional option for configuring the ADT client.
@@ -214,6 +220,13 @@ func WithFeatures(features FeatureConfig) Option {
 func WithReauthFunc(f func(ctx context.Context) (map[string]string, error)) Option {
 	return func(c *Config) {
 		c.ReauthFunc = f
+	}
+}
+
+// WithReauthTimeout caps a single re-authentication attempt.
+func WithReauthTimeout(d time.Duration) Option {
+	return func(c *Config) {
+		c.ReauthTimeout = d
 	}
 }
 

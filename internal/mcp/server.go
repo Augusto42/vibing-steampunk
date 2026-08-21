@@ -111,6 +111,11 @@ type Config struct {
 	// Returns fresh cookies. Passed through to adt.Config.
 	ReauthFunc func(ctx context.Context) (map[string]string, error)
 
+	// ReauthTimeout caps one re-authentication attempt. Zero uses the client
+	// default, which assumes the flow runs unattended; a browser sign-in that
+	// stops to ask for a second factor needs considerably longer.
+	ReauthTimeout time.Duration
+
 	// Session keep-alive interval (0 = disabled)
 	// Sends periodic pings to prevent session timeout during idle periods.
 	// Useful for cookie/browser-auth where sessions expire server-side.
@@ -145,6 +150,9 @@ func NewServer(cfg *Config) *Server {
 	}
 	if cfg.ReauthFunc != nil {
 		opts = append(opts, adt.WithReauthFunc(cfg.ReauthFunc))
+	}
+	if cfg.ReauthTimeout > 0 {
+		opts = append(opts, adt.WithReauthTimeout(cfg.ReauthTimeout))
 	}
 
 	// Configure safety settings
