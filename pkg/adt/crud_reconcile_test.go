@@ -322,8 +322,8 @@ func TestDeleteObject_UsesStatefulSession(t *testing.T) {
 // stateful-session regression test — the main methodPathMock already
 // records method+path but throws headers away.
 type headerCaptureMock struct {
-	inner     *methodPathMock
-	captured  []capturedReq
+	inner    *methodPathMock
+	captured []capturedReq
 }
 
 type capturedReq struct {
@@ -550,14 +550,17 @@ func TestCreateTestInclude_UsesStatefulSession(t *testing.T) {
 	}
 }
 
-// TestLockObject_RejectsNoModification covers the BTP / ABAP Cloud
-// case from issue #91: a successful LOCK can return
-// MODIFICATION_SUPPORT=NoModification to signal that the object is
-// read-only via ADT for this user/system. Before the fix the caller
-// proceeded to PUT and got a confusing 423 InvalidLockHandle several
-// seconds later. The expected behaviour is to fail at the LOCK call
-// with a clear, actionable error message.
-func TestLockObject_RejectsNoModification(t *testing.T) {
+// TestLockObject_AllowsNoModificationWithHandle pins the corrected reading of
+// MODIFICATION_SUPPORT. The original issue #91 guard failed the LOCK whenever
+// SAP said "NoModification", but that field does not mean "you cannot write":
+// it is what SAP returns for local/customer objects that need no modification
+// recording. Verified against A4H — LOCK on a local global class returns
+// IS_LOCAL=X, MODIFICATION_SUPPORT=NoModification and a valid LOCK_HANDLE, and
+// the PUT of .../source/main that follows returns 200. Worse, the guard
+// returned before unlocking, so every blocked attempt leaked the ENQUEUE it had
+// just taken and the object became genuinely unusable behind our own orphan
+// lock.
+func TestLockObject_AllowsNoModificationWithHandle(t *testing.T) {
 	const noModLockXML = `<?xml version="1.0" encoding="UTF-8"?>
 <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
   <asx:values>
@@ -566,7 +569,7 @@ func TestLockObject_RejectsNoModification(t *testing.T) {
       <CORRNR></CORRNR>
       <CORRUSER></CORRUSER>
       <CORRTEXT></CORRTEXT>
-      <IS_LOCAL></IS_LOCAL>
+      <IS_LOCAL>X</IS_LOCAL>
       <IS_LINK_UP></IS_LINK_UP>
       <MODIFICATION_SUPPORT>NoModification</MODIFICATION_SUPPORT>
     </DATA>
@@ -575,7 +578,47 @@ func TestLockObject_RejectsNoModification(t *testing.T) {
 	mock := &methodPathMock{
 		routes: []routedResponse{
 			resp("", "discovery", 200, "ok"),
-			resp(http.MethodPost, "/oo/classes/ZREADONLY", 200, noModLockXML),
+			resp(http.MethodPost, "/oo/classes/ZLOCAL", 200, noModLockXML),
+		},
+	}
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	lock, err := client.LockObject(
+		context.Background(),
+		"/sap/bc/adt/oo/classes/ZLOCAL",
+		"MODIFY",
+	)
+	if err != nil {
+		t.Fatalf("LockObject returned error for a usable lock handle: %v", err)
+	}
+	if lock.LockHandle != "HANDLE-X" {
+		t.Errorf("LockHandle = %q, want \"HANDLE-X\"", lock.LockHandle)
+	}
+	if lock.ModificationSupport != "NoModification" {
+		t.Errorf("ModificationSupport = %q, want it preserved for the caller", lock.ModificationSupport)
+	}
+}
+
+// TestLockObject_RejectsLockWithoutHandle keeps the genuinely unusable case
+// from issue #91 covered: a LOCK that comes back without a handle leaves
+// nothing to write with, so it must fail at the LOCK call with an actionable
+// message rather than at a confusing 423 InvalidLockHandle seconds later.
+func TestLockObject_RejectsLockWithoutHandle(t *testing.T) {
+	const noHandleLockXML = `<?xml version="1.0" encoding="UTF-8"?>
+<asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
+  <asx:values>
+    <DATA>
+      <LOCK_HANDLE></LOCK_HANDLE>
+      <MODIFICATION_SUPPORT>NoModification</MODIFICATION_SUPPORT>
+    </DATA>
+  </asx:values>
+</asx:abap>`
+	mock := &methodPathMock{
+		routes: []routedResponse{
+			resp("", "discovery", 200, "ok"),
+			resp(http.MethodPost, "/oo/classes/ZREADONLY", 200, noHandleLockXML),
 		},
 	}
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
@@ -588,13 +631,46 @@ func TestLockObject_RejectsNoModification(t *testing.T) {
 		"MODIFY",
 	)
 	if err == nil {
-		t.Fatal("LockObject should have returned an error for NoModification, got nil")
+		t.Fatal("LockObject should have returned an error for a LOCK without a handle, got nil")
 	}
 	if !strings.Contains(err.Error(), "not modifiable") {
 		t.Errorf("error = %q, want to contain \"not modifiable\"", err.Error())
 	}
 	if !strings.Contains(err.Error(), "NoModification") {
 		t.Errorf("error = %q, want to surface the raw modificationSupport value", err.Error())
+	}
+}
+
+// TestLockObject_SurfacesEnqueueConflict covers the EU510 case: another
+// session (often a dead one of our own) still holds the ENQUEUE, and ADT
+// answers _action=LOCK with an exception document. Parsed as a lock result
+// that used to degrade into an empty LockResult and a misleading
+// "NoModification" report; the real message must reach the caller.
+func TestLockObject_SurfacesEnqueueConflict(t *testing.T) {
+	const conflictXML = `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><namespace id="com.sap.adt"/><type id="ExceptionResourceNoAccess"/><message lang="EN">User TESTUSER is currently editing ZCL_DEMO_LOCKED</message></exc:exception>`
+	mock := &methodPathMock{
+		routes: []routedResponse{
+			resp("", "discovery", 200, "ok"),
+			resp(http.MethodPost, "/oo/classes/ZCL_DEMO_LOCKED", 200, conflictXML),
+		},
+	}
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	_, err := client.LockObject(
+		context.Background(),
+		"/sap/bc/adt/oo/classes/ZCL_DEMO_LOCKED",
+		"MODIFY",
+	)
+	if err == nil {
+		t.Fatal("LockObject should have returned an error for an ADT exception, got nil")
+	}
+	if !strings.Contains(err.Error(), "currently editing") {
+		t.Errorf("error = %q, want SAP's own EU510 message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "ExceptionResourceNoAccess") {
+		t.Errorf("error = %q, want the ADT exception type", err.Error())
 	}
 }
 
