@@ -59,6 +59,34 @@ checkout passes `go test ./...`; activation failures surface as failures.
       closing reference to `#2` from `#106` first.
 - [ ] **(maintainer)** Close with an explanation: `#151`, `#138`, `#130`, `#139`.
 
+**Fixed here instead of merging** (2026-08-21). Each of these was reported by a
+contributor and is now fixed on `main`; the PRs shrink or close, and the credit
+belongs to whoever found it:
+
+- [x] **The deploy path checked syntax while holding the lock.** A syntax check
+      is a stateless request, and one sent while a lock is held ends the session
+      the lock lives in, so the write came back `423 InvalidLockHandle`. Both
+      deploy branches now check before locking, as `EditSource` always did. This
+      is the cause behind much of the `#88`/`#91`/`#92`/`#98`/`#110` family, and
+      the concern `#108` raised first.
+- [x] **A 403 on the CSRF `HEAD` skipped the `GET` fallback** — the exact case
+      `#104` reports. Only a 401 short-circuits now.
+- [x] **A read-only system was writable from the command line.** Only the MCP
+      server ever handed a safety configuration to its ADT client, so
+      `read_only` and `allowed_packages` in `.vsp.json` restricted nothing on any
+      CLI subcommand. Raised as one of the concerns in `#156`.
+- [x] **An empty embedded archive deployed nothing and reported success.** Both
+      abapGit ZIPs in this repository are zero bytes; two of the three call
+      sites checked only for `nil`. Related to `#138`.
+
+**Still to do ourselves rather than merge:**
+
+- [ ] The remaining concerns of `#156` that survive review, taken one at a time
+      rather than as one eleven-part change.
+- [ ] Ship the abapGit archives, or stop advertising them. `vsp rfc export
+      '$ABAPGIT'` produces one in a single command now, which makes a build-time
+      fetch a real option.
+
 **Done when:** the Tier 0 list is empty, message classes round-trip, and the open-PR
 count is in single digits.
 
