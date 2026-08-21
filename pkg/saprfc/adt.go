@@ -58,11 +58,27 @@ func (r *ADTResponse) Header(name string) string {
 	return ""
 }
 
+// rfcCaller is what CallADT needs from a connection: either the pooled client
+// or one pinned session. The distinction matters more here than anywhere else —
+// see CallADTOn.
+type rfcCaller interface {
+	Call(ctx context.Context, function string, in rfc.Params) (rfc.Result, error)
+}
+
 // CallADT tunnels one HTTP request to the ADT REST dispatcher over classic RFC
 // and returns the response. It is transport only: no CSRF token is fetched and
 // no session is kept, so it serves read-only requests (GET) directly and leaves
-// stateful, token-protected flows to the HTTP client.
+// stateful, token-protected flows to the HTTP client — or to CallADTOn.
 func CallADT(ctx context.Context, c *rfc.Client, req ADTRequest) (*ADTResponse, error) {
+	return CallADTOn(ctx, c, req)
+}
+
+// CallADTOn is CallADT over a caller you choose. Give it a pinned rfc.Session
+// and consecutive ADT requests run in one ABAP session — which is what ADT's
+// stateful resources (locks, and the debugger) need, and what a stateless HTTP
+// client has to simulate with sap-contextid cookies. Over RFC the session is
+// the conversation, so there is nothing to simulate.
+func CallADTOn(ctx context.Context, c rfcCaller, req ADTRequest) (*ADTResponse, error) {
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = "GET"

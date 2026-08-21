@@ -40,7 +40,8 @@ semicolon-separated script and exits. Commands:
   attach <ID>        attach to a waiting debuggee
   step [KIND]        into (default) | over | out | continue
   stack              the attached debuggee's call stack
-  detach             end the debugger session and stop the listener`,
+  detach             end the debugger session and stop the listener
+  adt <METHOD> <URI> tunnel an ADT REST call through this same pinned session`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		user, _ := cmd.Flags().GetString("user")
@@ -160,6 +161,18 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		out, err = dbg.Step(ctx, arg(1))
 	case "stack":
 		out, err = dbg.Stack(ctx)
+	case "adt":
+		if len(fields) < 3 {
+			return fmt.Errorf("usage: adt <METHOD> <URI>")
+		}
+		res, aerr := dbg.ADT(ctx, arg(1), arg(2), nil, nil)
+		if aerr != nil {
+			return aerr
+		}
+		fmt.Fprintf(os.Stderr, "%d %s · %d bytes · %s\n",
+			res.Status, res.ReasonPhrase, len(res.Body), res.Header("content-type"))
+		fmt.Println(string(res.Body))
+		return nil
 	case "detach":
 		out, err = dbg.Detach(ctx)
 	default:
