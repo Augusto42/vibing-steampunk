@@ -48,6 +48,9 @@ type Debugger struct {
 	bpRejects []adt.Breakpoint
 	// Whether breakpoints in SAP's own code are allowed to fire at all.
 	systemDebugging bool
+	// Numbers the multipart boundaries so two batches on one session cannot
+	// collide.
+	batchSeq int
 }
 
 // NewDebugger pins a connection out of the pool and keeps it until Close. The
