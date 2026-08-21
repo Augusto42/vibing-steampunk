@@ -28,6 +28,7 @@ CLASS lcl_dbg DEFINITION FINAL CREATE PRIVATE.
     CLASS-METHODS bp_set
       IMPORTING i_program      TYPE csequence
                 i_line         TYPE i
+                i_include      TYPE csequence OPTIONAL
                 i_request_user TYPE csequence OPTIONAL
                 i_condition    TYPE csequence OPTIONAL
       RETURNING VALUE(r_json)  TYPE string
@@ -210,15 +211,24 @@ CLASS lcl_dbg IMPLEMENTATION.
   METHOD bp_set.
     touch( ).
     DATA(lv_user) = user( i_request_user ).
+    " A line number alone is read against the main program, so a breakpoint
+    " inside a function module or a class method needs its include named too.
+    " CREATE_LINE_BREAKPOINT submits by itself unless told otherwise; with a
+    " condition we have to hold that back, because the condition must be on the
+    " breakpoint before it is submitted.
+    DATA(lv_submit) = COND xflag( WHEN i_condition IS INITIAL THEN 'X' ELSE space ).
     DATA(lo_bp) = CAST if_tpdapi_bp_modify(
       bp_services( lv_user )->create_line_breakpoint(
         i_main_program = to_upper( i_program )
-        i_line_nr      = i_line ) ).
+        i_include      = COND string( WHEN i_include IS INITIAL
+                                      THEN to_upper( i_program ) ELSE to_upper( i_include ) )
+        i_line_nr      = i_line
+        i_flg_submit   = lv_submit ) ).
 
     IF i_condition IS NOT INITIAL.
       lo_bp->set_condition( i_condition = i_condition ).
+      lo_bp->submit( ).
     ENDIF.
-    lo_bp->submit( ).
 
     DATA: BEGIN OF ls_out,
             id        TYPE string,
@@ -462,6 +472,7 @@ FUNCTION ZADT_DEBUG_RFC
   IMPORTING
     VALUE(i_op) TYPE char20
     VALUE(i_program) TYPE programm OPTIONAL
+    VALUE(i_include) TYPE programm OPTIONAL
     VALUE(i_line) TYPE i OPTIONAL
     VALUE(i_user) TYPE xubname OPTIONAL
     VALUE(i_debuggee_id) TYPE sysuuid_c32 OPTIONAL
@@ -481,6 +492,7 @@ FUNCTION ZADT_DEBUG_RFC
         WHEN 'bp_set'.
           e_json = lcl_dbg=>bp_set( i_program      = i_program
                                     i_line         = i_line
+                                    i_include      = i_include
                                     i_request_user = i_user
                                     i_condition    = i_condition ).
         WHEN 'bp_list'.
