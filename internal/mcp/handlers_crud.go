@@ -184,6 +184,15 @@ func (s *Server) handleCreateObject(ctx context.Context, request mcp.CallToolReq
 		bindingCategory = bc
 	}
 
+	rfcEnabled := false
+	if r, ok := request.GetArguments()["rfc_enabled"].(bool); ok {
+		rfcEnabled = r
+	}
+	source := ""
+	if src, ok := request.GetArguments()["source"].(string); ok {
+		source = src
+	}
+
 	opts := adt.CreateObjectOptions{
 		ObjectType:        adt.CreatableObjectType(objectType),
 		Name:              name,
@@ -194,6 +203,32 @@ func (s *Server) handleCreateObject(ctx context.Context, request mcp.CallToolReq
 		ServiceDefinition: serviceDefinition,
 		BindingVersion:    bindingVersion,
 		BindingCategory:   bindingCategory,
+	}
+
+	// A function module needs more than the creation POST: the creation
+	// document's fmodule:processingType is ignored (the module comes back
+	// "normal" however loudly the request asked for "rfc"), and its signature
+	// lives in the source. CreateFunctionModule does the full flow — create,
+	// flip the remote-enabled flag, write the source, activate — so
+	// remote-enabled modules no longer need a hand-built shell in SE37.
+	if opts.ObjectType == adt.ObjectTypeFunctionMod && (rfcEnabled || source != "") {
+		if parentName == "" {
+			return newToolResultError("parent_name (the function group) is required for FUGR/FF"), nil
+		}
+		fmResult, err := s.adtClient.CreateFunctionModule(ctx, adt.CreateFunctionModuleOptions{
+			Group:       parentName,
+			Name:        name,
+			Description: description,
+			PackageName: packageName,
+			Transport:   transport,
+			RFCEnabled:  rfcEnabled,
+			Source:      source,
+		})
+		if err != nil {
+			return newToolResultError(fmt.Sprintf("Failed to create function module: %v", err)), nil
+		}
+		output, _ := json.MarshalIndent(fmResult, "", "  ")
+		return mcp.NewToolResultText(string(output)), nil
 	}
 
 	err := s.adtClient.CreateObject(ctx, opts)
