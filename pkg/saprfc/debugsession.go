@@ -44,6 +44,10 @@ type Debugger struct {
 	// answer a GET, so the client is the only record of its own set — and one
 	// is needed, because a POST replaces the set rather than adding to it.
 	bpSet []adt.Breakpoint
+	// The lines of the last set that SAP refused, with its reason on each.
+	bpRejects []adt.Breakpoint
+	// Whether breakpoints in SAP's own code are allowed to fire at all.
+	systemDebugging bool
 }
 
 // NewDebugger pins a connection out of the pool and keeps it until Close. The

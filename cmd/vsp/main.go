@@ -118,7 +118,6 @@ func init() {
 	rootCmd.Flags().String("saml-password", "", "SAML/IAS password")
 	rootCmd.Flags().String("credential-cmd", "", "External command returning JSON {\"username\":...,\"password\":...} (space-separated argv, no shell quoting — use a wrapper script for paths with spaces)")
 
-
 	// Session keep-alive
 	rootCmd.Flags().Duration("keepalive", 5*time.Minute, "Session keep-alive interval (e.g., 60s, 5m). Prevents session timeout during idle periods. 0 = disabled")
 

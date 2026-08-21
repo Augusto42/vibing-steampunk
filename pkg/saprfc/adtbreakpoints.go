@@ -24,6 +24,21 @@ import (
 // means posting the others, which is what Eclipse does and what DropBreakpoint
 // does below.
 
+// SystemDebugging decides whether breakpoints in SAP's own code can fire.
+//
+// Off — the default — is not merely a policy of ours: a breakpoint set in a
+// system program is accepted, is given an id, and then never stops anything.
+// Measured on A4H: a breakpoint on SAPMSSY0's %_BEFORE_COMMIT, which a trace
+// proves runs on every COMMIT WORK, did not fire until this flag was set, and
+// fired immediately once it was. So customer code is where the debugger lives
+// by default, and standard code is one deliberate switch away.
+//
+// Staying out of standard costs less than it sounds. A breakpoint on the line
+// that calls a standard function module captures what was passed in, and one on
+// the line after captures what came back — the contract, without stepping
+// through somebody else's implementation.
+func (d *Debugger) SystemDebugging(on bool) { d.systemDebugging = on }
+
 // IDEID identifies vsp to SAP's breakpoint and listener registries.
 const IDEID = "vsp"
 
@@ -69,12 +84,13 @@ func (d *Debugger) ADTSetBreakpoints(ctx context.Context, bps []adt.Breakpoint) 
 		bps[i].Enabled = true
 	}
 	body, err := adt.BuildBreakpointRequestXML(&adt.BreakpointRequest{
-		Scope:         adt.BreakpointScopeExternal,
-		DebuggingMode: adt.DebuggingModeUser,
-		User:          user,
-		IdeID:         ide,
-		TerminalID:    term,
-		Breakpoints:   bps,
+		Scope:           adt.BreakpointScopeExternal,
+		DebuggingMode:   adt.DebuggingModeUser,
+		User:            user,
+		IdeID:           ide,
+		TerminalID:      term,
+		SystemDebugging: d.systemDebugging,
+		Breakpoints:     bps,
 	})
 	if err != nil {
 		return nil, err
@@ -92,9 +108,28 @@ func (d *Debugger) ADTSetBreakpoints(ctx context.Context, bps []adt.Breakpoint) 
 	if err != nil {
 		return nil, err
 	}
-	d.bpSet = parsed.Breakpoints
-	return parsed.Breakpoints, nil
+	// SAP answers per requested breakpoint, not per request: a line it cannot
+	// place comes back with an errorMessage and no id. Dropping those silently
+	// is how a caller ends up believing it instrumented a unit it did not —
+	// posting sixty candidate lines and receiving six is a normal outcome, since
+	// declarations and comments carry no statement to stop at.
+	var placed []adt.Breakpoint
+	d.bpRejects = nil
+	for _, bp := range parsed.Breakpoints {
+		if bp.ID == "" {
+			d.bpRejects = append(d.bpRejects, bp)
+			continue
+		}
+		placed = append(placed, bp)
+	}
+	d.bpSet = placed
+	return placed, nil
 }
+
+// Rejected returns the breakpoints SAP refused to place in the last set, with
+// its reason on each. It is the diagnostic that makes blind placement viable:
+// send every line that might be a call, keep what stuck, and report the rest.
+func (d *Debugger) Rejected() []adt.Breakpoint { return d.bpRejects }
 
 // ADTBreakpoints reads the breakpoints this client has registered.
 //
