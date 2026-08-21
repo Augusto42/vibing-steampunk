@@ -408,13 +408,23 @@ var rfcReadTableCmd = &cobra.Command{
 
 // withRFC resolves the RFC destination for the selected system and runs fn.
 func withRFC(cmd *cobra.Command, fn func(context.Context, *rfc.Client) error) error {
-	return withRFCDest(cmd, func(ctx context.Context, c *rfc.Client, _ saprfc.Params) error {
+	return withRFCTimeout(cmd, 0, fn)
+}
+
+// withRFCTimeout is withRFC for commands that make a call which blocks
+// server-side on purpose: the client must not give up before the server does.
+func withRFCTimeout(cmd *cobra.Command, timeout time.Duration, fn func(context.Context, *rfc.Client) error) error {
+	return withRFCDestTimeout(cmd, timeout, func(ctx context.Context, c *rfc.Client, _ saprfc.Params) error {
 		return fn(ctx, c)
 	})
 }
 
 // withRFCDest is withRFC for callers that also need the resolved destination.
 func withRFCDest(cmd *cobra.Command, fn func(context.Context, *rfc.Client, saprfc.Params) error) error {
+	return withRFCDestTimeout(cmd, 0, fn)
+}
+
+func withRFCDestTimeout(cmd *cobra.Command, timeout time.Duration, fn func(context.Context, *rfc.Client, saprfc.Params) error) error {
 	params, err := resolveSystemParams(cmd)
 	if err != nil {
 		return err
@@ -447,7 +457,7 @@ func withRFCDest(cmd *cobra.Command, fn func(context.Context, *rfc.Client, saprf
 		fmt.Fprintf(os.Stderr, "[INFO] RFC %s:%d (sysnr %s) client %s user %s\n", dest.Host, dest.Port, dest.Sysnr, dest.Client, dest.User)
 	}
 	ctx := context.Background()
-	c, err := saprfc.Open(ctx, dest)
+	c, err := saprfc.OpenWithTimeout(ctx, dest, timeout)
 	if err != nil {
 		return fmt.Errorf("RFC logon to %s:%d failed: %w", dest.Host, dest.Port, err)
 	}

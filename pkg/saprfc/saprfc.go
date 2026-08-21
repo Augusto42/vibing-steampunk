@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oisee/open-rfc-go/rfc"
 )
@@ -105,15 +106,24 @@ func Resolve(in Input) (Params, error) {
 
 // Open dials an RFC client for the resolved parameters.
 func Open(ctx context.Context, p Params) (*rfc.Client, error) {
+	return OpenWithTimeout(ctx, p, 0)
+}
+
+// OpenWithTimeout dials an RFC client that allows a single call to take up to
+// timeout (zero keeps the library default). Raise it for calls that block
+// server-side on purpose — a debugger listener holds its conversation for as
+// long as it waits, and the client must not give up before the server does.
+func OpenWithTimeout(ctx context.Context, p Params, timeout time.Duration) (*rfc.Client, error) {
 	n, _ := strconv.Atoi(p.Sysnr)
 	return rfc.Open(ctx, rfc.Destination{
-		Host:     p.Host,
-		Port:     p.Port,
-		Service:  fmt.Sprintf("sapdp%02d", n),
-		Client:   p.Client,
-		User:     p.User,
-		Password: p.Password,
-		Language: p.Language,
+		OperationTimeout: timeout,
+		Host:             p.Host,
+		Port:             p.Port,
+		Service:          fmt.Sprintf("sapdp%02d", n),
+		Client:           p.Client,
+		User:             p.User,
+		Password:         p.Password,
+		Language:         p.Language,
 	})
 }
 
