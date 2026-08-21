@@ -166,23 +166,14 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		if len(fields) < 3 {
 			return fmt.Errorf("usage: adt <METHOD> <URI> [NAME=VALUE …]")
 		}
+		// A missing Accept is filled in by the tunnel itself.
 		var headers []saprfc.ADTHeader
-		hasAccept := false
 		for _, raw := range fields[3:] {
 			name, value, ok := strings.Cut(raw, "=")
 			if !ok {
 				return fmt.Errorf("a header must be NAME=VALUE, got %q", raw)
 			}
-			if strings.EqualFold(name, "accept") {
-				hasAccept = true
-			}
 			headers = append(headers, saprfc.ADTHeader{Name: name, Value: value})
-		}
-		// ADT rejects a request with no Accept header outright
-		// ("Accept header missing"), where an HTTP client would have sent one
-		// without being asked. Supply the generic one unless told otherwise.
-		if !hasAccept {
-			headers = append(headers, saprfc.ADTHeader{Name: "Accept", Value: "application/xml"})
 		}
 		res, aerr := dbg.ADT(ctx, arg(1), arg(2), headers, nil)
 		if aerr != nil {
