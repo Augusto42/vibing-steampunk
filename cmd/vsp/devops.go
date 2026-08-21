@@ -1702,12 +1702,12 @@ type cliHealthSignal struct {
 }
 
 type cliHealthResult struct {
-	Scope            cliHealthScope              `json:"scope"`
-	Summary          cliHealthSummary            `json:"summary"`
-	Signals          map[string]cliHealthSignal  `json:"signals"`
-	TestDetails      *adt.UnitTestResult         `json:"testDetails,omitempty"`
-	ATCDetails       *adt.ATCWorklist            `json:"atcDetails,omitempty"`
-	CrossingDetails  *graph.CrossingReport       `json:"crossingDetails,omitempty"`
+	Scope           cliHealthScope             `json:"scope"`
+	Summary         cliHealthSummary           `json:"summary"`
+	Signals         map[string]cliHealthSignal `json:"signals"`
+	TestDetails     *adt.UnitTestResult        `json:"testDetails,omitempty"`
+	ATCDetails      *adt.ATCWorklist           `json:"atcDetails,omitempty"`
+	CrossingDetails *graph.CrossingReport      `json:"crossingDetails,omitempty"`
 }
 
 func runHealth(cmd *cobra.Command, args []string) error {
@@ -3248,8 +3248,8 @@ func runInstallAbapGit(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "============================\n\n")
 
 	// Get ZIP data
-	zipData := deps.GetDependencyZIP(depName)
-	if zipData == nil || len(zipData) == 0 {
+	zipData, depErr := deps.RequireDependencyZIP(depName)
+	if depErr != nil {
 		fmt.Fprintf(os.Stderr, "ZIP not embedded for edition '%s'\n\n", edition)
 		fmt.Fprintf(os.Stderr, "To embed abapGit:\n")
 		fmt.Fprintf(os.Stderr, "1. On a system with abapGit installed, run:\n")
@@ -3262,7 +3262,7 @@ func runInstallAbapGit(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "3. Update embedded/deps/embed.go with go:embed directive\n")
 		fmt.Fprintf(os.Stderr, "4. Rebuild vsp\n\n")
 		fmt.Fprintf(os.Stderr, "Alternative: Download from https://github.com/abapGit/abapGit\n")
-		return fmt.Errorf("embedded ZIP not available for edition '%s'", edition)
+		return depErr
 	}
 
 	fmt.Fprintf(os.Stderr, "Source: %s (embedded, %d bytes)\n", depName, len(zipData))
