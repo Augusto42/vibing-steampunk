@@ -436,10 +436,40 @@ CLASS lcl_dbg IMPLEMENTATION.
 
   METHOD stack.
     touch( ).
-    " The stack table's type is internal to the stack handler, so the frames
-    " are serialised on their own and spliced into the envelope by hand.
-    DATA(lv_frames) = json( session( )->get_stack_handler( )->get_stack( ) ).
-    r_json = |\{"debuggee_id":"{ gv_debuggee }","frames":{ lv_frames }\}|.
+    " Project the stack onto the five fields anyone actually reads. Handing the
+    " raw TPDAPI stack table to /UI2/CL_JSON hangs the call: the line type
+    " carries more than plain scalars, and the caller then waits out its whole
+    " RFC timeout with the debuggee still attached.
+    TYPES: BEGIN OF ty_frame,
+             level    TYPE i,
+             program  TYPE string,
+             include  TYPE string,
+             line     TYPE i,
+             procname TYPE string,
+             active   TYPE abap_bool,
+           END OF ty_frame.
+    DATA lt_frames TYPE STANDARD TABLE OF ty_frame WITH DEFAULT KEY.
+    DATA lv_level TYPE i.
+
+    LOOP AT session( )->get_stack_handler( )->get_stack( ) INTO DATA(ls_frame).
+      lv_level = lv_level + 1.
+      APPEND VALUE ty_frame(
+        level    = lv_level
+        program  = ls_frame-program
+        include  = ls_frame-include
+        line     = ls_frame-line
+        procname = ls_frame-procname
+        active   = COND #( WHEN ls_frame-flg_active IS NOT INITIAL
+                           THEN abap_true ELSE abap_false ) ) TO lt_frames.
+    ENDLOOP.
+
+    DATA: BEGIN OF ls_out,
+            debuggee_id TYPE string,
+            frames      TYPE STANDARD TABLE OF ty_frame WITH DEFAULT KEY,
+          END OF ls_out.
+    ls_out-debuggee_id = gv_debuggee.
+    ls_out-frames      = lt_frames.
+    r_json = json( ls_out ).
   ENDMETHOD.
 
 
