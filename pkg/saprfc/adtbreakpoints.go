@@ -211,24 +211,30 @@ func (d *Debugger) ResolveSourceURI(ctx context.Context, name string) (string, e
 	return "", fmt.Errorf("no object named %s in the repository", name)
 }
 
-// ADTAddBreakpoint adds one line breakpoint to the set this client already has.
-// The read-modify-write is not an optimisation to skip: a bare POST would
-// silently drop every other breakpoint the session had registered.
+// ADTAdd adds one breakpoint to the set this client already has. The
+// read-modify-write is not an optimisation to skip: a bare POST would silently
+// drop every other breakpoint the session had registered.
+func (d *Debugger) ADTAdd(ctx context.Context, bp adt.Breakpoint) ([]adt.Breakpoint, error) {
+	current, err := d.ADTBreakpoints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return d.ADTSetBreakpoints(ctx, append(current, bp))
+}
+
+// ADTAddBreakpoint adds a line breakpoint, naming the object rather than its
+// ADT URI.
 func (d *Debugger) ADTAddBreakpoint(ctx context.Context, object string, line int, condition string) ([]adt.Breakpoint, error) {
 	uri, err := d.ResolveSourceURI(ctx, object)
 	if err != nil {
 		return nil, err
 	}
-	current, err := d.ADTBreakpoints(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return d.ADTSetBreakpoints(ctx, append(current, adt.Breakpoint{
+	return d.ADTAdd(ctx, adt.Breakpoint{
 		Kind:      adt.BreakpointKindLine,
 		URI:       uri,
 		Line:      line,
 		Condition: condition,
-	}))
+	})
 }
 
 // FormatBreakpoints renders a breakpoint set for a terminal.

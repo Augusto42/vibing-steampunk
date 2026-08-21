@@ -46,6 +46,11 @@ type Server struct {
 	rfcShared   *openrfc.Client
 	rfcLastUsed time.Time
 
+	// The one debug session this server holds across tool calls (see
+	// handlers_debug_session.go); nil until the first debugger call.
+	debugMu   sync.Mutex
+	debugSess *debugSession
+
 	// Async task management
 	asyncTasks   map[string]*AsyncTask
 	asyncTasksMu sync.RWMutex
@@ -237,6 +242,10 @@ func parseFeatureMode(s string) adt.FeatureMode {
 
 // ServeStdio starts the MCP server on stdin/stdout.
 func (s *Server) ServeStdio() error {
+	// A debuggee left attached when the server exits stays suspended in a work
+	// process until its caller times out, so the session is released here as
+	// well as on an explicit detach.
+	defer s.closeDebugSession(context.Background())
 	return server.ServeStdio(s.mcpServer)
 }
 

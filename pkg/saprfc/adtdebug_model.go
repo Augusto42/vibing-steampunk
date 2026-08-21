@@ -114,9 +114,10 @@ func FormatVariables(vars []adt.DebugVariable) string {
 		case v.IsComplexType():
 			fmt.Fprintf(&sb, "{…} → %s", v.ID)
 		default:
-			// ABAP pads a CHAR field to its full length; 200 trailing blanks
-			// are not information.
-			sb.WriteString(strings.TrimRight(v.Value, " "))
+			// ABAP pads a fixed-length field to its full width, and justifies
+			// some of them right, so the padding lands on either side. 200
+			// blanks are not information; the exact bytes stay one 'eraw' away.
+			sb.WriteString(strings.TrimSpace(v.Value))
 		}
 		if v.IsValueIncomplete {
 			sb.WriteString(" …(truncated)")
