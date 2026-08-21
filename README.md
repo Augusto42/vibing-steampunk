@@ -744,12 +744,54 @@ Configure multiple SAP systems in `.vsp.json`:
 **Password Resolution:**
 - Set via environment variable: `VSP_<SYSTEM>_PASSWORD` (e.g., `VSP_DEV_PASSWORD`)
 - Or use cookie authentication: `cookie_file` or `cookie_string`
+- Or let the browser do it: `"auth": "sso"` — see [Browser SSO](#browser-sso-entra-saml-kerberos)
 
 **Config Locations** (searched in order):
 1. `.vsp.json` (current directory)
 2. `.vsp/systems.json`
 3. `~/.vsp.json`
 4. `~/.vsp/systems.json`
+
+### Browser SSO (Entra, SAML, Kerberos)
+
+Some systems have no password to give: sign-in goes through a browser, and what
+comes back is a session that expires in hours. Set `"auth": "sso"` and vsp keeps
+one for itself — capturing a session on demand, noticing when the server stops
+accepting it, and capturing another. Nothing that expires is written into any
+config file.
+
+```json
+{
+  "systems": {
+    "dev": { "url": "https://sap.example", "client": "100", "auth": "sso" }
+  }
+}
+```
+
+```bash
+vsp -s dev sso login       # first sign-in, in a visible window
+vsp -s dev sso status --check   # what is cached, and whether it still works
+vsp -s dev search 'ZCL_*'  # from here on, authentication takes care of itself
+```
+
+The session is cached in `~/.vsp/sso/<system>.json`, owner-only. Optional tuning
+lives in an `sso` block: `trigger_url` (the page whose loading starts the
+redirect — the ADT root by default), `profile` (browser profile directory),
+`helper` (path to `vsp-sso.exe`), and `on_expiry` — `"window"` opens a sign-in
+window when a silent refresh needs a human, `"error"` reports what to run
+instead, which is the better choice where nobody is watching a screen.
+
+**Under WSL** the browser step runs as a Windows process. This is not a
+convenience: on tenants with device-based Conditional Access the credential that
+proves the device — an Entra Primary Refresh Token — is held by the Windows
+account broker and cannot be reached from Linux, so a browser started on the
+Linux side loops on the identity provider forever. vsp stages a small helper
+(`vsp-sso.exe`, from `make sso-helper`) onto the Windows side, runs it through
+interop, and reads the cookies back over its stdout. Only cookies cross.
+
+`--sso` is authoritative: any `SAP_USER`/`SAP_PASSWORD` in the environment is
+ignored, because basic auth would win in the transport and take the automatic
+recovery down with it.
 
 <details>
 <summary><strong>MCP Server Configuration</strong></summary>
@@ -758,6 +800,7 @@ Configure multiple SAP systems in `.vsp.json`:
 ```bash
 vsp --url https://host:44300 --user admin --password secret
 vsp --url https://host:44300 --cookie-file cookies.txt
+vsp --url https://host:44300 --sso --sso-system dev   # browser SSO, self-refreshing
 vsp --mode expert          # Enable all 147 tools
 vsp --mode hyperfocused    # Single SAP tool (~200 tokens instead of ~40K)
 ```
@@ -786,6 +829,9 @@ SAP_PASSWORD=secret
 | `--client` | `SAP_CLIENT` | Client (default: 001) |
 | `--mode` | `SAP_MODE` | `hyperfocused` (recommended), `focused`, or `expert` |
 | `--cookie-file` | `SAP_COOKIE_FILE` | Netscape cookie file |
+| `--sso` | `SAP_SSO` | Browser SSO; re-captures the session when it expires |
+| `--sso-system` | `SAP_SSO_SYSTEM` | Name for the cached session (default: URL host) |
+| `--sso-on-expiry` | `SAP_SSO_ON_EXPIRY` | `window` (default) or `error` when a sign-in is due |
 | `--insecure` | `SAP_INSECURE` | Skip TLS verification |
 | `--terminal-id` | `SAP_TERMINAL_ID` | SAP GUI terminal ID for cross-tool debugging |
 | `--allow-transportable-edits` | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Enable editing transportable objects |
@@ -1363,6 +1409,7 @@ vibing-steampunk/
 - [x] gCTS Integration - 10 tools for gCTS repository management
 - [x] i18n Tools - 7 tools for translation management with per-request language override
 - [x] Browser SSO - `--browser-auth` for Kerberos/SAML/Keycloak authentication
+- [x] Self-refreshing SSO - `"auth": "sso"` keeps its own session, WSL included
 - [x] HTTP Streamable Transport - `--transport http` for non-stdio deployments
 - [x] mcp-go v0.47.0 - Latest MCP SDK
 

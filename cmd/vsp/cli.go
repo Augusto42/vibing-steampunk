@@ -41,6 +41,11 @@ type systemParams struct {
 	CookieFile   string
 	CookieString string
 
+	// Auth names the authentication method ("sso" for browser single sign-on).
+	Auth string
+	// SSO carries this system's single sign-on settings, if any.
+	SSO *config.SSOSettings
+
 	TransportAttribute string
 
 	// Safety, as declared for this system. The CLI used to drop these on the
@@ -88,10 +93,11 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			return nil, err
 		}
 
-		// Require either password or cookie auth
+		// Require some way to authenticate. An SSO system needs no stored
+		// credential at all: the browser handshake produces one on demand.
 		hasCookieAuth := sys.CookieFile != "" || sys.CookieString != ""
-		if sys.Password == "" && !hasCookieAuth {
-			return nil, fmt.Errorf("auth not found for system '%s'. Set VSP_%s_PASSWORD env var or use cookie_file/cookie_string", effectiveName, strings.ToUpper(effectiveName))
+		if sys.Password == "" && !hasCookieAuth && !sys.UsesSSO() {
+			return nil, fmt.Errorf("auth not found for system '%s'. Set VSP_%s_PASSWORD env var, use cookie_file/cookie_string, or set \"auth\": \"sso\"", effectiveName, strings.ToUpper(effectiveName))
 		}
 
 		verbose, _ := cmd.Flags().GetBool("verbose")
@@ -110,6 +116,8 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			Insecure:           sys.Insecure,
 			CookieFile:         sys.CookieFile,
 			CookieString:       sys.CookieString,
+			Auth:               sys.Auth,
+			SSO:                sys.SSO,
 			TransportAttribute: sys.TransportAttribute,
 			ReadOnly:           sys.ReadOnly,
 			AllowedPackages:    sys.AllowedPackages,
@@ -193,6 +201,31 @@ func getClient(params *systemParams) (*adt.Client, error) {
 	}
 	if params.Insecure {
 		opts = append(opts, adt.WithInsecureSkipVerify())
+	}
+
+	// Browser single sign-on: cookies are fetched on demand and refreshed
+	// automatically, so this is checked before the static cookie sources.
+	if params.UsesSSO() {
+		provider, err := newSSOProvider(params)
+		if err != nil {
+			return nil, err
+		}
+		cookies, err := provider.Cookies(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts,
+			adt.WithCookies(cookies),
+			// The HTTP layer calls this when a request comes back
+			// unauthenticated, then retries. That is what keeps a long-running
+			// session alive across cookie expiry without anyone intervening.
+			adt.WithReauthFunc(provider.Refresh),
+			// A recovery that may open a sign-in window has to outlast the
+			// person using it; the default budget assumes nobody is asked
+			// anything.
+			adt.WithReauthTimeout(provider.ReauthBudget()),
+		)
+		return adt.NewClient(params.URL, "", "", opts...), nil
 	}
 
 	// Use cookie auth if available

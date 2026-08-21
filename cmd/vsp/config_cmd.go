@@ -460,6 +460,9 @@ func runVspToMcp(cmd *cobra.Command, args []string) error {
 	}
 
 	exported := 0
+	// Only tell the user to go fill in a password if some system actually left a
+	// placeholder for one. An SSO export has nothing to fill in.
+	needsPassword := false
 	for name, sys := range vspCfg.Systems {
 		// Build server entry
 		serverName := "vsp"
@@ -471,8 +474,26 @@ func runVspToMcp(cmd *cobra.Command, args []string) error {
 			"--url", sys.URL,
 		}
 
-		// Cookie auth or user/password auth
-		if sys.CookieFile != "" {
+		// SSO, cookie auth, or user/password auth
+		if sys.UsesSSO() {
+			// The session is captured on demand and refreshed when it lapses,
+			// so nothing that expires is written into the client's config.
+			serverArgs = append(serverArgs, "--sso", "--sso-system", name)
+			if sys.SSO != nil {
+				if sys.SSO.TriggerURL != "" {
+					serverArgs = append(serverArgs, "--sso-trigger-url", sys.SSO.TriggerURL)
+				}
+				if sys.SSO.Profile != "" {
+					serverArgs = append(serverArgs, "--sso-profile", sys.SSO.Profile)
+				}
+				if sys.SSO.Helper != "" {
+					serverArgs = append(serverArgs, "--sso-helper", sys.SSO.Helper)
+				}
+				if sys.SSO.OnExpiry != "" {
+					serverArgs = append(serverArgs, "--sso-on-expiry", sys.SSO.OnExpiry)
+				}
+			}
+		} else if sys.CookieFile != "" {
 			serverArgs = append(serverArgs, "--cookie-file", sys.CookieFile)
 		} else if sys.CookieString != "" {
 			serverArgs = append(serverArgs, "--cookie-string", sys.CookieString)
@@ -494,8 +515,9 @@ func runVspToMcp(cmd *cobra.Command, args []string) error {
 
 		// Build env block - only add password placeholder if using user auth
 		envBlock := make(map[string]string)
-		if sys.CookieFile == "" && sys.CookieString == "" {
+		if sys.CookieFile == "" && sys.CookieString == "" && !sys.UsesSSO() {
 			envBlock["SAP_PASSWORD"] = "YOUR_PASSWORD_HERE"
+			needsPassword = true
 		}
 
 		server := map[string]interface{}{
@@ -527,7 +549,9 @@ func runVspToMcp(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nExported %d systems to .mcp.json\n", exported)
-	fmt.Println("IMPORTANT: Edit .mcp.json and fill in SAP_PASSWORD values!")
+	if needsPassword {
+		fmt.Println("IMPORTANT: Edit .mcp.json and fill in SAP_PASSWORD values!")
+	}
 	return nil
 }
 

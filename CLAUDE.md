@@ -62,6 +62,7 @@ pkg/
 |------|-------|
 | Add MCP tool | `tools_register.go` + `handlers_*.go` + `tools_focused.go` |
 | Add ADT operation | `pkg/adt/client.go`, `crud.go`, `devtools.go`, `codeintel.go` |
+| Touch SSO auth | `pkg/adt/sso*.go`, `cmd/vsp-sso/`, `cmd/vsp/sso.go` |
 | Add graph feature | `pkg/graph/` |
 | Add lint rule | `pkg/abaplint/rules.go` |
 | Add integration test | `pkg/adt/integration_test.go` |
@@ -91,8 +92,9 @@ func (s *Server) handleX(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 1. **CSRF errors** — auto-refreshed in `http.go`
 2. **Lock conflicts** — edit handler does auto lock/unlock
 3. **Session issues** — some CRUD/debugger flows are session-sensitive; verify stateful/stateless before changing transport or auth logic
-4. **Auth** — use basic OR cookies, not both
-5. **ZADT_VSP** — WebSocket debug/RFC/RunReport require it installed on SAP
+4. **Auth** — use basic OR cookies, not both. `HasBasicAuth()` disables `ReauthFunc`, so a stray `SAP_USER`/`SAP_PASSWORD` alongside SSO silently kills auto-refresh
+5. **Expired SSO sessions do not return 401** — ICF forwards to the IdP and a logon page arrives under a 200. Detection is by origin and by a missing CSRF token (`http.go`), not by status code
+6. **ZADT_VSP** — WebSocket debug/RFC/RunReport require it installed on SAP
 
 ## Security
 
@@ -165,3 +167,4 @@ Reports: `reports/YYYY-MM-DD-NNN-title.md`. SAP objects: `ZADT_<nn>_<name>`, `ZC
 | `pkg/llvm2abap/`, `pkg/wasmcomp/` | Research | Not production; don't treat as stable |
 | `pkg/adt/debugger.go` (REST) | Types and parsers only | Its *client* methods still assume a stateless session; the request builders and parsers are shared and exported via `debugger_parse.go` |
 | `docs/cli-agents/*` | Config drift | Codex TOML format may differ from Claude/Gemini JSON docs |
+| `pkg/adt/sso*.go` | Host-dependent | Browser step must be a Windows process under WSL (PRT/WAM); needs `vsp-sso.exe` from `make sso-helper` |
