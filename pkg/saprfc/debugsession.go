@@ -140,11 +140,14 @@ func (d *Debugger) Listen(ctx context.Context, timeoutSeconds int) (json.RawMess
 // WaitingDebuggee is one entry of the listen payload, as the facade serialises
 // IF_TPDAPI_SERVICE~TYP_TAB_DEBUGGEES.
 type WaitingDebuggee struct {
-	ID      string `json:"debuggee_id"`
-	User    string `json:"debuggee_user"`
-	Program string `json:"prg_curr"`
-	Include string `json:"incl_curr"`
-	Line    int    `json:"line_curr"`
+	ID   string `json:"debuggee_id"`
+	User string `json:"debuggee_user"`
+	// TPDAPI names the stop location program/include/line in the debuggee
+	// structure it returns — not PRG_CURR/INCL_CURR/LINE_CURR, which is how the
+	// same information is spelled in the ABDBG_ACTIVATION table.
+	Program string `json:"program"`
+	Include string `json:"include"`
+	Line    int    `json:"line"`
 	Kind    string `json:"dbgee_kind"`
 }
 
