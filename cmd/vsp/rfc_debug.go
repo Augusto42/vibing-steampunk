@@ -36,6 +36,7 @@ semicolon-separated script and exits. Commands:
   bps                list external breakpoints (with program and line)
   unbp [PROG [LINE]] delete breakpoints, or "unbp all"
   listen [SECONDS]   block until a debuggee stops (default 60)
+  catch [SECONDS]    listen, attach to the first debuggee, and show the stack
   attach <ID>        attach to a waiting debuggee
   step [KIND]        into (default) | over | out | continue
   stack              the attached debuggee's call stack
@@ -105,7 +106,7 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 	switch strings.ToLower(fields[0]) {
 	case "help":
 		fmt.Fprintln(os.Stderr, "state | bp <PROG>[/<INCL>] <LINE> [COND] | bps | unbp [PROG [LINE]|all] | "+
-			"listen [SECONDS] | attach <ID> | step [into|over|out|continue] | stack | detach | quit")
+			"listen [SECONDS] | catch [SECONDS] | attach <ID> | step [into|over|out|continue] | stack | detach | quit")
 		return nil
 	case "state":
 		out, err = dbg.State(ctx)
@@ -130,6 +131,26 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		}
 		fmt.Fprintf(os.Stderr, "waiting up to %ds for a debuggee…\n", seconds)
 		out, err = dbg.Listen(ctx, seconds)
+	case "catch":
+		seconds := num(1)
+		if seconds <= 0 {
+			seconds = 60
+		}
+		fmt.Fprintf(os.Stderr, "waiting up to %ds for a debuggee…\n", seconds)
+		who, attached, cerr := dbg.ListenAndAttach(ctx, seconds)
+		if cerr != nil {
+			return cerr
+		}
+		if who == nil {
+			fmt.Fprintln(os.Stderr, "nobody stopped")
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "attached to %s (%s) at %s/%s:%d\n",
+			who.ID, who.User, who.Program, who.Include, who.Line)
+		if len(attached) > 0 {
+			printDebugJSON(attached)
+		}
+		out, err = dbg.Stack(ctx)
 	case "attach":
 		if arg(1) == "" {
 			return fmt.Errorf("usage: attach <DEBUGGEE_ID>")
@@ -148,15 +169,19 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		return err
 	}
 	if len(out) > 0 {
-		var pretty any
-		if json.Unmarshal(out, &pretty) == nil {
-			b, _ := json.MarshalIndent(pretty, "", "  ")
-			fmt.Println(string(b))
-		} else {
-			fmt.Println(string(out))
-		}
+		printDebugJSON(out)
 	}
 	return nil
+}
+
+func printDebugJSON(raw json.RawMessage) {
+	var pretty any
+	if json.Unmarshal(raw, &pretty) == nil {
+		b, _ := json.MarshalIndent(pretty, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Println(string(raw))
 }
 
 func init() {
