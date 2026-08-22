@@ -52,7 +52,7 @@ LOCAL_BINARY=$(BINARY_NAME)-$(CURRENT_OS)-$(CURRENT_ARCH)$(EXE)
 
 .PHONY: all build clean test lint fmt deps tidy help install install-user link local-alias run
 .PHONY: build-all build-all-all build-linux build-darwin build-windows sso-helper
-.PHONY: deploy-windows sync-embedded release refresh-deps
+.PHONY: deploy-windows sync-embedded release refresh-deps fetch-deps check-deps
 
 all: deps lint test build
 
@@ -155,7 +155,13 @@ sync-embedded: build ## Export $ZADT_VSP from SAP to embedded/abap/ (requires SA
 # SAP system for dependency refresh (override with: make release SAP_SYSTEM=prod)
 SAP_SYSTEM ?= a4h
 
-refresh-deps: ## Refresh embedded ZIPs from SAP (keeps old if SAP unavailable)
+fetch-deps: ## Build the embedded abapGit archive from upstream, reproducibly
+	go run ./tools/fetchdeps
+
+check-deps: ## Report what the embedded archive holds, and refuse an empty one
+	go run ./tools/fetchdeps -check
+
+refresh-deps: ## Refresh embedded ZIPs from SAP — prefer fetch-deps, which is reproducible
 	@echo "Refreshing embedded dependencies from SAP system '$(SAP_SYSTEM)'..."
 	@if ./build/vsp -s $(SAP_SYSTEM) export '$$ZGIT' -o embedded/deps/abapgit-full.zip.tmp 2>/dev/null; then \
 		mv embedded/deps/abapgit-full.zip.tmp embedded/deps/abapgit-full.zip; \
