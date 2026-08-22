@@ -174,3 +174,38 @@ func TestScanFindsNothingOnAClosedPort(t *testing.T) {
 		t.Errorf("findings = %+v, want none", result.Findings)
 	}
 }
+
+func TestExhaustivePortsCoverTheBandsSeenInPractice(t *testing.T) {
+	ports := ExhaustivePorts()
+	index := map[int]bool{}
+	for _, p := range ports {
+		index[p] = true
+	}
+
+	// The conventional pair for every instance, the default, and the band an
+	// ICM is moved to when 443nn is taken — 8422 was measured on a live system
+	// whose landscape records instance 20, and no shortlist would reach it.
+	for _, want := range []int{443, 44300, 44399, 8000, 8099, 8400, 8422, 8499, 50000} {
+		if !index[want] {
+			t.Errorf("port %d is not in the exhaustive set", want)
+		}
+	}
+
+	seen := map[int]bool{}
+	for _, p := range ports {
+		if seen[p] {
+			t.Errorf("port %d appears twice; each repeat is a wasted connect", p)
+		}
+		seen[p] = true
+		if p < 1 || p > 65535 {
+			t.Errorf("port %d is not a port", p)
+		}
+	}
+}
+
+func TestExhaustiveIsWiderThanTheShortlist(t *testing.T) {
+	// If it were not, the flag would promise something it does not do.
+	if len(ExhaustivePorts()) <= len(CandidatePorts("20")) {
+		t.Error("the exhaustive set is no larger than the shortlist")
+	}
+}

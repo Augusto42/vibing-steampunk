@@ -102,9 +102,43 @@ func CandidatePorts(instanceNr string) []int {
 	return out
 }
 
+// ExhaustivePorts returns every port an ABAP stack could plausibly serve HTTP
+// on: the full conventional range for all hundred instance numbers, plus the
+// defaults an installation picks.
+//
+// This is what to use when the shortlist found nothing and the answer has to be
+// somewhere — one system measured here answers on 8422, which belongs to no
+// convention and would never appear in a shortlist.
+func ExhaustivePorts() []int {
+	ports := make([]int, 0, 320)
+	ports = append(ports, 443, 80, 8080, 8443)
+	for nr := 0; nr <= 99; nr++ {
+		// The conventional pair, and the band an ICM is often moved to when
+		// 443nn is taken: one system measured here serves HTTP on 8022 and
+		// HTTPS on 8422, for an instance the landscape records as 20.
+		ports = append(ports, 44300+nr, 8000+nr, 8400+nr)
+	}
+	ports = append(ports, 50000, 50001, 50100, 50101)
+
+	seen := map[int]bool{}
+	out := ports[:0:0]
+	for _, p := range ports {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// scanConcurrency bounds the sweep. Two hundred sockets opened at once is the
+// kind of thing that reads as a port scan to whatever sits between here and the
+// host, and a bounded sweep finishes just as fast.
+const scanConcurrency = 32
+
 // ScanForADT finds which port on a host serves ADT.
 //
-// Every port is tried at once: a closed one costs the full connect timeout, and
+// Ports are tried concurrently: a closed one costs the full connect timeout, and
 // a dozen of those in sequence is a minute of waiting for an answer that takes
 // two seconds to obtain.
 func ScanForADT(ctx context.Context, host string, ports []int, client string, insecure bool) *PortScanResult {
@@ -115,10 +149,13 @@ func ScanForADT(ctx context.Context, host string, ports []int, client string, in
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	slots := make(chan struct{}, scanConcurrency)
 	for _, port := range ports {
 		wg.Add(1)
 		go func(port int) {
 			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			if finding := probePort(ctx, host, port, client, insecure); finding != nil {
 				mu.Lock()
 				result.Findings = append(result.Findings, *finding)

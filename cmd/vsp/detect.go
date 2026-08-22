@@ -17,7 +17,8 @@ func init() {
 	detectCmd.Flags().IntSlice("port", nil, "Scan only these ports")
 	detectCmd.Flags().Bool("insecure", false, "Accept a certificate that does not match the hostname")
 	detectCmd.Flags().Bool("json", false, "Emit the findings as JSON")
-	detectCmd.Flags().Bool("all", false, "Show every port that answered, not only the useful ones")
+	detectCmd.Flags().Bool("all", false, "Exhaustive: every conventional port for all hundred instances, plus the install defaults")
+	detectCmd.Flags().Bool("show-open", false, "List ports that accepted a connection but served nothing recognisable")
 	rootCmd.AddCommand(detectCmd)
 }
 
@@ -53,26 +54,33 @@ func runDetect(cmd *cobra.Command, args []string) error {
 	explicitPorts, _ := cmd.Flags().GetIntSlice("port")
 	insecure, _ := cmd.Flags().GetBool("insecure")
 	asJSON, _ := cmd.Flags().GetBool("json")
-	showAll, _ := cmd.Flags().GetBool("all")
+	exhaustive, _ := cmd.Flags().GetBool("all")
+	showOpen, _ := cmd.Flags().GetBool("show-open")
 
 	// A system id is the more useful thing to type, and the landscape knows its
 	// host and instance — which is where the conventional ports come from.
+	// The landscape knows the instance number, and that is what shapes the
+	// shortlist — 443nn and 80nn mean nothing without an nn. Looking the target
+	// up by host as well as by system id means a caller who types the hostname
+	// does not lose the conventional ports for it.
 	host, sid := target, ""
-	if looksLikeSystemID(target) {
-		if found := findInLandscape(cmd, target); found != nil {
-			domains := adt.DNSSearchDomains(cmd.Context())
-			host = adt.CanonicalHost(cmd.Context(), found.Host, domains)
-			sid = found.SystemID
-			if instance == "" {
-				instance = found.InstanceNr
-			}
-			fmt.Fprintf(os.Stderr, "%s in the landscape: %s, instance %s\n",
-				found.SystemID, host, orDash(found.InstanceNr))
+	if found := findInLandscape(cmd, target); found != nil {
+		domains := adt.DNSSearchDomains(cmd.Context())
+		host = adt.CanonicalHost(cmd.Context(), found.Host, domains)
+		sid = found.SystemID
+		if instance == "" {
+			instance = found.InstanceNr
 		}
+		fmt.Fprintf(os.Stderr, "%s in the landscape: %s, instance %s\n",
+			found.SystemID, host, orDash(found.InstanceNr))
 	}
 
 	ports := explicitPorts
-	if len(ports) == 0 {
+	switch {
+	case len(ports) > 0:
+	case exhaustive:
+		ports = adt.ExhaustivePorts()
+	default:
 		ports = adt.CandidatePorts(instance)
 	}
 
@@ -88,16 +96,17 @@ func runDetect(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	printFindings(result, showAll)
+	printFindings(result, showOpen)
 	printSuggestion(result, sid, clientNr)
 	return nil
 }
 
-func printFindings(result *adt.PortScanResult, showAll bool) {
+func printFindings(result *adt.PortScanResult, showOpen bool) {
 	if len(result.Findings) == 0 {
 		fmt.Printf("Nothing answered on %s.\n", result.Host)
 		fmt.Println("The host may be firewalled from here, or the name may not be the one that serves HTTP —")
 		fmt.Println("a system fronted by a web dispatcher answers on a different host than its application server.")
+		fmt.Println("If it should be reachable, --all sweeps every conventional port rather than the shortlist.")
 		return
 	}
 
@@ -105,7 +114,7 @@ func printFindings(result *adt.PortScanResult, showAll bool) {
 	fmt.Println(strings.Repeat("-", 88))
 	shown := 0
 	for _, f := range result.Findings {
-		if !showAll && f.Kind == adt.PortOpen {
+		if !showOpen && f.Kind == adt.PortOpen {
 			continue
 		}
 		shown++
@@ -116,7 +125,7 @@ func printFindings(result *adt.PortScanResult, showAll bool) {
 		fmt.Printf("%-7d %-18s %-6s %s\n", f.Port, f.Kind, statusOrDash(f.Status), note)
 	}
 	if shown == 0 {
-		fmt.Println("(ports are open but none served anything recognisable — rerun with --all)")
+		fmt.Println("(ports are open but none served anything recognisable — rerun with --show-open)")
 	}
 }
 
@@ -162,23 +171,28 @@ func printSuggestion(result *adt.PortScanResult, sid, clientNr string) {
 	fmt.Println("\nThen: vsp config vsp-to-mcp   — to write the same into .mcp.json")
 }
 
-// looksLikeSystemID reports whether the argument is a SID rather than a host.
-// A three-character token with no dot is not a hostname anyone would type.
-func looksLikeSystemID(s string) bool {
-	return len(s) == 3 && !strings.Contains(s, ".") && !strings.Contains(s, ":")
-}
+// findInLandscape looks the target up by system id or by host, and says nothing
+// if there is no landscape to look in — the scan still works from a bare
+// hostname, only without the conventional ports for its instance.
+func findInLandscape(cmd *cobra.Command, target string) *adt.LandscapeSystem {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	// A hostname may be typed fully qualified while the landscape records the
+	// short form, so they are compared on the first label.
+	shortHost := strings.ToLower(strings.SplitN(target, ".", 2)[0])
 
-// findInLandscape looks the system up, and says nothing if there is no
-// landscape to look in — the scan still works from a bare hostname.
-func findInLandscape(cmd *cobra.Command, sid string) *adt.LandscapeSystem {
-	paths := adt.FindLandscapeFiles(cmd.Context(), "")
-	for _, path := range paths {
+	for _, path := range adt.FindLandscapeFiles(cmd.Context(), "") {
 		lf, err := adt.ParseLandscape(path)
 		if err != nil {
 			continue
 		}
 		for _, sys := range lf.Systems(path) {
-			if strings.EqualFold(sys.SystemID, sid) {
+			if strings.EqualFold(sys.SystemID, target) {
+				return &sys
+			}
+			if strings.EqualFold(strings.SplitN(sys.Host, ".", 2)[0], shortHost) {
 				return &sys
 			}
 		}
