@@ -2,7 +2,7 @@
 
 **vsp** — Go-native MCP server and CLI for SAP ABAP Development Tools (ADT).
 
-> **Doc intent:** CLAUDE.md = dev context. README.md = user onboarding. reports/ = research/history. contexts/ = session handoff.
+> **Doc intent:** CLAUDE.md = dev context. README.md = user onboarding. reports/ = research/history. contexts/ = session handoff. agenda/ = what is open and what was decided (`AGENDA.md` is the living board; `YYYY-MM-DD-NNN-topic.md` are dated analyses).
 
 ---
 
