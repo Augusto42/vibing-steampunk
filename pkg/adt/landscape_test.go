@@ -224,3 +224,44 @@ func TestLooksLikeSystemID(t *testing.T) {
 		}
 	}
 }
+
+func TestParallelsRefRoundTrip(t *testing.T) {
+	const winPath = `C:\Users\testuser\AppData\Roaming\SAP\Common\SAPUILandscape.xml`
+	ref := ParallelsRef("Windows 11", winPath)
+
+	vm, got, ok := ParseParallelsRef(ref)
+	if !ok {
+		t.Fatalf("ParseParallelsRef(%q) not recognised", ref)
+	}
+	if vm != "Windows 11" {
+		t.Errorf("vm = %q, want %q — a VM name may contain spaces", vm, "Windows 11")
+	}
+	if got != winPath {
+		t.Errorf("path = %q, want %q — the drive colon must survive the split", got, winPath)
+	}
+
+	for _, bad := range []string{"/Users/testuser/SAPUILandscape.xml", "parallels:", "parallels:vm", "parallels::x"} {
+		if _, _, ok := ParseParallelsRef(bad); ok {
+			t.Errorf("ParseParallelsRef(%q) = ok, want not recognised", bad)
+		}
+	}
+}
+
+func TestWindowsPathFromIncludeURL(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"file://fileserver.example/public/SAPUILandscape.XML", `\\fileserver.example\public\SAPUILandscape.XML`, true},
+		{"file:///C:/Users/testuser/SAPUILandscapeGlobal.xml", `C:\Users\testuser\SAPUILandscapeGlobal.xml`, true},
+		{"https://intranet.example/landscape.xml", "", false},
+		{"file://", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := WindowsPathFromIncludeURL(tt.in)
+		if ok != tt.ok || got != tt.want {
+			t.Errorf("WindowsPathFromIncludeURL(%q) = %q,%v want %q,%v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}

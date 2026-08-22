@@ -341,19 +341,27 @@ func FindLandscapeFiles(ctx context.Context, explicit string) []string {
 		return []string{fromEnv}
 	}
 
+	// The cases add up rather than exclude each other. Under WSL the Windows
+	// side is where SAP Logon writes, but SAP GUI for Java may also be
+	// installed inside the WSL distribution — looking only across the boundary
+	// missed it.
 	var candidates []string
-	switch {
-	case IsWSL():
+
+	if runtime.GOOS == "windows" {
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			candidates = append(candidates, filepath.Join(appData, "SAP", "Common", landscapeFileName))
+		}
+	}
+
+	if IsWSL() {
 		if appData, err := windowsEnvVar(ctx, "APPDATA"); err == nil {
 			if linux, err := windowsPathToLinux(ctx, appData); err == nil {
 				candidates = append(candidates, filepath.Join(linux, "SAP", "Common", landscapeFileName))
 			}
 		}
-	case runtime.GOOS == "windows":
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			candidates = append(candidates, filepath.Join(appData, "SAP", "Common", landscapeFileName))
-		}
-	default:
+	}
+
+	if runtime.GOOS != "windows" {
 		// SAP GUI for Java keeps its own copy, and names it differently:
 		// SAPGUILandscape.xml, not the SAPUILandscape.xml Windows writes.
 		// On macOS it lives under Library/Preferences, not a dot-directory.
@@ -441,4 +449,69 @@ func readWindowsFile(ctx context.Context, winPath string) ([]byte, error) {
 // powerShellQuote renders a string as a PowerShell single-quoted literal.
 func powerShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// LandscapeSource is one place a landscape can be read from, with enough
+// detail to decide whether it is the one worth using.
+type LandscapeSource struct {
+	// Ref is what to pass to --file: a path, or a "parallels:<vm>:<path>".
+	Ref string `json:"ref"`
+	// Kind says who wrote it: "sapgui-java", "sapgui-windows", "parallels".
+	Kind string `json:"kind"`
+	// Systems and Includes describe the file without disclosing its contents.
+	Systems  int    `json:"systems"`
+	Includes int    `json:"includes"`
+	Err      string `json:"error,omitempty"`
+}
+
+// ReadLandscapeSource reads a source by reference, whether it is a local file
+// or one inside a VM.
+func ReadLandscapeSource(ctx context.Context, ref string) ([]byte, error) {
+	if vm, winPath, ok := ParseParallelsRef(ref); ok {
+		return ReadParallelsFile(ctx, vm, winPath)
+	}
+	return os.ReadFile(ref)
+}
+
+// ScanLandscapeSources finds every landscape this machine can reach: the ones
+// SAP GUI wrote locally, and the ones inside running VMs. Includes are counted
+// but not followed — a scan reports what is here, and following a company
+// share is a separate, slower decision.
+func ScanLandscapeSources(ctx context.Context) []LandscapeSource {
+	var out []LandscapeSource
+
+	add := func(ref, kind string) {
+		src := LandscapeSource{Ref: ref, Kind: kind}
+		blob, err := ReadLandscapeSource(ctx, ref)
+		if err != nil {
+			src.Err = err.Error()
+			out = append(out, src)
+			return
+		}
+		lf, err := ParseLandscapeBytes(blob, ref)
+		if err != nil {
+			src.Err = err.Error()
+			out = append(out, src)
+			return
+		}
+		src.Systems = len(lf.Systems(ref))
+		src.Includes = len(lf.Includes)
+		out = append(out, src)
+	}
+
+	for _, p := range FindLandscapeFiles(ctx, "") {
+		kind := "sapgui-windows"
+		if strings.HasSuffix(p, javaLandscapeFileName) {
+			kind = "sapgui-java"
+		}
+		add(p, kind)
+	}
+
+	for _, vm := range ParallelsGuests(ctx) {
+		for _, winPath := range ParallelsLandscapeFiles(ctx, vm) {
+			add(ParallelsRef(vm, winPath), "parallels")
+		}
+	}
+
+	return out
 }
