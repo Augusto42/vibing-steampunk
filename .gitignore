@@ -110,3 +110,6 @@ quickjs.zip
 
 # Local scratch, never committed (see .private/README.md)
 .private/
+
+# Isolated worktrees for background agents
+.claude/worktrees/
