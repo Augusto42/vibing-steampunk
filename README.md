@@ -317,7 +317,7 @@ Tests discover embedded local test classes across the full package hierarchy —
 
 ## 0x101 Stars!
 
-Read the latest article: **[VSP IS ONLY 5% EXPLORED](articles/2026-04-07-vsp-only-5-percent-explored.md)** — 257 stars, 147 tools, compilers, graph analysis, and why 95% of the surface is still unexplored.
+Read the latest article: **[VSP IS ONLY 5% EXPLORED](articles/2026-04-07-vsp-only-5-percent-explored.md)** — 257 stars, the tool surface, compilers, graph analysis, and why 95% of the surface is still unexplored.
 
 Previous: **[Agentic ABAP at 100 Stars](articles/2026-02-18-100-stars-celebration.md)**
 
@@ -329,7 +329,7 @@ The full version history is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Hyperfocused Mode — 1 Tool to Rule Them All (Recommended)
 
-**Recommended for most setups.** Single `SAP(action, target, params)` tool replaces up to 147 individual tool definitions. Minimal token overhead, maximum capability.
+**Recommended for most setups.** Single `SAP(action, target, params)` tool covers most of what the 146 individual tools do — gCTS, revision history and i18n still need `--mode expert`. Minimal token overhead, maximum capability.
 
 ```
 SAP(action="read",   target="CLAS ZCL_TRAVEL")
@@ -338,7 +338,7 @@ SAP(action="create", target="DEVC", params={"name": "$ZOZIK", "description": "Ne
 SAP(action="help",   target="debug")
 ```
 
-| Metric | Focused (100 tools) | Expert (147 tools) | Hyperfocused (1 tool) |
+| Metric | Focused (101 tools) | Expert (146 tools) | Hyperfocused (1 tool) |
 |--------|-------------------:|-------------------:|----------------------:|
 | MCP schema tokens | ~14,000 | ~40,000 | **~200** |
 | Reduction | — | — | **99.5%** |
@@ -553,7 +553,7 @@ See **[CLI Guide](docs/cli-guide.md)** for the complete reference with feature r
 | **API Surface** | `vsp api-surface` — Clean Core inventory: which standard APIs does your code use? |
 | **Graph Export** | 7 formats: mermaid, HTML, DOT (Graphviz), PlantUML, GraphML (Gephi), JSON, MD |
 | **Static Analysis** | `vsp analyze` — 13 lint rules in pure Go, no external dependencies |
-| **Hyperfocused Mode** | 1 universal SAP tool, **~200 tokens** vs ~40K for 147 tools |
+| **Hyperfocused Mode** | 1 universal SAP tool, **~200 tokens** vs ~40K for 146 tools |
 | **Context Compression** | Auto-compressed dependency contracts — 7–30x compression, built-in ABAP parser |
 | **Method-Level Surgery** | Read/edit individual methods — 95% token reduction vs full-class round-trips |
 | **ABAP LSP** | Built-in Language Server — real-time diagnostics, go-to-definition, context push |
@@ -851,7 +851,7 @@ recovery down with it.
 vsp --url https://host:44300 --user admin --password secret
 vsp --url https://host:44300 --cookie-file cookies.txt
 vsp --url https://host:44300 --sso --sso-system dev   # browser SSO, self-refreshing
-vsp --mode expert          # Enable all 147 tools
+vsp --mode expert          # Enable all 146 tools
 vsp --mode hyperfocused    # Single SAP tool (~200 tokens instead of ~40K)
 ```
 
@@ -1024,7 +1024,7 @@ One axis, three values — `--mode` or `SAP_MODE`:
 
 ```mermaid
 graph LR
-    F["focused<br/>100 tools<br/>~14K tokens"] --> E["expert<br/>147 tools<br/>~40K tokens"]
+    F["focused<br/>101 tools<br/>~14K tokens"] --> E["expert<br/>146 tools<br/>~40K tokens"]
     E --> H["hyperfocused<br/>1 tool<br/>~200 tokens<br/><i>recommended</i>"]
     style H fill:#2d6a4f,color:#fff,stroke:#4ade80,stroke-width:2px
     style F fill:#264653,color:#fff
@@ -1033,7 +1033,7 @@ graph LR
 
 | Aspect | Focused | Expert | Hyperfocused (recommended) |
 |--------|:-:|:-:|:-:|
-| **Tools** | 100 essential | 147 complete | 1 universal `SAP()` |
+| **Tools** | 101 essential | 146 complete | 1 universal `SAP()` |
 | **Schema tokens** | ~14K | ~40K | **~200** |
 | **How AI calls it** | `GetSource(type, name)` | Same, + granular tools | `SAP(action, target, params)` |
 | **Documentation** | In tool schemas | In tool schemas | `SAP(action="help")` |
@@ -1043,7 +1043,7 @@ graph LR
 ```bash
 vsp --mode hyperfocused  # recommended — single SAP(action, target, params) tool
 vsp --mode focused       # 100 curated tools (individual tool names)
-vsp --mode expert        # all 147 tools individually
+vsp --mode expert        # all 146 tools individually
 ```
 
 ## DSL & Automation
@@ -1278,7 +1278,7 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 - **Reports:** RunReport, GetVariants, GetTextElements, SetTextElements
 - **Install:** InstallZADTVSP, InstallAbapGit, ListDependencies
 
-See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tools).
+See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation.
 
 <details>
 <summary><strong>Capability Matrix</strong></summary>
@@ -1319,7 +1319,7 @@ See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tool
 
 **vsp** is a Go rewrite with:
 - Single binary, zero dependencies
-- 147 tools (vs 13 original)
+- 146 tools (vs 13 original)
 - ~50x faster startup
 
 ## Optional: WebSocket Handler (ZADT_VSP)
@@ -1408,7 +1408,7 @@ vibing-steampunk/
 │   ├── codeintel.go          # Definition, refs, completion
 │   ├── workflows.go          # High-level workflows
 │   └── http.go               # HTTP transport (CSRF, auth)
-├── internal/mcp/server.go    # MCP tool handlers (147 tools)
+├── internal/mcp/server.go    # MCP tool handlers
 ├── internal/lsp/             # ABAP LSP server (diagnostics, go-to-def)
 └── pkg/dsl/                  # DSL & workflow engine
 ```
@@ -1419,7 +1419,7 @@ vibing-steampunk/
 
 | Metric | Value |
 |--------|-------|
-| **Tools** | 147 (100 focused, 147 expert) |
+| **Tools** | 146 expert, 101 focused, 1 universal |
 | **Unit Tests** | 821 |
 | **Platforms** | 9 (Linux, macOS, Windows × amd64/arm64/386) |
 
