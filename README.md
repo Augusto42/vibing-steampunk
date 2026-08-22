@@ -120,6 +120,68 @@ The read half needs no ABAP either: `vsp rfc debuggees`, `vsp rfc breakpoints`
 and `vsp rfc watch` read `ABDBG_ACTIVATION` and `ABDBG_EXTDBPS` directly — who is
 parked in the debugger and where, short dumps included.
 
+**It is tested without a system.** `vsp adt debug --record` captures a live
+session to a cassette — every request and every answer — and the tests replay
+it, so `go test ./...` drives the real debugger with no SAP, no RFC channel and
+no Z code. The committed cassettes are real 7.58 sessions: catching a stopped
+program, reading its stack, reading locals with their values, stepping into a
+subroutine and back out, writing a variable, expanding a structure and a table,
+and a statement-level trace. A recording is an oracle rather than a mock —
+nobody writes the answers, so nobody can write them to match the code, which is
+how four defects surfaced the first time it ran.
+
+Because a cassette is taken from a live system, the recorder drops every header
+that carries a session and blanks the eight places a debug session names the
+application server, and a test re-checks the committed files on every run.
+
+**7.50 works too, and did not before.** That release has no
+`/sap/bc/adt/debugger/stack`: the listener caught a debuggee, the attach
+succeeded, and the first stack read returned 404 — and since catching a debuggee
+ends with a stack read, every catch was thrown away. It serves the same document
+from the dispatcher instead. The shape is discovered once per session and
+remembered.
+
+### Post-mortem: from a dump to what was logged around it
+
+A debugger helps when you can reproduce the failure. Usually nobody can:
+there is a dump from Tuesday, a user who has moved on, and no way to make it
+happen again.
+
+```bash
+vsp -s a4h dumps --group                          # what keeps failing, not what failed once
+vsp -s a4h dumps --explain latest --tolerance 10m # one dump, its stack, and the log around it
+vsp -s a4h applog --program ZCL_ORDER_POST        # who logged what, and from where
+```
+
+`--group` collapses dumps by runtime error and terminated program, which is
+structural. Grouping by "the same afternoon" would make a busy hour look like
+one incident.
+
+`--explain` is the interesting one. Correlating a dump with the application log
+is a time join, and a time join is where a tool starts lying — two things in the
+same second is not causation. What rescues it is that a log entry records *the
+program that wrote it*. So time is the filter and the program is the reason:
+
+| rank | why |
+|---|---|
+| strongest | written by the program that dumped |
+| | written by a program on the dump's call stack — on the path by construction |
+| | written by something a stack frame calls — where a bad value gets prepared |
+| | same user, shortly before |
+| weakest | same user after the dump — error handling, not cause |
+
+Every row states its own argument, because the argument is what lets a person
+overrule the ranking. A match is a candidate; "the cause" is not ours to say.
+
+All of it over plain ADT — no RFC, no gateway, no Z code. SAP's own way into the
+application log is the `BAL_*` function group, which cannot be called remotely
+by any transport; the header table is an ordinary table, so free SQL reads it
+instead.
+
+Checked on 7.50, 7.57 and 7.58. 7.50 serves the dump feed but not the detail
+resource, so there is no call stack to read there — the correlation drops that
+rung and still ranks on the rest.
+
 ### What really ran: `vsp trace`
 
 A static call graph is a hypothesis. ABAP resolves `CALL FUNCTION lv_name`,
@@ -506,9 +568,9 @@ vsp analyze ZCL_MY_CLASS                         # 13 lint rules (offline)
 
 # Getting connected — before there is any config
 vsp detect sap.example.com                       # which port serves ADT, and the config to use
-vsp detect D15 --all                             # exhaustive sweep, by system id from SAP Logon
+vsp detect A4H --all                             # exhaustive sweep, by system id from SAP Logon
 vsp landscape list --probe                       # every system SAP Logon knows, and which answer
-vsp landscape import D15 --client 100 --write    # turn one into a .vsp.json entry
+vsp landscape import A4H --client 100 --write    # turn one into a .vsp.json entry
 vsp -s dev compat                                # what this system supports, and how to route it
 vsp -s dev compat --against prod                 # what two releases disagree about
 
@@ -696,6 +758,13 @@ vsp -s a4h graph co-change CLAS ZCL_FOO           # transport-based co-change
 vsp -s a4h graph co-change PROG ZREPORT --format json
 vsp -s a4h graph where-used-config ZKEKEKE        # TVARVC readers (heuristic)
 vsp -s a4h graph where-used-config ZKEKEKE --format mermaid > config.mmd
+
+# Runtime errors and the application log
+vsp -s a4h dumps --since 2026-08-01                # newest first
+vsp -s a4h dumps --group                           # what keeps failing
+vsp -s a4h dumps --explain latest --tolerance 10m  # stack + ranked log around it
+vsp -s a4h applog --program ZCL_ORDER_POST --top 20
+vsp -s a4h applog --user TESTUSER --since 2026-08-01
 
 # Testing & code quality
 vsp -s a4h test CLAS ZCL_MY_CLASS                 # run unit tests

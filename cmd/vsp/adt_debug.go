@@ -48,7 +48,7 @@ function group — those are function modules and need an RFC channel:
   evars [NAME …]     variable values (default roots @ROOT @DATAAGING)
   echildren <ID>     expand a structure, a table or a synthetic root
   eset <NAME> <VALUE>  overwrite a variable in the stopped frame
-  eframe <STACK-URI>   move the cursor to another frame
+  eframe <N|STACK-URI> move the cursor to another frame, by number or URI
   erec [MAX]         record from here: one JSON object per stop
   evalues            record real values instead of «type:length» placeholders
   eraw               print the next e-command as the XML SAP sent
@@ -69,15 +69,55 @@ function group — those are function modules and need an RFC channel:
 			return err
 		}
 
+		// A cassette turns this run into a test that needs no system. The
+		// recorder sits between the debugger and the wire, so what is captured
+		// is exactly what the debugger asked and exactly what SAP answered —
+		// nobody gets to write the answers by hand afterwards.
+		cassettePath, _ := cmd.Flags().GetString("record")
+		var recorder *saprfc.RecordingTransport
+		if cassettePath != "" {
+			recorder = saprfc.Recorder(transport)
+			// A cassette is a tracked fixture, so nothing that names a live
+			// account or box may reach it.
+			recorder.Redact = map[string]string{}
+			transport = recorder
+			name, _ := cmd.Flags().GetString("record-system")
+			if name == "" {
+				name, _ = cmd.Flags().GetString("system")
+			}
+			defer func() {
+				if rfcDebugUser != "" && rfcDebugUser != "TESTUSER" {
+					recorder.Redact[rfcDebugUser] = "TESTUSER"
+				}
+				meta := saprfc.Cassette{System: name}
+				if err := recorder.Save(cassettePath, meta); err != nil {
+					fmt.Fprintf(os.Stderr, "! cassette not written: %v\n", err)
+					return
+				}
+				fmt.Fprintf(os.Stderr, "%d exchanges recorded to %s\n", recorder.Count(), cassettePath)
+			}()
+		}
+
+		ctx := context.Background()
+
 		rfcDebugUser = strings.ToUpper(strings.TrimSpace(user))
 		if rfcDebugUser == "" {
 			rfcDebugUser = strings.ToUpper(params.User)
 		}
 		if rfcDebugUser == "" {
-			return fmt.Errorf("ADT needs the user named explicitly: pass --user")
+			// Under single sign-on there is no configured user — the cookie
+			// carries a session, not a name — and the debugger cannot register
+			// a listener without one. Ask the system instead of asking the
+			// person: the transport organizer names the owner of the session,
+			// over plain ADT, even when they own nothing.
+			resolved, werr := saprfc.CurrentUser(ctx, transport)
+			if werr != nil {
+				return fmt.Errorf("nobody said whose debuggees to listen for, and the system would not say either (%w): pass --user", werr)
+			}
+			rfcDebugUser = resolved
+			fmt.Fprintf(os.Stderr, "logged on as %s\n", rfcDebugUser)
 		}
 
-		ctx := context.Background()
 		dbg := saprfc.NewADTDebugger(transport, rfcDebugUser)
 		defer func() { _ = dbg.Close(ctx) }()
 
@@ -125,6 +165,30 @@ func statefulADTTransport(params *systemParams, timeout time.Duration) (saprfc.A
 		opts = append(opts, adt.WithInsecureSkipVerify())
 	}
 
+	// Browser single sign-on, checked before the static cookie sources for the
+	// same reason as everywhere else — and needed here most of all. A debug
+	// session is the longest-lived thing vsp holds: a listener waits minutes,
+	// and a session outlives the cookie that opened it. Without the refresh
+	// hook the loop dies mid-debug, and it dies quietly, because an expired
+	// SSO answers 200 with a sign-in page rather than 401.
+	if params.UsesSSO() {
+		provider, err := newSSOProvider(params)
+		if err != nil {
+			return nil, err
+		}
+		cookies, err := provider.Cookies(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts,
+			adt.WithCookies(cookies),
+			adt.WithReauthFunc(provider.Refresh),
+			adt.WithReauthTimeout(provider.ReauthBudget()),
+		)
+		cfg := adt.NewConfig(params.URL, "", "", opts...)
+		return saprfc.HTTPSession(adt.NewTransport(cfg)), nil
+	}
+
 	user, password := params.User, params.Password
 	switch {
 	case params.CookieFile != "":
@@ -147,6 +211,8 @@ func init() {
 	adtDebugCmd.Flags().String("user", "", "Whose debuggees to listen for (default: the logon user)")
 	adtDebugCmd.Flags().StringP("command", "c", "", "Run a semicolon-separated script instead of going interactive")
 	adtDebugCmd.Flags().Int("timeout", 300, "Seconds a single HTTP request may take; must exceed the listen timeout")
+	adtDebugCmd.Flags().String("record", "", "Write every ADT exchange of this session to a cassette file, for replay in tests")
+	adtDebugCmd.Flags().String("record-system", "", "Name the system the cassette came from (default: the --system name)")
 	adtCmd.AddCommand(adtDebugCmd)
 	rootCmd.AddCommand(adtCmd)
 }

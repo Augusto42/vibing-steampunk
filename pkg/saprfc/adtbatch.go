@@ -161,7 +161,7 @@ func (d *Debugger) CaptureStep(ctx context.Context, kind string) (*Stop, error) 
 				{Name: "Accept", Value: "application/vnd.sap.as+xml"},
 				{Name: "Content-Type", Value: "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.ChildVariables"},
 			},
-			Body: []byte(`<?xml version="1.0" encoding="UTF-8"?><asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@LOCALS</PARENT_ID></STPDA_ADT_VARIABLE_HIERARCHY></HIERARCHIES></DATA></asx:values></asx:abap>`),
+			Body: childVariablesBody(d.localsRootsFor(ctx)),
 		})
 
 	parts, err := d.ADTBatch(ctx, reqs)
@@ -185,4 +185,23 @@ func (d *Debugger) CaptureStep(ctx context.Context, kind string) (*Stop, error) 
 		stop.Locals = parts[1].Body
 	}
 	return stop, nil
+}
+
+// childVariablesBody builds the request that asks for the children of one or
+// more hierarchy roots. It is here rather than inline because the roots are not
+// a constant: which ones hold a stopped frame's variables depends on the
+// release, and asking for a root this system does not have returns an empty
+// answer rather than an error — which is how every recorded trace came out
+// with no values in it.
+func childVariablesBody(parents []string) []byte {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` +
+		`<asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA><HIERARCHIES>`)
+	for _, parent := range parents {
+		b.WriteString("<STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>")
+		b.WriteString(parent)
+		b.WriteString("</PARENT_ID></STPDA_ADT_VARIABLE_HIERARCHY>")
+	}
+	b.WriteString(`</HIERARCHIES></DATA></asx:values></asx:abap>`)
+	return []byte(b.String())
 }

@@ -393,7 +393,7 @@ func collectCodeTablesFromScope(ctx context.Context, client *adt.Client, liveObj
 
 	// Step 2: per-object symbol-ref queries run in parallel via a small
 	// worker pool. An earlier attempt to batch 5 objects per query using
-	// OR-LIKE failed on live d15 — SAP's freestyle query parser rejects
+	// OR-LIKE failed on a live system — SAP's freestyle query parser rejects
 	// more than one LIKE per WHERE clause ("LIKE is not allowed here"),
 	// so any OR-ed pattern list fell back to zero rows and silently
 	// dropped every code-side table. Parallelism via goroutines gives the
