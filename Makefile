@@ -40,7 +40,17 @@ PLATFORMS_COMMON=linux/amd64 darwin/arm64 windows/amd64
 CURRENT_OS=$(shell go env GOOS)
 CURRENT_ARCH=$(shell go env GOARCH)
 
-.PHONY: all build clean test lint fmt deps tidy help install install-user link run
+# The local build carries its platform in the name, exactly like the
+# cross-compiled ones, and $(BUILD_DIR)/$(BINARY_NAME) is a link to it. Tool
+# configs (.mcp.json, .vsp.json, editor settings) point at one name or the
+# other; with a link they are the same file, so a single `make build` refreshes
+# whatever they reference. Before this, `build` wrote only ./build/vsp while
+# every MCP config pointed at ./build/vsp-<os>-<arch>, which only build-all
+# refreshed — so the binary the agents ran silently fell behind the source.
+EXE=$(if $(filter windows,$(CURRENT_OS)),.exe,)
+LOCAL_BINARY=$(BINARY_NAME)-$(CURRENT_OS)-$(CURRENT_ARCH)$(EXE)
+
+.PHONY: all build clean test lint fmt deps tidy help install install-user link local-alias run
 .PHONY: build-all build-all-all build-linux build-darwin build-windows sso-helper
 .PHONY: deploy-windows sync-embedded release refresh-deps
 
@@ -48,10 +58,18 @@ all: deps lint test build
 
 ## Build
 
-build: ## Build the binary for current platform
+build: ## Build for the current platform, as build/vsp-<os>-<arch> with build/vsp linked to it
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)
-	@echo "Built: $(BUILD_DIR)/$(BINARY_NAME)"
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(LOCAL_BINARY) $(CMD_DIR)
+	@$(MAKE) --no-print-directory local-alias
+	@echo "Built: $(BUILD_DIR)/$(LOCAL_BINARY) (also $(BUILD_DIR)/$(BINARY_NAME))"
+
+local-alias: ## Point build/vsp at this platform's binary
+	@if [ "$(CURRENT_OS)" = "windows" ]; then \
+		cp $(BUILD_DIR)/$(LOCAL_BINARY) $(BUILD_DIR)/$(BINARY_NAME)$(EXE); \
+	else \
+		ln -sf $(LOCAL_BINARY) $(BUILD_DIR)/$(BINARY_NAME); \
+	fi
 
 sso-helper: ## Build the Windows SSO capture helper (needed for browser SSO under WSL)
 	@mkdir -p $(BUILD_DIR)
@@ -68,8 +86,8 @@ build-all: sso-helper ## Build for common platforms (linux-amd64, darwin-arm64, 
 		echo "Building $$output..."; \
 		GOOS=$$os GOARCH=$$arch $(GOBUILD) $(LDFLAGS) -o $$output $(CMD_DIR) || exit 1; \
 	done
-	@echo "Copying current platform binary to $(BUILD_DIR)/$(BINARY_NAME)..."
-	@cp $(BUILD_DIR)/$(BINARY_NAME)-$(CURRENT_OS)-$(CURRENT_ARCH) $(BUILD_DIR)/$(BINARY_NAME) 2>/dev/null || \
+	@echo "Pointing $(BUILD_DIR)/$(BINARY_NAME) at this platform's binary..."
+	@$(MAKE) --no-print-directory local-alias 2>/dev/null || \
 		$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)
 	@echo "Build complete. Binaries in $(BUILD_DIR)/"
 	@ls -lh $(BUILD_DIR)/
@@ -177,6 +195,8 @@ link: build ## Symlink ~/.local/bin/vsp at this checkout, so every build is pick
 	@ln -sf $(abspath $(BUILD_DIR)/$(BINARY_NAME)) ~/.local/bin/$(BINARY_NAME)
 	@echo "Linked: ~/.local/bin/$(BINARY_NAME) -> $(abspath $(BUILD_DIR)/$(BINARY_NAME))"
 	@echo "'make build' now updates what is on PATH; nothing to re-install."
+	@case ":$$PATH:" in *":$$HOME/.local/bin:"*) ;; \
+		*) echo "NOTE: ~/.local/bin is not on your PATH — on macOS it is not there by default." ;; esac
 
 ## Development
 
