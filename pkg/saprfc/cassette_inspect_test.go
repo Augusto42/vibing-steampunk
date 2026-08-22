@@ -187,3 +187,64 @@ func TestFrameNumberIsCheckedAgainstTheStack(t *testing.T) {
 		t.Fatalf("the failure should say which frame was asked for, got: %v", err)
 	}
 }
+
+// A table larger than one expansion can afford. Everything here rests on an
+// assumption worth checking against a real system rather than a mock: that SAP
+// answers for an arbitrary subscript, not just the first few. The recorded
+// system was asked for rows 1-33, 109-141 and 218-250 of a 250-row table.
+func TestReplaySamplesALargeTableAcrossItsWholeLength(t *testing.T) {
+	rt := loadFixture(t, "a4h-bigtable.jsonl")
+	dbg := NewADTDebugger(rt, fixtureUser)
+	ctx := context.Background()
+
+	who, err := dbg.ADTListen(ctx, fixtureUser, IDEID, TerminalID, 120)
+	if err != nil || who == nil {
+		t.Fatalf("listening: %v", err)
+	}
+	if _, err := dbg.ADTAttach(ctx, who.ID, fixtureUser); err != nil {
+		t.Fatalf("attaching: %v", err)
+	}
+	if _, err := dbg.StackInfo(ctx); err != nil {
+		t.Fatalf("reading the stack: %v", err)
+	}
+
+	info, err := dbg.Expand(ctx, "LT_ROWS")
+	if err != nil {
+		t.Fatalf("expanding the table: %v", err)
+	}
+
+	sample := dbg.LastTableSample()
+	if !sample.Partial() {
+		t.Fatal("a 250-row table cannot be read whole within the budget; the expansion should say it sampled")
+	}
+	if sample.Lines != 250 {
+		t.Fatalf("the table held 250 rows, the sample reports %d", sample.Lines)
+	}
+
+	// The rows the caller is shown must span the table, not just its head.
+	values := map[string]bool{}
+	for _, v := range info.Variables {
+		if strings.EqualFold(v.Name, "NAME") {
+			values[strings.TrimSpace(v.Value)] = true
+		}
+	}
+	for _, want := range []string{"row1", "row250"} {
+		if !values[want] {
+			t.Fatalf("%s should be in the sample; the head and the end are both the point", want)
+		}
+	}
+	middle := false
+	for value := range values {
+		if strings.HasPrefix(value, "row1") && len(value) == 5 && value != "row1" {
+			middle = true // row1NN, from the middle window
+		}
+	}
+	if !middle {
+		t.Fatalf("nothing from the middle of the table came back: %d distinct values", len(values))
+	}
+
+	// And the note a reader is shown.
+	if got := FormatRowRanges(sample.Rows); !strings.Contains(got, "-") || !strings.Contains(got, ",") {
+		t.Fatalf("the sample should read as separate ranges, got %q", got)
+	}
+}

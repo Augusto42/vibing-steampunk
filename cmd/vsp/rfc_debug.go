@@ -429,6 +429,13 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			return nil
 		}
 		fmt.Print(saprfc.FormatVariables(info.Variables))
+		// A table too large to read whole is sampled, and the reader has to be
+		// told — rows 1..33 of a million look exactly like a table with 33 rows
+		// in it.
+		if sample := dbg.LastTableSample(); sample.Partial() {
+			fmt.Fprintf(os.Stderr, "%d of %d rows: %s\n",
+				len(sample.Rows), sample.Lines, saprfc.FormatRowRanges(sample.Rows))
+		}
 		return nil
 	case "adt":
 		if len(fields) < 3 {

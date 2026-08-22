@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/oisee/vibing-steampunk/pkg/adt"
@@ -38,9 +39,79 @@ func (d *Debugger) Vars(ctx context.Context, names []string) ([]adt.DebugVariabl
 // maxExpandedTableRows bounds what one expansion asks for. A debugger stops in
 // code that may hold a table of a million rows, and reading all of them would
 // hang the session it is trying to describe.
-const maxExpandedTableRows = 100
+const maxExpandedTableRows = 99
+
+// TableSample says what an expansion actually read. A table small enough is
+// read whole; a larger one is sampled, and then the difference matters — a
+// caller shown rows 1..99 of a million-row table has been told almost nothing
+// and, worse, has no way to tell that from a table with 99 rows in it.
+type TableSample struct {
+	// Lines is how many rows the table holds.
+	Lines int
+	// Rows are the row numbers actually read, in order.
+	Rows []int
+}
+
+// Partial reports whether rows were left unread.
+func (s *TableSample) Partial() bool {
+	return s != nil && len(s.Rows) < s.Lines
+}
+
+// tableRowSample chooses which rows to read from a table of `lines` rows within
+// a budget of requests.
+//
+// Reading the first N is the obvious thing and the least useful one: the head
+// of a large table is where the least surprising data lives, and a bug in the
+// last rows — a total that never accumulated, a key that never advanced — is
+// invisible from there. So a table too large to read whole is sampled in three
+// windows: the head, the middle, and the end. The end is worth as much as the
+// head, and the middle says whether the two belong to the same run of data.
+func tableRowSample(lines, budget int) []int {
+	if lines <= 0 || budget <= 0 {
+		return nil
+	}
+	if lines <= budget {
+		rows := make([]int, 0, lines)
+		for i := 1; i <= lines; i++ {
+			rows = append(rows, i)
+		}
+		return rows
+	}
+
+	window := budget / 3
+	if window < 1 {
+		window = 1
+	}
+	middleStart := (lines-window)/2 + 1
+	tailStart := lines - window + 1
+
+	seen := make(map[int]bool, budget)
+	rows := make([]int, 0, budget)
+	take := func(from int) {
+		for i := from; i < from+window && i <= lines; i++ {
+			if i < 1 || seen[i] || len(rows) >= budget {
+				continue
+			}
+			seen[i] = true
+			rows = append(rows, i)
+		}
+	}
+	take(1)
+	take(middleStart)
+	take(tailStart)
+
+	sort.Ints(rows)
+	return rows
+}
+
+// LastTableSample describes the rows the most recent expansion read, or nil if
+// the last expansion was not of a table.
+func (d *Debugger) LastTableSample() *TableSample {
+	return d.lastTableSample
+}
 
 func (d *Debugger) Expand(ctx context.Context, parentID string) (*adt.DebugChildVariablesInfo, error) {
+	d.lastTableSample = nil
 	res, err := d.ADTChildVariables(ctx, []string{parentID})
 	if err != nil {
 		return nil, err
@@ -78,14 +149,14 @@ func (d *Debugger) expandTableRows(ctx context.Context, parentID string, empty *
 		return empty, nil
 	}
 
-	rows := table.TableLines
-	if rows > maxExpandedTableRows {
-		rows = maxExpandedTableRows
+	sample := tableRowSample(table.TableLines, maxExpandedTableRows)
+	subscripts := make([]string, 0, len(sample))
+	for _, row := range sample {
+		subscripts = append(subscripts, fmt.Sprintf("%s[%d]", parentID, row))
 	}
-	subscripts := make([]string, 0, rows)
-	for i := 1; i <= rows; i++ {
-		subscripts = append(subscripts, fmt.Sprintf("%s[%d]", parentID, i))
-	}
+	// Kept so the caller can say which rows these are. A sample that presents
+	// itself as the whole table is worse than no sample.
+	d.lastTableSample = &TableSample{Lines: table.TableLines, Rows: sample}
 
 	res, err := d.ADTChildVariables(ctx, subscripts)
 	if err != nil {
@@ -300,4 +371,31 @@ func (d *Debugger) localsRootsFor(ctx context.Context) []string {
 	}
 	d.localsRoots = parents
 	return parents
+}
+
+// FormatRowRanges renders row numbers as compact ranges — "1-33, 500-532,
+// 999967-999999" rather than a wall of numbers.
+func FormatRowRanges(rows []int) string {
+	if len(rows) == 0 {
+		return "none"
+	}
+	var parts []string
+	start, prev := rows[0], rows[0]
+	flush := func() {
+		if start == prev {
+			parts = append(parts, fmt.Sprintf("%d", start))
+			return
+		}
+		parts = append(parts, fmt.Sprintf("%d-%d", start, prev))
+	}
+	for _, row := range rows[1:] {
+		if row == prev+1 {
+			prev = row
+			continue
+		}
+		flush()
+		start, prev = row, row
+	}
+	flush()
+	return strings.Join(parts, ", ")
 }
