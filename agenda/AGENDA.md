@@ -74,9 +74,36 @@ modules without SE37:
 - delete the stray `Z_*` report that predates the naming convention
 - wire the WS command through the APC handler
 
-**Issue #154 — namespaced function groups return HTTP 406.** Our new
-`GetFunctionModule` / `CreateFunctionModule` go through the same
-`GetObjectURL`, so they almost certainly share the bug. Worth fixing together.
+**Issue #154 — namespaced function groups return HTTP 406.** Investigated
+2026-08-22 on a live system (claude-mac-m2). Two separate things:
+
+*The reported 406 is already fixed on main.* It was the `Accept` header, and
+the fix (`edd94bc`, 2026-04-12) landed five days after the build the reporter
+is running (`a75fbfd`, 2026-04-07). Reproduced the exact error live by sending
+the old header: `Accept: application/xml` → **406**, the vendor type
+`...functions.groups.v3+xml` → **200**, on the same namespaced group.
+Worth noting `...groups.v2+xml` also answers 406 there, so the q-ordering in
+the current header is load-bearing, not decoration.
+
+*URL encoding is not involved.* All three forms answer 200 —
+`%2FUI5%2FCACHE_BUSTER`, lowercase `%2f...`, and a lowercased name. Only raw
+slashes give 404. Our new `GetFunctionModule` / `CreateFunctionModule` were
+checked against a namespaced group and are fine.
+
+*But a different, real bug turned up.* `GetFunctionGroup` **never** returns the
+function module list — `Functions` is `null` for a namespaced group and for a
+plain one that certainly has modules. The metadata document simply does not
+carry them; they hang off the `objectstructure` link, which
+`GetFunctionGroupAllSources` already knows how to walk. So the reporter's
+actual need — "list the modules in this group" — is still unmet even with the
+406 gone, and the tool is described in the focused whitelist as "Metadata:
+function module list".
+
+**Next:** populate `Functions` from `objectstructure` in `GetFunctionGroup`,
+then answer #154 saying the 406 is fixed, asking the reporter to retest on
+current main, and pointing at the module-list fix. **A real ERP 6.0 non-HANA
+system would be the better place to confirm** — the checks above ran against
+an S/4-generation backend.
 
 **`delete` through MCP needs a lock handle.** It is a two-step call that leaks
 internal mechanics to the caller, unlike `create`, which now does the whole
