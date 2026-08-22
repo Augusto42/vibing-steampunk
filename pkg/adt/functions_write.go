@@ -3,7 +3,6 @@ package adt
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 )
 
@@ -14,13 +13,6 @@ import (
 // group was supplied, which is a thing the caller often does not know and never
 // chose. These helpers resolve the group instead of demanding it, and give the
 // module the same one-call edit that programs and classes already have.
-
-// functionModuleURL builds the ADT resource URL for a module inside a group.
-func functionModuleURL(groupName, functionName string) string {
-	return fmt.Sprintf("/sap/bc/adt/functions/groups/%s/fmodules/%s",
-		url.PathEscape(strings.ToUpper(groupName)),
-		url.PathEscape(strings.ToUpper(functionName)))
-}
 
 // groupFromFunctionURI extracts the group from a module's ADT URI.
 func groupFromFunctionURI(uri string) string {
@@ -98,7 +90,7 @@ func (c *Client) WriteFunctionModule(ctx context.Context, groupName, functionNam
 	if err != nil {
 		return nil, err
 	}
-	objectURL := functionModuleURL(group, functionName)
+	objectURL := GetObjectURL(ObjectTypeFunctionMod, functionName, group)
 
 	if err := c.checkMutation(ctx, MutationContext{
 		Op:        OpWorkflow,
@@ -130,33 +122,16 @@ func (c *Client) WriteFunctionModule(ctx context.Context, groupName, functionNam
 	}
 	result.SyntaxErrors = syntaxErrors
 
-	// Step 2: lock.
-	lock, err := c.LockObject(ctx, objectURL, "MODIFY")
-	if err != nil {
-		result.Message = fmt.Sprintf("Failed to lock function module: %v", err)
-		return result, nil
-	}
-	unlocked := false
-	defer func() {
-		if !unlocked {
-			c.UnlockObject(ctx, objectURL, lock.LockHandle)
-		}
-	}()
-
-	// Step 3: write.
-	if err := c.UpdateSource(ctx, objectURL+"/source/main", source, lock.LockHandle, transport); err != nil {
-		result.Message = fmt.Sprintf("Failed to update source: %v", err)
+	// Step 2: lock, write, unlock. writeFunctionModule already owns that
+	// sequence — it is what the create flow uses — so this borrows it rather
+	// than keeping a second copy of the lock discipline in the package.
+	if err := c.writeFunctionModule(ctx, group, functionName, "", source, transport); err != nil {
+		result.Message = fmt.Sprintf("Failed to write source: %v", err)
 		return result, nil
 	}
 
-	// Step 4: unlock before activating — SAP will not activate a locked object.
-	if err := c.UnlockObject(ctx, objectURL, lock.LockHandle); err != nil {
-		result.Message = fmt.Sprintf("Failed to unlock function module: %v", err)
-		return result, nil
-	}
-	unlocked = true
-
-	// Step 5: activate.
+	// Step 3: activate. The write path deliberately stops at unlock, because
+	// creating a module activates it once at the end of a longer flow.
 	activation, err := c.Activate(ctx, objectURL, functionName)
 	if err != nil {
 		result.Message = fmt.Sprintf("Failed to activate: %v", err)

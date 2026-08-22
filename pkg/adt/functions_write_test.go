@@ -20,12 +20,13 @@ func TestGroupFromFunctionURI(t *testing.T) {
 }
 
 func TestFunctionModuleURL(t *testing.T) {
-	// Names reach here from callers who type them however they like; the ADT
-	// resource is the same object either way.
+	// The group resolver's output feeds the shared object-URL builder; this
+	// pins the shape those two agree on, since a wrong URL here reads as "the
+	// module does not exist" rather than as a bug.
 	want := "/sap/bc/adt/functions/groups/ZFG/fmodules/ZFM"
 	for _, in := range [][2]string{{"ZFG", "ZFM"}, {"zfg", "zfm"}, {"Zfg", "zFm"}} {
-		if got := functionModuleURL(in[0], in[1]); got != want {
-			t.Errorf("functionModuleURL(%q, %q) = %q, want %q", in[0], in[1], got, want)
+		if got := GetObjectURL(ObjectTypeFunctionMod, in[1], in[0]); got != want {
+			t.Errorf("GetObjectURL(FUNC, %q, %q) = %q, want %q", in[1], in[0], got, want)
 		}
 	}
 }
