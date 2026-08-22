@@ -50,6 +50,7 @@ func (s *Server) ensureDebugWSClient(ctx context.Context) error {
 		s.config.Password,
 		s.config.InsecureSkipVerify,
 	)
+	s.applyWSAuth(s.debugWSClient.SetCookies)
 
 	return s.debugWSClient.Connect(ctx)
 }

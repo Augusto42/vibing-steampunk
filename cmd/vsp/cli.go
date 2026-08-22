@@ -299,6 +299,24 @@ func getClient(params *systemParams) (*adt.Client, error) {
 	return adt.NewClient(params.URL, params.User, params.Password, opts...), nil
 }
 
+// systemCookies returns the browser session a system authenticates with, if it
+// uses one. A system on a password has none, and that is not an error.
+func systemCookies(ctx context.Context, params *systemParams) (map[string]string, error) {
+	switch {
+	case params.UsesSSO():
+		provider, err := newSSOProvider(params)
+		if err != nil {
+			return nil, err
+		}
+		return provider.Cookies(ctx)
+	case params.CookieFile != "":
+		return adt.LoadCookiesFromFile(params.CookieFile)
+	case params.CookieString != "":
+		return adt.ParseCookieString(params.CookieString), nil
+	}
+	return nil, nil
+}
+
 // getWSClient creates an AMDP WebSocket client for GitExport.
 func getWSClient(ctx context.Context, params *systemParams) (*adt.AMDPWebSocketClient, error) {
 	// NewAMDPWebSocketClient(baseURL, client, user, password, insecure)
@@ -309,6 +327,16 @@ func getWSClient(ctx context.Context, params *systemParams) (*adt.AMDPWebSocketC
 		params.Password,
 		params.Insecure,
 	)
+
+	// A system reached through single sign-on has no password to offer, and the
+	// upgrade request carries a cookie as readily as any other.
+	cookies, err := systemCookies(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if len(cookies) > 0 {
+		wsClient.SetCookies(cookies)
+	}
 
 	if err := wsClient.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("failed to connect WebSocket: %w", err)
