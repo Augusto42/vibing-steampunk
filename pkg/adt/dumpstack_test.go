@@ -125,3 +125,43 @@ func TestTheDumpingProgramStillLeads(t *testing.T) {
 		t.Fatalf("the program that dumped leads its own stack: %d vs %d", dyingScore, otherScore)
 	}
 }
+
+// The rung below the stack: something a frame calls. It has returned by the
+// time of the failure, so it is not on the path — but it is where a bad value
+// is usually prepared, and it is still an argument rather than a coincidence.
+func TestCalledFromTheStackOutranksTheClockButNotTheStack(t *testing.T) {
+	dumpAt := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	dump := Dump{Program: "SAPMSSY1", User: "TESTUSER", At: dumpAt}
+	stack := parseDumpStack(formattedDumpSample)
+	callees := map[string]string{"ZCL_DEMO_PRICING": "ZCL_DEMO_ORDER===============CP"}
+
+	called := AppLogEntry{Program: "ZCL_DEMO_PRICING", User: "SOMEONE", At: dumpAt.Add(-30 * time.Second)}
+	onStack := AppLogEntry{Program: "SAPLZDEMO_FG", User: "SOMEONE", At: dumpAt.Add(-30 * time.Second)}
+	sameUser := AppLogEntry{Program: "SAPMHTTP", User: "TESTUSER", At: dumpAt.Add(-1 * time.Second)}
+
+	calledScore, why := rankLogAgainstDumpWithGraph(called, dump, stack, callees, dumpAt.Sub(called.At))
+	stackScore, _ := rankLogAgainstDumpWithGraph(onStack, dump, stack, callees, dumpAt.Sub(onStack.At))
+	clockScore, _ := rankLogAgainstDumpWithGraph(sameUser, dump, stack, callees, dumpAt.Sub(sameUser.At))
+
+	if !(stackScore > calledScore && calledScore > clockScore) {
+		t.Fatalf("the ladder should read stack > called > clock, got %d, %d, %d",
+			stackScore, calledScore, clockScore)
+	}
+	if !strings.Contains(why, "called from") {
+		t.Fatalf("the reason should say where it was called from, got %q", why)
+	}
+}
+
+// Class pools arrive from a dump padded with '=' and are not addressable that
+// way; a program name is.
+func TestProgramURIUnwrapsAClassPool(t *testing.T) {
+	if got := programURI("ZCL_DEMO_ORDER===============CP"); got != "/sap/bc/adt/oo/classes/zcl_demo_order" {
+		t.Fatalf("class pool should resolve to the class, got %q", got)
+	}
+	if got := programURI("SAPLZDEMO_FG"); got != "/sap/bc/adt/programs/programs/saplzdemo_fg" {
+		t.Fatalf("program should resolve to a program, got %q", got)
+	}
+	if got := programURI("  "); got != "" {
+		t.Fatalf("nothing in, nothing out, got %q", got)
+	}
+}

@@ -66,12 +66,20 @@ func (c *Client) CorrelateDump(ctx context.Context, dump Dump, tolerance time.Du
 			stack = frames
 		}
 	}
-	return c.correlateWithStack(ctx, dump, stack, tolerance, limit)
+	// One level down from each frame. This is the rung below the stack: what
+	// those frames called has returned already, so it is not on the path at the
+	// moment of failure, but it is where a bad value is usually prepared.
+	callees := c.calleesOfStack(ctx, stack)
+	return c.correlateWith(ctx, dump, stack, callees, tolerance, limit)
 }
 
 // correlateWithStack is the body, taking the stack as an argument so it can be
 // tested without a system.
 func (c *Client) correlateWithStack(ctx context.Context, dump Dump, stack []DumpFrame, tolerance time.Duration, limit int) ([]LogMatch, error) {
+	return c.correlateWith(ctx, dump, stack, nil, tolerance, limit)
+}
+
+func (c *Client) correlateWith(ctx context.Context, dump Dump, stack []DumpFrame, callees map[string]string, tolerance time.Duration, limit int) ([]LogMatch, error) {
 	if dump.At.IsZero() {
 		return nil, fmt.Errorf("this dump carries no timestamp, so there is nothing to correlate against")
 	}
@@ -100,7 +108,7 @@ func (c *Client) correlateWithStack(ctx context.Context, dump Dump, stack []Dump
 			continue
 		}
 		match := LogMatch{Entry: e, Offset: dump.At.Sub(e.At)}
-		match.Score, match.Why = rankLogAgainstDump(e, dump, stack, match.Offset)
+		match.Score, match.Why = rankLogAgainstDumpWithGraph(e, dump, stack, callees, match.Offset)
 		matches = append(matches, match)
 	}
 
@@ -118,6 +126,10 @@ func (c *Client) correlateWithStack(ctx context.Context, dump Dump, stack []Dump
 }
 
 func rankLogAgainstDump(e AppLogEntry, dump Dump, stack []DumpFrame, offset time.Duration) (int, string) {
+	return rankLogAgainstDumpWithGraph(e, dump, stack, nil, offset)
+}
+
+func rankLogAgainstDumpWithGraph(e AppLogEntry, dump Dump, stack []DumpFrame, callees map[string]string, offset time.Duration) (int, string) {
 	when := "before"
 	if offset < 0 {
 		when = "after"
@@ -130,6 +142,10 @@ func rankLogAgainstDump(e AppLogEntry, dump Dump, stack []DumpFrame, offset time
 	if frame, on := frameFor(stack, e.Program); on {
 		return scoreOnStack, fmt.Sprintf("written by %s, frame %d of the dump stack (%s) — %s %s",
 			e.Program, frame.Position, orUnknown(frame.Name), gap, when)
+	}
+	if caller, called := callees[trimUpper(e.Program)]; called {
+		return scoreCalledByStack, fmt.Sprintf("written by %s, called from %s on the dump stack — %s %s",
+			e.Program, caller, gap, when)
 	}
 	if e.User != "" && dump.User != "" && equalFoldTrim(e.User, dump.User) {
 		if offset >= 0 {
@@ -168,4 +184,57 @@ func frameFor(stack []DumpFrame, program string) (DumpFrame, bool) {
 		}
 	}
 	return DumpFrame{}, false
+}
+
+// scoreCalledByStack: written by something a stack frame calls. Weaker than
+// being on the stack — the callee has already returned, so it is not on the
+// path at the moment of failure — but it is where a bad value is most often
+// prepared, and it is still structural rather than a coincidence of timing.
+const scoreCalledByStack = 60
+
+// callees walks one level down from each program on the stack and returns the
+// names of what they call.
+//
+// One level, not five: depth buys breadth, and breadth here is a liability.
+// A graph deep enough to reach everything makes "this is called somewhere below
+// the stack" true of most of the system, which would promote noise into a
+// structural-looking rung and quietly wreck the ranking.
+func (c *Client) calleesOfStack(ctx context.Context, stack []DumpFrame) map[string]string {
+	out := map[string]string{}
+	for _, frame := range stack {
+		uri := programURI(frame.Program)
+		if uri == "" {
+			continue
+		}
+		node, err := c.GetCalleesOf(ctx, uri, 1)
+		if err != nil || node == nil {
+			// A program whose graph cannot be read simply contributes nothing.
+			continue
+		}
+		for _, child := range node.Children {
+			name := trimUpper(child.Name)
+			if name == "" {
+				continue
+			}
+			if _, seen := out[name]; !seen {
+				out[name] = frame.Program
+			}
+		}
+	}
+	return out
+}
+
+// programURI guesses the ADT URI of a program named in a dump stack. Class
+// pools arrive padded with '=' and are not addressable that way, so they are
+// unwrapped back to the class name.
+func programURI(program string) string {
+	name := strings.TrimSpace(program)
+	if name == "" {
+		return ""
+	}
+	if i := strings.Index(name, "="); i > 0 {
+		class := name[:i]
+		return "/sap/bc/adt/oo/classes/" + strings.ToLower(class)
+	}
+	return "/sap/bc/adt/programs/programs/" + strings.ToLower(name)
 }
