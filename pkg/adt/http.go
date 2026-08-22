@@ -156,6 +156,7 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
+	t.adoptServerCookies(resp)
 
 	// The same expiry reaches a plain read as a successful-looking response that
 	// was in fact served by the identity provider. Nothing downstream would
@@ -403,6 +404,7 @@ func (t *Transport) probeCSRFToken(ctx context.Context, method string) (token st
 	defer resp.Body.Close()
 	// Drain the body so the connection can be reused.
 	_, _ = io.Copy(io.Discard, resp.Body)
+	t.adoptServerCookies(resp)
 
 	return resp.Header.Get("X-CSRF-Token"), resp.StatusCode, t.redirectedAwayFromSAP(resp), nil
 }
@@ -659,6 +661,43 @@ func (t *Transport) callReauthFunc(ctx context.Context) error {
 	}
 	t.lastReauth = time.Now()
 	return nil
+}
+
+// adoptServerCookies takes over any cookie the server just reissued that this
+// client also holds explicitly.
+//
+// A logon ticket outlives the session it opened. When the session lapses while
+// the ticket is still good, the next request authenticates on the ticket, and
+// SAP quietly opens a new session and returns its id in Set-Cookie. The jar
+// keeps that one; config.Cookies still holds the lapsed one, and both go out on
+// the following request under the same name. The server honours one of them and
+// the CSRF token belongs to the other, so a perfectly authenticated client is
+// told its token is invalid — a failure that names neither the session nor the
+// ticket and points at the wrong thing entirely.
+//
+// Taking the server's value keeps one id in play instead of two.
+func (t *Transport) adoptServerCookies(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	fresh := resp.Cookies()
+	if len(fresh) == 0 {
+		return
+	}
+
+	t.cookiesMu.Lock()
+	defer t.cookiesMu.Unlock()
+	for _, c := range fresh {
+		if c.Value == "" {
+			continue
+		}
+		if held, ok := t.config.Cookies[c.Name]; ok && held != c.Value {
+			t.config.Cookies[c.Name] = c.Value
+			if t.config.Verbose {
+				fmt.Fprintf(os.Stderr, "[AUTH] server reissued %s — using the new one\n", c.Name)
+			}
+		}
+	}
 }
 
 // resetCookieJar discards cookies accumulated under a previous session.

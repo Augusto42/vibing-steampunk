@@ -3,8 +3,11 @@ package adt
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -227,5 +230,69 @@ func TestSSOHelperOutputContract(t *testing.T) {
 	}
 	if back.Cookies["SAP_SESSIONID_X"] != "value" || back.Host != "sap.example" {
 		t.Errorf("round trip lost data: %+v", back)
+	}
+}
+
+// reissuingClient answers the way SAP does when a logon ticket outlives the
+// session it opened: it authenticates on the ticket, quietly opens a new
+// session, and returns that session's id in Set-Cookie along with a token
+// minted for it.
+type reissuingClient struct{ newSession string }
+
+func (c *reissuingClient) Do(req *http.Request) (*http.Response, error) {
+	h := http.Header{}
+	h.Set("X-CSRF-Token", "token-for-the-new-session")
+	h.Add("Set-Cookie", "SAP_SESSIONID_DEV_100="+c.newSession+"; path=/")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     h,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+func TestReissuedSessionCookieReplacesTheHeldOne(t *testing.T) {
+	// Holding the lapsed id while the jar holds the new one sends both under the
+	// same name; the server honours one and the token belongs to the other, and
+	// the client is told its CSRF token is invalid while being fully
+	// authenticated.
+	cfg := NewConfig("https://sap.example", "", "",
+		WithCookies(map[string]string{
+			"SAP_SESSIONID_DEV_100": "lapsed",
+			"MYSAPSSO2":             "ticket-still-good",
+		}),
+	)
+	transport := NewTransportWithClient(cfg, &reissuingClient{newSession: "fresh"})
+
+	if err := transport.fetchCSRFToken(context.Background()); err != nil {
+		t.Fatalf("fetchCSRFToken: %v", err)
+	}
+
+	if got := cfg.Cookies["SAP_SESSIONID_DEV_100"]; got != "fresh" {
+		t.Errorf("session cookie = %q, want the reissued one", got)
+	}
+	// The ticket was not reissued and must be left exactly as it was.
+	if got := cfg.Cookies["MYSAPSSO2"]; got != "ticket-still-good" {
+		t.Errorf("ticket = %q, want it untouched", got)
+	}
+}
+
+func TestServerCookiesDoNotIntroduceNewOnes(t *testing.T) {
+	// Adopting a value for a cookie already held is one thing; collecting every
+	// cookie a server offers is another, and would have this client sending
+	// whatever any response happened to set.
+	cfg := NewConfig("https://sap.example", "", "",
+		WithCookies(map[string]string{"SAP_SESSIONID_DEV_100": "held"}))
+	transport := NewTransportWithClient(cfg, &mockHTTPClient{})
+
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Add("Set-Cookie", "SOMETHING_ELSE=value; path=/")
+	transport.adoptServerCookies(resp)
+
+	if _, present := cfg.Cookies["SOMETHING_ELSE"]; present {
+		t.Error("a cookie the client never held was adopted")
+	}
+	if len(cfg.Cookies) != 1 {
+		t.Errorf("cookies = %v, want only the one held", cfg.Cookies)
 	}
 }
