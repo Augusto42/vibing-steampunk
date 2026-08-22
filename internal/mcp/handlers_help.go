@@ -54,6 +54,8 @@ High-level edit (recommended - auto lock/unlock/activate):
   SAP(action="edit", target="CLAS ZCL_TEST", params={"source": "CLASS zcl_test..."})
   SAP(action="edit", target="PROG ZREPORT", params={"source": "REPORT zreport..."})
   SAP(action="edit", target="INTF ZIF_TEST", params={"source": "INTERFACE zif_test..."})
+  SAP(action="edit", target="FUNC ZMY_FM", params={"source": "FUNCTION zmy_fm...ENDFUNCTION."})
+      the function group is resolved from the module name; pass params={"parent": "ZMY_FG"} to name it
   SAP(action="edit", target="DDLS ZDDL_VIEW", params={"source": "@AbapCatalog..."})
 
 Method-level edit (CLAS only):
@@ -385,7 +387,7 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 		sb.WriteString("Supported read targets: CLAS, PROG, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, TABL, TABL_CONTENTS, DEVC, MSAG, TRAN, TYPE_INFO, STRUCT, CDS_DEPS\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"read\") for examples.")
 	case "edit":
-		sb.WriteString("Supported edit targets: CLAS, PROG, INTF, DDLS, BDEF, SRVD, LOCK, UNLOCK, UPDATE_SOURCE, ACTIVATE, ACTIVATE_PACKAGE, EDITSOURCE, PUBLISH_SERVICE, UNPUBLISH_SERVICE\n")
+		sb.WriteString("Supported edit targets: CLAS, PROG, INTF, FUNC, DDLS, BDEF, SRVD, LOCK, UNLOCK, UPDATE_SOURCE, ACTIVATE, ACTIVATE_PACKAGE, EDITSOURCE, PUBLISH_SERVICE, UNPUBLISH_SERVICE\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"edit\") for examples.")
 	case "create":
 		sb.WriteString("Supported create targets: OBJECT, DEVC, TABL, CLONE, PROGRAM, CLASS_WITH_TESTS, CLAS_TEST_INCLUDE\n")

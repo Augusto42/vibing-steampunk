@@ -45,7 +45,7 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 	if action == "edit" {
 		// High-level WriteSource
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "DDLS", "BDEF", "SRVD", "MSAG":
+		case "CLAS", "PROG", "INTF", "FUNC", "DDLS", "BDEF", "SRVD", "MSAG":
 			if src := getStringParam(params, "source"); src != "" {
 				args := map[string]any{
 					"object_type": objectType,
@@ -69,6 +69,10 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 				}
 				if v := getStringParam(params, "method"); v != "" {
 					args["method"] = v
+				}
+				// FUNC only: the group, when the caller happens to know it.
+				if v := getStringParam(params, "parent"); v != "" {
+					args["parent"] = v
 				}
 				return s.callHandler(ctx, s.handleWriteSource, args)
 			}
@@ -226,10 +230,12 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 	testSource, _ := request.GetArguments()["test_source"].(string)
 	transport, _ := request.GetArguments()["transport"].(string)
 	method, _ := request.GetArguments()["method"].(string)
+	parent, _ := request.GetArguments()["parent"].(string)
 
 	opts := &adt.WriteSourceOptions{
 		Description: description,
 		Package:     packageName,
+		Parent:      parent,
 		TestSource:  testSource,
 		Transport:   transport,
 		Method:      method,
