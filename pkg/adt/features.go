@@ -43,11 +43,11 @@ const (
 
 // FeatureStatus represents the probed status of a feature
 type FeatureStatus struct {
-	ID        FeatureID `json:"id"`
-	Available bool      `json:"available"`
+	ID        FeatureID   `json:"id"`
+	Available bool        `json:"available"`
 	Mode      FeatureMode `json:"mode"`
-	Message   string    `json:"message,omitempty"`
-	ProbedAt  time.Time `json:"probed_at,omitempty"`
+	Message   string      `json:"message,omitempty"`
+	ProbedAt  time.Time   `json:"probed_at,omitempty"`
 }
 
 // FeatureConfig controls which optional features are enabled
@@ -120,7 +120,7 @@ func NewFeatureProber(client *Client, config FeatureConfig, verbose bool) *Featu
 // ProbeAll probes all features and returns their status
 func (p *FeatureProber) ProbeAll(ctx context.Context) map[FeatureID]*FeatureStatus {
 	features := []FeatureID{
-		FeatureHANA,     // Probe first - other features may depend on it
+		FeatureHANA, // Probe first - other features may depend on it
 		FeatureAbapGit,
 		FeatureRAP,
 		FeatureAMDP,
@@ -297,11 +297,20 @@ func (p *FeatureProber) probeAMDP(ctx context.Context) (bool, string, error) {
 		return false, "AMDP requires HANA database", nil
 	}
 
-	// Check if AMDP debugger endpoint exists
-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/debugger/amdp/sessions", &RequestOptions{
-		Method: http.MethodOptions,
+	// The resource is /sap/bc/adt/amdp/debugger/main — the segments in that
+	// order. This probe used to ask /sap/bc/adt/debugger/amdp/sessions, which
+	// exists nowhere: measured on two HANA systems, that path answers 404 while
+	// the real one answers 400 and names the parameter it wants. So AMDP was
+	// reported unavailable everywhere, including on systems where it is there.
+	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/amdp/debugger/main", &RequestOptions{
+		Method: http.MethodGet,
 	})
 	if err != nil {
+		// 400 is the resource answering: it wants a mainId, which a probe has
+		// no reason to invent. Only a 404 means it is absent.
+		if strings.Contains(err.Error(), "400") {
+			return true, "AMDP debugger available", nil
+		}
 		if strings.Contains(err.Error(), "404") {
 			return false, "AMDP debugger endpoint not available", nil
 		}
