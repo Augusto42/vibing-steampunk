@@ -2,6 +2,7 @@ package adt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,11 +30,23 @@ type DumpFrame struct {
 	Name     string `json:"name,omitempty"` // CL_X=>METHOD, %_RFC_START, …
 }
 
+// ErrDumpDetailUnavailable says this release does not serve individual dumps.
+//
+// It is a different thing from a dump that could not be read, and worth
+// separating: 7.50 has the feed but not the detail resource, exactly as it has
+// the debugger but not /debugger/stack. Reporting that as a failure would put
+// an alarming line under every dump on a system where nothing is wrong.
+var ErrDumpDetailUnavailable = errors.New("this release does not serve individual dumps, so there is no call stack to read")
+
 // DumpStack reads the call stack of one dump.
 func (c *Client) DumpStack(ctx context.Context, dumpID string) ([]DumpFrame, error) {
 	path := dumpDetailPath(dumpID) + "/formatted"
 	res, err := c.transport.Request(ctx, path, &RequestOptions{Method: "GET", Accept: acceptAny})
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+			return nil, ErrDumpDetailUnavailable
+		}
 		return nil, fmt.Errorf("reading the dump: %w", err)
 	}
 	return parseDumpStack(string(res.Body)), nil

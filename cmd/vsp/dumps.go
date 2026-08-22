@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -134,6 +135,9 @@ func explainDump(ctx context.Context, client *adt.Client, cmd *cobra.Command, du
 	fmt.Println()
 
 	switch {
+	case errors.Is(stackErr, adt.ErrDumpDetailUnavailable):
+		// Not a fault: the release has the feed and not the detail resource.
+		fmt.Fprintf(os.Stderr, "%v\n\n", stackErr)
 	case stackErr != nil:
 		fmt.Fprintf(os.Stderr, "the call stack could not be read: %v\n\n", stackErr)
 	case len(stack) > 0:

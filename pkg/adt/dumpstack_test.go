@@ -1,6 +1,7 @@
 package adt
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -163,5 +164,18 @@ func TestProgramURIUnwrapsAClassPool(t *testing.T) {
 	}
 	if got := programURI("  "); got != "" {
 		t.Fatalf("nothing in, nothing out, got %q", got)
+	}
+}
+
+// A release that has the dump feed but not the detail resource is not a
+// failure, and must not be reported as one: 7.50 is exactly that, the same way
+// it has the debugger but not /debugger/stack. Everything else about the dump
+// still works, so the correlation continues with one rung unused.
+func TestAnAbsentDetailResourceIsNotAFailure(t *testing.T) {
+	if !errors.Is(ErrDumpDetailUnavailable, ErrDumpDetailUnavailable) {
+		t.Fatal("the sentinel must be comparable with errors.Is")
+	}
+	if !strings.Contains(ErrDumpDetailUnavailable.Error(), "call stack") {
+		t.Fatalf("the message should say what is missing, got %q", ErrDumpDetailUnavailable)
 	}
 }
