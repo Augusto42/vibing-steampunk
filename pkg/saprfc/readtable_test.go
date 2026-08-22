@@ -45,7 +45,9 @@ func TestSplitWhereClause(t *testing.T) {
 
 // A clause packed with long tokens must still keep every token whole.
 func TestSplitWhereClauseNeverSplitsAToken(t *testing.T) {
-	where := "BNAME LIKE 'DEVELOPER%' OR BNAME LIKE 'AVINOGRADOVA%' OR BNAME LIKE 'SDMI_DLRYYAU%' OR BNAME = 'DDIC'"
+	// Long, awkward tokens are the point of this case; the names are synthetic
+	// on purpose, because a real logon name in a tracked test is a leak.
+	where := "BNAME LIKE 'DEVELOPER%' OR BNAME LIKE 'TESTUSER_LONGNAME%' OR BNAME LIKE 'ZDEMO_SVCUSER%' OR BNAME = 'DDIC'"
 	rows, err := splitWhereClause(where)
 	if err != nil {
 		t.Fatal(err)
