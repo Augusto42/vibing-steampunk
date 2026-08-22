@@ -1,0 +1,251 @@
+package adt
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"net/http"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// A landscape file says nothing about HTTP. It describes SAP GUI connectivity —
+// dispatcher ports at 3200+nn, message servers at 3600+nn — because SAP GUI
+// speaks DIAG and never needs an HTTP port. Eclipse ADT does not derive one
+// either: it asks the person setting up the project. So for a host reached
+// through single sign-on, where there is no password to fall back on and no
+// gateway route, nothing on the machine knows where to knock.
+//
+// The convention — HTTPS at 443nn, HTTP at 80nn — is a starting guess and often
+// wrong: a system behind a web dispatcher answers on 443, and one measured here
+// answers on 8422, which follows no rule at all. So the port is found by asking.
+
+// PortFinding is what one port turned out to be.
+type PortFinding struct {
+	Port int    `json:"port"`
+	URL  string `json:"url"`
+	// Kind says how far the probe got, which is the difference between "wrong
+	// port" and "right port, and now an authorization problem".
+	Kind PortKind `json:"kind"`
+	// Status is the HTTP status the ADT path answered with, when it answered.
+	Status int `json:"status,omitempty"`
+	// Detail carries what a reader needs and cannot guess — a certificate for
+	// another name, most often.
+	Detail string `json:"detail,omitempty"`
+}
+
+// PortKind is how far a probe of one port got.
+type PortKind string
+
+const (
+	// PortADT means the ADT resource answered: this is the port to configure.
+	PortADT PortKind = "adt"
+	// PortSAPNoADT means SAP answered but not on the ADT path — the ICF node
+	// is likely inactive, which is a different conversation with basis.
+	PortSAPNoADT PortKind = "sap-without-adt"
+	// PortHTTP means something HTTP is listening that is not recognisably SAP.
+	PortHTTP PortKind = "http"
+	// PortTLSMismatch means a server is there and its certificate is for
+	// another name. The port is right; the hostname used to reach it is not.
+	PortTLSMismatch PortKind = "tls-name-mismatch"
+	// PortOpen means the TCP port accepted a connection and nothing more.
+	PortOpen PortKind = "open"
+)
+
+// PortScanResult is everything found on a host.
+type PortScanResult struct {
+	Host     string        `json:"host"`
+	Findings []PortFinding `json:"findings"`
+}
+
+// Best returns the port to configure, if the scan found one.
+func (r *PortScanResult) Best() *PortFinding {
+	for _, kind := range []PortKind{PortADT, PortSAPNoADT, PortTLSMismatch, PortHTTP} {
+		for i := range r.Findings {
+			if r.Findings[i].Kind == kind {
+				return &r.Findings[i]
+			}
+		}
+	}
+	return nil
+}
+
+// CandidatePorts returns the ports worth trying for a host, most likely first.
+//
+// The instance number, when known, contributes the conventional pair. The rest
+// are the ports these systems are actually found on: the default HTTPS port
+// where a dispatcher or load balancer terminates, and the handful of defaults
+// SAP installs pick.
+func CandidatePorts(instanceNr string) []int {
+	ports := []int{443}
+	if instanceNr != "" {
+		var nr int
+		if _, err := fmt.Sscanf(instanceNr, "%d", &nr); err == nil && nr >= 0 && nr <= 99 {
+			ports = append(ports, 44300+nr, 8000+nr)
+		}
+	}
+	// Instance 00 and 01 cover most single-instance systems; 50000/50001 are
+	// what a developer edition and an older stack answer on.
+	ports = append(ports, 44300, 44301, 8000, 8001, 50000, 50001, 80, 8080, 8443)
+
+	seen := map[int]bool{}
+	out := ports[:0:0]
+	for _, p := range ports {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ScanForADT finds which port on a host serves ADT.
+//
+// Every port is tried at once: a closed one costs the full connect timeout, and
+// a dozen of those in sequence is a minute of waiting for an answer that takes
+// two seconds to obtain.
+func ScanForADT(ctx context.Context, host string, ports []int, client string, insecure bool) *PortScanResult {
+	result := &PortScanResult{Host: host}
+	if host == "" || len(ports) == 0 {
+		return result
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, port := range ports {
+		wg.Add(1)
+		go func(port int) {
+			defer wg.Done()
+			if finding := probePort(ctx, host, port, client, insecure); finding != nil {
+				mu.Lock()
+				result.Findings = append(result.Findings, *finding)
+				mu.Unlock()
+			}
+		}(port)
+	}
+	wg.Wait()
+
+	// Most useful first, and stable, so two runs read the same.
+	rank := map[PortKind]int{PortADT: 0, PortSAPNoADT: 1, PortTLSMismatch: 2, PortHTTP: 3, PortOpen: 4}
+	sort.Slice(result.Findings, func(i, j int) bool {
+		if rank[result.Findings[i].Kind] != rank[result.Findings[j].Kind] {
+			return rank[result.Findings[i].Kind] < rank[result.Findings[j].Kind]
+		}
+		return result.Findings[i].Port < result.Findings[j].Port
+	})
+	return result
+}
+
+// probePort reports what is listening on one port, or nothing at all.
+func probePort(ctx context.Context, host string, port int, client string, insecure bool) *PortFinding {
+	address := net.JoinHostPort(host, fmt.Sprint(port))
+
+	dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", address)
+	if err != nil {
+		return nil
+	}
+	conn.Close()
+
+	// A port that is open but serves nothing recognisable is still worth
+	// reporting: it is the difference between "the host is firewalled" and
+	// "the host is there and this is the wrong port".
+	finding := &PortFinding{Port: port, Kind: PortOpen}
+
+	for _, scheme := range schemesFor(port) {
+		base := fmt.Sprintf("%s://%s", scheme, address)
+		kind, status, detail := probeADTPath(ctx, base, client, insecure)
+		if kind == "" {
+			continue
+		}
+		finding.Kind, finding.Status, finding.Detail, finding.URL = kind, status, detail, base
+		if kind == PortADT {
+			return finding
+		}
+	}
+	return finding
+}
+
+// schemesFor puts the likely scheme first: the plain HTTP ports are 80nn and
+// 80/8080, everything else is TLS more often than not.
+func schemesFor(port int) []string {
+	switch {
+	case port == 80 || port == 8080 || (port >= 8000 && port <= 8099):
+		return []string{"http", "https"}
+	default:
+		return []string{"https", "http"}
+	}
+}
+
+// probeADTPath asks the ADT discovery resource and classifies the answer.
+func probeADTPath(ctx context.Context, base, client string, insecure bool) (PortKind, int, string) {
+	httpClient := &http.Client{
+		Timeout: 6 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
+			Proxy:           http.ProxyFromEnvironment,
+		},
+		// Following a redirect to an identity provider proves nothing about
+		// the port and costs a round trip to somewhere else entirely.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	url := base + "/sap/bc/adt/discovery"
+	if client != "" {
+		url += "?sap-client=" + client
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return "", 0, ""
+	}
+	// SAP hands Negotiate and the ADT resources to recognised clients only on
+	// some systems; asking as Eclipse avoids a refusal that is about the
+	// user agent rather than about the port.
+	req.Header.Set("User-Agent", "Eclipse/4.39.0 (win32; x86_64) ADT/3.56.0 (devedition)")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		if strings.Contains(err.Error(), "certificate") {
+			// The server is there and answering TLS; the name used to reach it
+			// is not one the certificate covers. That is a hostname problem,
+			// not a port problem, and saying so saves the next hour.
+			return PortTLSMismatch, 0, certificateDetail(err.Error())
+		}
+		return "", 0, ""
+	}
+	defer resp.Body.Close()
+
+	sapResponse := resp.Header.Get("server") != "" && strings.Contains(
+		strings.ToLower(resp.Header.Get("server")), "sap")
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return PortADT, resp.StatusCode, ""
+	case resp.StatusCode == http.StatusUnauthorized:
+		// ADT is there and wants credentials, which is the port answering.
+		return PortADT, resp.StatusCode, "wants authentication"
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		// A redirect from an ADT path is the single sign-on handshake starting.
+		return PortADT, resp.StatusCode, "redirects to sign in"
+	case resp.StatusCode == http.StatusNotFound && sapResponse:
+		return PortSAPNoADT, resp.StatusCode, "SAP answers; the ADT node looks inactive"
+	case sapResponse:
+		return PortSAPNoADT, resp.StatusCode, ""
+	default:
+		return PortHTTP, resp.StatusCode, ""
+	}
+}
+
+// certificateDetail pulls the readable part out of a TLS error.
+func certificateDetail(msg string) string {
+	if i := strings.Index(msg, "x509:"); i >= 0 {
+		msg = msg[i:]
+	}
+	if len(msg) > 110 {
+		msg = msg[:107] + "..."
+	}
+	return strings.TrimSpace(msg)
+}
