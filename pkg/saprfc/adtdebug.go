@@ -260,18 +260,60 @@ func (d *Debugger) ADTCatch(ctx context.Context, user, ideID, terminalID string,
 // tell you what went wrong.
 func adtError(what string, res *ADTResponse) error {
 	body := string(res.Body)
-	detail := ""
-	if i := strings.Index(body, `subType">`); i >= 0 {
-		if j := strings.Index(body[i+9:], "<"); j > 0 {
-			detail = body[i+9 : i+9+j]
+
+	// SAP refuses in two registers at once: a sentence meant for a person
+	// ("User X does not exist") and a category meant for a program
+	// ("notAuthorized"). Report the sentence first — it is the part that says
+	// what to do about it — and keep the category alongside, since that is what
+	// callers switch on. Reporting the category alone, as this did, turns every
+	// distinct refusal into the same unhelpful word.
+	message := adtExceptionMessage(body)
+	category := between(body, `subType">`, "<")
+
+	switch {
+	case message != "" && category != "":
+		return fmt.Errorf("%s: ADT %d %s: %s (%s)", what, res.Status, res.ReasonPhrase, message, category)
+	case message != "":
+		return fmt.Errorf("%s: ADT %d %s: %s", what, res.Status, res.ReasonPhrase, message)
+	case category != "":
+		return fmt.Errorf("%s: ADT %d %s (%s)", what, res.Status, res.ReasonPhrase, category)
+	default:
+		return fmt.Errorf("%s: ADT %d %s", what, res.Status, res.ReasonPhrase)
+	}
+}
+
+// adtExceptionMessage pulls the human sentence out of an ADT exception
+// document. The element carries whatever language the session logged on in, so
+// matching on lang="EN" — as this used to — silently found nothing on a system
+// running in any other one, and the refusal came back as a bare status.
+func adtExceptionMessage(body string) string {
+	for _, open := range []string{"<message", "<localizedMessage"} {
+		i := strings.Index(body, open)
+		if i < 0 {
+			continue
+		}
+		rest := body[i:]
+		j := strings.Index(rest, ">")
+		if j < 0 {
+			continue
+		}
+		if text := between(rest[j:], ">", "<"); text != "" {
+			return text
 		}
 	}
-	if detail == "" {
-		if i := strings.Index(body, "<message lang=\"EN\">"); i >= 0 {
-			if j := strings.Index(body[i+19:], "<"); j > 0 {
-				detail = body[i+19 : i+19+j]
-			}
-		}
+	return ""
+}
+
+// between returns what sits after the first open and before the next close.
+func between(s, open, close string) string {
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
 	}
-	return fmt.Errorf("%s: ADT %d %s (%s)", what, res.Status, res.ReasonPhrase, detail)
+	rest := s[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
 }

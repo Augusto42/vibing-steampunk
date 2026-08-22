@@ -2,7 +2,9 @@ package saprfc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -89,6 +91,20 @@ func (t httpSession) Do(ctx context.Context, req ADTRequest) (*ADTResponse, erro
 
 	res, err := t.transport.Request(ctx, path, opts)
 	if err != nil {
+		// A refused request still had an answer: ADT reports "no" as a status
+		// and an exception document, and the transport turns that pair into an
+		// error. Handing the answer back alongside the error loses nothing for
+		// callers that only check err, and it lets anything wrapping this
+		// transport — a recorder, a diagnostic — see what the server actually
+		// said rather than a flattened string.
+		var apiErr *adt.APIError
+		if errors.As(err, &apiErr) {
+			return &ADTResponse{
+				Status:       apiErr.StatusCode,
+				ReasonPhrase: http.StatusText(apiErr.StatusCode),
+				Body:         []byte(apiErr.Message),
+			}, err
+		}
 		return nil, err
 	}
 	out := &ADTResponse{Status: res.StatusCode, Body: res.Body}
