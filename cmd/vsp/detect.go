@@ -39,7 +39,7 @@ and it reports which ports answer and how far each got — which separates "wron
 port" from "right port, and the ADT node is switched off".
 
   vsp detect sap.example.com
-  vsp detect D15 --client 100
+  vsp detect A4H --client 100
   vsp detect sap.example.com --port 44300 --port 8000
 
 Run it before writing a system into .vsp.json or .mcp.json, so the address in

@@ -506,9 +506,9 @@ vsp analyze ZCL_MY_CLASS                         # 13 lint rules (offline)
 
 # Getting connected — before there is any config
 vsp detect sap.example.com                       # which port serves ADT, and the config to use
-vsp detect D15 --all                             # exhaustive sweep, by system id from SAP Logon
+vsp detect A4H --all                             # exhaustive sweep, by system id from SAP Logon
 vsp landscape list --probe                       # every system SAP Logon knows, and which answer
-vsp landscape import D15 --client 100 --write    # turn one into a .vsp.json entry
+vsp landscape import A4H --client 100 --write    # turn one into a .vsp.json entry
 vsp -s dev compat                                # what this system supports, and how to route it
 vsp -s dev compat --against prod                 # what two releases disagree about
 

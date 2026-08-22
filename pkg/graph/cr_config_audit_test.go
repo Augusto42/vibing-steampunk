@@ -176,7 +176,7 @@ func TestFinalizeCRConfigAuditReport_FixvalCoveredByDoma(t *testing.T) {
 }
 
 func TestFinalizeCRConfigAuditReport_TransactionalGoesToApplicationReads(t *testing.T) {
-	// Fixture matches the live d15 observation: three Z-tables, same
+	// Fixture matches a live observation: three Z-tables, same
 	// custom namespace, different DD02L delivery classes. The audit
 	// should route them to DIFFERENT buckets based on CONTFLAG:
 	//   - C (customising) + not in CR → Missing
