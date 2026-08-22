@@ -125,10 +125,12 @@ func TestInstanceFromPort(t *testing.T) {
 func TestCandidateURLsFollowThePortConvention(t *testing.T) {
 	s := LandscapeSystem{SystemID: "DEV", Host: "devsys.example", InstanceNr: "01"}
 	got := s.CandidateURLs()
+	// The default address first: it is what answers on a landscape fronted by
+	// anything, and the derived ports only on a directly exposed ICM.
 	want := []string{
+		"https://devsys.example",
 		"https://devsys.example:44301",
 		"http://devsys.example:8001",
-		"https://devsys.example",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // SAP GUI keeps the list of systems a developer can reach in SAPUILandscape.xml —
@@ -33,7 +36,11 @@ type LandscapeService struct {
 	Name     string `xml:"name,attr"`
 	SystemID string `xml:"systemid,attr"`
 	Type     string `xml:"type,attr"`
-	// Server is "host:port" for a direct application-server connection.
+	// Server is "host:port" for a direct application-server connection — and,
+	// for a load-balanced one, the logon group instead. SAP Logon shows it in a
+	// column headed "Group/Server" for exactly that reason. Reading it as a
+	// host turns a group named "Users" into a hostname, which is how most of
+	// this landscape came out addressed to https://Users.
 	Server string `xml:"server,attr"`
 	// MessageServerID points at a Messageserver entry for a load-balanced one.
 	MessageServerID string `xml:"msid,attr"`
@@ -45,10 +52,11 @@ type LandscapeService struct {
 
 // LandscapeMessageServer is a system's message server.
 type LandscapeMessageServer struct {
-	UUID string `xml:"uuid,attr"`
-	Name string `xml:"name,attr"`
-	Host string `xml:"host,attr"`
-	Port string `xml:"port,attr"`
+	UUID        string `xml:"uuid,attr"`
+	Name        string `xml:"name,attr"`
+	Host        string `xml:"host,attr"`
+	Port        string `xml:"port,attr"`
+	Description string `xml:"description,attr"`
 }
 
 // LandscapeRouter is a SAProuter entry.
@@ -82,7 +90,8 @@ type LandscapeSystem struct {
 	InstanceNr  string // two digits, empty when it cannot be derived
 	Router      string
 	SNCName     string
-	LoadBalance bool // reached through a message server rather than an app server
+	Group       string // logon group, for a load-balanced system
+	LoadBalance bool   // reached through a message server rather than an app server
 	Source      string
 }
 
@@ -116,6 +125,7 @@ func (lf *LandscapeFile) Systems(source string) []LandscapeSystem {
 		byRouter[r.UUID] = r
 	}
 
+	seenSID := make(map[string]bool, len(lf.Services))
 	out := make([]LandscapeSystem, 0, len(lf.Services))
 	for _, s := range lf.Services {
 		// A shared landscape is edited by many hands over years, and some
@@ -144,25 +154,50 @@ func (lf *LandscapeFile) Systems(source string) []LandscapeSystem {
 		if r, ok := byRouter[s.RouterID]; ok {
 			sys.Router = r.Router
 		}
-		switch {
-		case s.MessageServerID != "":
+		server := strings.TrimSpace(s.Server)
+		if m, ok := byMS[s.MessageServerID]; ok {
 			// Load balanced: the message server's port carries the instance,
-			// 3600 + nn.
-			if m, ok := byMS[s.MessageServerID]; ok {
-				sys.Host = strings.TrimSpace(m.Host)
-				sys.InstanceNr = instanceFromPort(m.Port, 3600)
-				sys.LoadBalance = true
-			}
-		case s.Server != "":
-			// Direct: "host:port", where the dispatcher port is 3200 + nn.
-			host, port := splitHostPort(strings.TrimSpace(s.Server))
+			// 3600 + nn, and the server attribute names the logon group.
+			sys.Host = strings.TrimSpace(m.Host)
+			sys.InstanceNr = instanceFromPort(m.Port, 3600)
+			sys.LoadBalance = true
+			sys.Group = server
+		} else if host, port := splitHostPort(server); port != "" {
+			// Direct: "host:port", where the dispatcher port is 3200 + nn. The
+			// port is what identifies this as an address at all — without one
+			// the value is a group name and says nothing about where to
+			// connect.
 			sys.Host = strings.TrimSpace(host)
 			sys.InstanceNr = instanceFromPort(port, 3200)
+		} else {
+			sys.Group = server
 		}
 		if sys.Host == "" {
 			continue
 		}
+		seenSID[sys.SystemID] = true
 		out = append(out, sys)
+	}
+
+	// A system can be declared by its message server alone, with no service
+	// entry — SAP Logon lists those under "All SAP Systems" and they are as
+	// real as any other. Walking only the services loses them silently: this
+	// landscape has 185 message servers behind 153 services.
+	for _, m := range lf.MessageServers {
+		sid := strings.ToUpper(strings.TrimSpace(m.Name))
+		host := strings.TrimSpace(m.Host)
+		if sid == "" || host == "" || seenSID[sid] {
+			continue
+		}
+		seenSID[sid] = true
+		out = append(out, LandscapeSystem{
+			SystemID:    sid,
+			Name:        strings.TrimSpace(m.Description),
+			Host:        host,
+			InstanceNr:  instanceFromPort(m.Port, 3600),
+			LoadBalance: true,
+			Source:      source,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].SystemID != out[j].SystemID {
@@ -220,16 +255,104 @@ func instanceFromPort(port string, base int) string {
 func (s LandscapeSystem) CandidateURLs(domains ...string) []string {
 	var urls []string
 	for _, host := range s.hostCandidates(domains) {
+		// The default address comes first, because that is what answers. SAP's
+		// port convention — HTTPS at 443nn, HTTP at 80nn — describes an ICM
+		// exposed directly, and a corporate landscape rarely is: measured
+		// across eight systems here, 443 answered on five and the derived
+		// ports on none. They stay in the list because a system whose ICM is
+		// reachable does answer there, and one such system is why this
+		// derivation exists at all.
+		urls = append(urls, fmt.Sprintf("https://%s", host))
 		if s.InstanceNr != "" {
 			urls = append(urls,
 				fmt.Sprintf("https://%s:443%s", host, s.InstanceNr),
 				fmt.Sprintf("http://%s:80%s", host, s.InstanceNr),
 			)
 		}
-		// A web dispatcher, or an ICM left on the default ports, answers here.
-		urls = append(urls, fmt.Sprintf("https://%s", host))
 	}
 	return urls
+}
+
+// CanonicalHost returns the name a certificate will match.
+//
+// A landscape records a short host name and the workstation's DNS suffix
+// completes it — but the suffix Windows reports is not always the one the host
+// lives under. Here the short name resolves through the reported suffix to the
+// right address and then fails TLS, because the certificate names the host's
+// real domain and not the alias used to reach it. The resolver knows the
+// canonical name; asking it costs one lookup and removes the guesswork.
+//
+// The host is returned unchanged when nothing resolves, so a caller still gets
+// something to try rather than an empty string.
+func CanonicalHost(ctx context.Context, host string, domains []string) string {
+	if host == "" {
+		return host
+	}
+	candidates := []string{host}
+	if !strings.Contains(host, ".") {
+		for _, d := range domains {
+			if d = strings.Trim(strings.TrimSpace(d), "."); d != "" {
+				candidates = append(candidates, host+"."+d)
+			}
+		}
+	}
+	// A name that does not exist costs the full resolver timeout, and a
+	// landscape has a hundred of them. Cap each lookup so an unknown host is
+	// answered in a moment rather than after several seconds of waiting for a
+	// nameserver that has nothing to say.
+	resolver := net.DefaultResolver
+	for _, name := range candidates {
+		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		canonical, err := resolver.LookupCNAME(lookupCtx, name)
+		cancel()
+		if err == nil {
+			if canonical = strings.TrimSuffix(canonical, "."); canonical != "" {
+				return canonical
+			}
+		}
+
+		lookupCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		addrs, err := resolver.LookupHost(lookupCtx, name)
+		cancel()
+		if err != nil || len(addrs) == 0 {
+			continue
+		}
+		lookupCtx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		names, err := resolver.LookupAddr(lookupCtx, addrs[0])
+		cancel()
+		if err == nil && len(names) > 0 {
+			return strings.TrimSuffix(names[0], ".")
+		}
+		return name
+	}
+	return host
+}
+
+// CanonicalHosts resolves a whole landscape at once.
+//
+// Sequentially this is a hundred lookups behind one another, and the ones that
+// fail are the slow ones — a listing that took a moment becomes a listing that
+// looks hung.
+func CanonicalHosts(ctx context.Context, systems []LandscapeSystem, domains []string) {
+	const workers = 16
+	type job struct{ index int }
+
+	jobs := make(chan job)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				systems[j.index].Host = CanonicalHost(ctx, systems[j.index].Host, domains)
+			}
+		}()
+	}
+	for i := range systems {
+		jobs <- job{index: i}
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // hostCandidates returns the names worth trying for this system's host.
@@ -346,17 +469,26 @@ func FindLandscapeFiles(ctx context.Context, explicit string) []string {
 	// installed inside the WSL distribution — looking only across the boundary
 	// missed it.
 	var candidates []string
+	// SAP Logon caches the shared landscape it fetches from the company file
+	// server, and reads that cache on every start. Taking it too means the
+	// systems everyone shares are found on a local disk rather than over a
+	// share that may be slow, reached through interop, or simply unavailable —
+	// and it is byte for byte the file the include names.
+	appDataDirs := func(appData string) {
+		candidates = append(candidates, filepath.Join(appData, "SAP", "Common", landscapeFileName))
+		candidates = append(candidates, cacheGlob(filepath.Join(appData, "SAP", "LogonServerConfigCache"))...)
+	}
 
 	if runtime.GOOS == "windows" {
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			candidates = append(candidates, filepath.Join(appData, "SAP", "Common", landscapeFileName))
+			appDataDirs(appData)
 		}
 	}
 
 	if IsWSL() {
 		if appData, err := windowsEnvVar(ctx, "APPDATA"); err == nil {
 			if linux, err := windowsPathToLinux(ctx, appData); err == nil {
-				candidates = append(candidates, filepath.Join(linux, "SAP", "Common", landscapeFileName))
+				appDataDirs(linux)
 			}
 		}
 	}
@@ -383,6 +515,21 @@ func FindLandscapeFiles(ctx context.Context, explicit string) []string {
 		}
 	}
 	return found
+}
+
+// cacheGlob lists the cached landscape files in a directory. They are named by
+// a UUID, so they are found by extension rather than by name.
+func cacheGlob(dir string) []string {
+	var out []string
+	for _, pattern := range []string{"*.XML", "*.xml"} {
+		matches, err := filepath.Glob(filepath.Join(dir, pattern))
+		if err != nil {
+			continue
+		}
+		out = append(out, matches...)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ReadLandscapeInclude fetches the contents an <Include url="..."> points at.
