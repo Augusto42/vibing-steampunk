@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -174,19 +175,69 @@ func printSuggestion(result *adt.PortScanResult, sid, clientNr string) {
 	if name == "" {
 		name = "system"
 	}
-	entry := map[string]any{"url": best.URL, "auth": "sso"}
+
+	// Both templates, and which one to take. The two files answer different
+	// questions — one configures an agent, the other the command line — and a
+	// caller who has just found a port should not have to work out which they
+	// were after.
+	fmt.Println("\nIf you do not know which of these you need, you need .mcp.json:")
+	fmt.Printf("\n.mcp.json — so an agent can reach this system through vsp:\n%s\n",
+		mcpTemplate(name, best.URL, clientNr))
+	fmt.Printf("\n.vsp.json — so `vsp -s %s ...` works on the command line:\n%s\n",
+		name, vspTemplate(name, best.URL, clientNr))
+	fmt.Println("\nWith .vsp.json in place, `vsp config vsp-to-mcp` writes the other one for you.")
+}
+
+// mcpTemplate renders the entry an MCP client reads.
+func mcpTemplate(name, url, clientNr string) string {
+	env := map[string]any{
+		"SAP_URL":        url,
+		"SAP_SSO":        "true",
+		"SAP_SSO_SYSTEM": name,
+		"SAP_LANGUAGE":   "EN",
+	}
+	if clientNr != "" {
+		env["SAP_CLIENT"] = clientNr
+	}
+	command := vspCommandPath()
+	return renderJSON(map[string]any{
+		"mcpServers": map[string]any{
+			name: map[string]any{"command": command, "env": env},
+		},
+	})
+}
+
+// vspTemplate renders the entry the command line reads.
+func vspTemplate(name, url, clientNr string) string {
+	entry := map[string]any{"url": url, "auth": "sso", "language": "EN"}
 	if clientNr != "" {
 		entry["client"] = clientNr
 	}
-	blob, err := json.MarshalIndent(map[string]any{
-		"systems": map[string]any{name: entry},
-	}, "", "  ")
-	if err != nil {
-		return
+	return renderJSON(map[string]any{"systems": map[string]any{name: entry}})
+}
+
+// vspCommandPath is what an MCP client should be told to run.
+//
+// A name on PATH is preferred over the binary doing the scanning: os.Executable
+// resolves symlinks, so it yields the platform-named artefact inside a build
+// directory — a path that is correct today and wrong as soon as the checkout
+// moves. The installed name survives both that and a rebuild.
+func vspCommandPath() string {
+	if onPath, err := exec.LookPath("vsp"); err == nil && onPath != "" {
+		return onPath
 	}
-	fmt.Println("\nFor .vsp.json:")
-	fmt.Println(string(blob))
-	fmt.Println("\nThen: vsp config vsp-to-mcp   — to write the same into .mcp.json")
+	if self, err := os.Executable(); err == nil && self != "" {
+		return self
+	}
+	return "vsp"
+}
+
+func renderJSON(v any) string {
+	blob, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(blob)
 }
 
 // findInLandscape looks the target up by system id or by host, and says nothing
