@@ -15,8 +15,9 @@ import (
 )
 
 func init() {
-	landscapeCmd.AddCommand(landscapeListCmd, landscapeImportCmd)
+	landscapeCmd.AddCommand(landscapeListCmd, landscapeImportCmd, landscapeScanCmd)
 	landscapeCmd.PersistentFlags().String("file", "", "Landscape file to read (default: SAP GUI's own, found automatically)")
+	landscapeCmd.PersistentFlags().Bool("all", false, "Read every landscape this machine can reach, VMs included (see 'landscape scan')")
 	landscapeCmd.PersistentFlags().Bool("include", true, "Follow <Include> entries, which is where a shared company landscape lives")
 	landscapeCmd.PersistentFlags().StringSlice("domain", nil, "DNS domains to qualify short host names with (default: detected)")
 	landscapeListCmd.Flags().String("filter", "", "Only systems whose ID or name contains this")
@@ -44,6 +45,47 @@ Under WSL the file is looked for on the Windows side, because that is where SAP
 GUI wrote it.`,
 }
 
+var landscapeScanCmd = &cobra.Command{
+	Use:   "scan",
+	Short: "Find every landscape this machine can reach, including inside VMs",
+	Long: `List the landscape files SAP GUI wrote on this machine, and the ones inside
+running virtual machines, with how many systems each holds.
+
+A Mac with a Windows VM is the same situation as WSL: SAP Logon runs in the
+guest, so the file that carries the company's shared <Include> is in there and
+not out here. Reaching into a guest is never automatic — this reports what is
+reachable, and the reference it prints is what --file takes:
+
+  vsp landscape scan
+  vsp landscape list --file "parallels:Windows 11:C:\Users\you\AppData\Roaming\SAP\Common\SAPUILandscape.xml"
+
+Nothing is read from a guest that is not running, and nothing is written.`,
+	RunE: runLandscapeScan,
+}
+
+func runLandscapeScan(cmd *cobra.Command, args []string) error {
+	sources := adt.ScanLandscapeSources(cmd.Context())
+	if len(sources) == 0 {
+		fmt.Println("No landscape found. SAP GUI writes one when a system is configured;")
+		fmt.Println("pass --file, or set SAPLOGON_LSXML_FILE, if yours lives somewhere else.")
+		return nil
+	}
+
+	fmt.Printf("%-16s %8s %9s  %s\n", "KIND", "SYSTEMS", "INCLUDES", "REFERENCE")
+	fmt.Println(strings.Repeat("-", 110))
+	for _, s := range sources {
+		if s.Err != "" {
+			fmt.Printf("%-16s %8s %9s  %s\n", s.Kind, "-", "-", s.Ref)
+			fmt.Printf("%-16s %8s %9s  ! %s\n", "", "", "", s.Err)
+			continue
+		}
+		fmt.Printf("%-16s %8d %9d  %s\n", s.Kind, s.Systems, s.Includes, s.Ref)
+	}
+	fmt.Println()
+	fmt.Println("Includes are counted, not followed — 'list' follows them.")
+	return nil
+}
+
 var landscapeListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the systems in the landscape file",
@@ -66,10 +108,24 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 	explicit, _ := cmd.Flags().GetString("file")
 	follow, _ := cmd.Flags().GetBool("include")
 
+	all, _ := cmd.Flags().GetBool("all")
+
 	ctx := cmd.Context()
-	paths := adt.FindLandscapeFiles(ctx, explicit)
+	var paths []string
+	switch {
+	case explicit != "":
+		paths = []string{explicit}
+	case all:
+		for _, src := range adt.ScanLandscapeSources(ctx) {
+			if src.Err == "" {
+				paths = append(paths, src.Ref)
+			}
+		}
+	default:
+		paths = adt.FindLandscapeFiles(ctx, "")
+	}
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("no landscape file found — pass --file, or set SAPLOGON_LSXML_FILE")
+		return nil, fmt.Errorf("no landscape file found — pass --file, try --all, or set SAPLOGON_LSXML_FILE")
 	}
 
 	// A landscape file names includes, and an included file may name more, so
@@ -78,12 +134,17 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 	// spin forever.
 	type source struct {
 		name string
+		// vm is the guest a source came from, so its includes are resolved
+		// where they are reachable: a company landscape included by UNC path
+		// can be opened from inside that VM and nowhere else.
+		vm   string
 		read func() ([]byte, error)
 	}
 	queue := make([]source, 0, len(paths))
 	for _, p := range paths {
 		p := p
-		queue = append(queue, source{name: p, read: func() ([]byte, error) { return os.ReadFile(p) }})
+		vm, _, _ := adt.ParseParallelsRef(p)
+		queue = append(queue, source{name: p, vm: vm, read: func() ([]byte, error) { return adt.ReadLandscapeSource(ctx, p) }})
 	}
 
 	seen := map[string]bool{}
@@ -117,13 +178,41 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 		}
 		for _, inc := range lf.Includes {
 			inc := inc
+			if src.vm != "" {
+				if winPath, ok := adt.WindowsPathFromIncludeURL(inc.URL); ok {
+					vm := src.vm
+					queue = append(queue, source{
+						name: adt.ParallelsRef(vm, winPath),
+						vm:   vm,
+						read: func() ([]byte, error) { return adt.ReadParallelsFile(ctx, vm, winPath) },
+					})
+					continue
+				}
+			}
 			queue = append(queue, source{
 				name: inc.URL,
 				read: func() ([]byte, error) { return adt.ReadLandscapeInclude(ctx, inc.URL) },
 			})
 		}
 	}
-	return systems, nil
+	return dedupeSystems(systems), nil
+}
+
+// dedupeSystems drops repeats. Reading everything at once means the same system
+// arrives from a local file and from the shared landscape it includes; the
+// first occurrence wins, so a local entry keeps its own name.
+func dedupeSystems(systems []adt.LandscapeSystem) []adt.LandscapeSystem {
+	seen := make(map[string]bool, len(systems))
+	out := systems[:0]
+	for _, s := range systems {
+		key := s.SystemID + "|" + s.Host + "|" + s.InstanceNr
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // filterSystems narrows the list by a substring and by explicit system IDs.

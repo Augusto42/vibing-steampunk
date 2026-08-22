@@ -166,3 +166,102 @@ func TestPowerShellQuote(t *testing.T) {
 		t.Errorf("got %s, want the apostrophe doubled", got)
 	}
 }
+
+// SAP GUI for Java writes no systemid at all: the system lives in name, and
+// the file is called SAPGUILandscape.xml rather than SAPUILandscape.xml. Its
+// entries were dropped entirely before, so on macOS the tool found nothing
+// even with SAP GUI installed and configured.
+const sampleJavaLandscape = `<?xml version="1.0" encoding="UTF-8"?>
+<Landscape updated="2026-01-01T00:00:00Z" version="1" generator="SAP GUI for Java 7.80 rev 7">
+  <Services>
+    <Service client="001" user="TESTUSER" name="DEV" expert="1" uuid="j1" type="SAPGUI" server="devsys.example:3200" mode="1"/>
+    <Service client="001" user="TESTUSER" name="A description, not a system" uuid="j2" type="SAPGUI" server="ghost.example:3200"/>
+  </Services>
+</Landscape>`
+
+func TestLandscapeJavaFlavourUsesNameAsSystemID(t *testing.T) {
+	lf, err := ParseLandscapeBytes([]byte(sampleJavaLandscape), "java")
+	if err != nil {
+		t.Fatalf("ParseLandscapeBytes: %v", err)
+	}
+	systems := lf.Systems("java")
+
+	if len(systems) != 1 {
+		t.Fatalf("got %d systems, want 1 — only the entry whose name is shaped like a system id", len(systems))
+	}
+	got := systems[0]
+	if got.SystemID != "DEV" {
+		t.Errorf("SystemID = %q, want %q", got.SystemID, "DEV")
+	}
+	if got.Host != "devsys.example" {
+		t.Errorf("Host = %q, want %q", got.Host, "devsys.example")
+	}
+	if got.InstanceNr != "00" {
+		t.Errorf("InstanceNr = %q, want %q — 3200 is instance 00", got.InstanceNr, "00")
+	}
+}
+
+// The name is only a fallback for a missing system id, never a rename: a
+// Windows file's blank systemid still drops the entry rather than promoting
+// its description.
+func TestLandscapeBlankSystemIDStillDropsTheEntry(t *testing.T) {
+	for _, s := range parseSample(t) {
+		if strings.EqualFold(s.SystemID, "NO SYSTEM ID") || s.Host == "ghost.example" {
+			t.Errorf("entry with a blank systemid survived as %+v", s)
+		}
+	}
+}
+
+func TestLooksLikeSystemID(t *testing.T) {
+	for _, ok := range []string{"DEV", "A4H", "PRD", "S4H", "123"} {
+		if !looksLikeSystemID(ok) {
+			t.Errorf("looksLikeSystemID(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", "DE", "DEVS", "A description", "D-V", "a4h"} {
+		if looksLikeSystemID(bad) {
+			t.Errorf("looksLikeSystemID(%q) = true, want false", bad)
+		}
+	}
+}
+
+func TestParallelsRefRoundTrip(t *testing.T) {
+	const winPath = `C:\Users\testuser\AppData\Roaming\SAP\Common\SAPUILandscape.xml`
+	ref := ParallelsRef("Windows 11", winPath)
+
+	vm, got, ok := ParseParallelsRef(ref)
+	if !ok {
+		t.Fatalf("ParseParallelsRef(%q) not recognised", ref)
+	}
+	if vm != "Windows 11" {
+		t.Errorf("vm = %q, want %q — a VM name may contain spaces", vm, "Windows 11")
+	}
+	if got != winPath {
+		t.Errorf("path = %q, want %q — the drive colon must survive the split", got, winPath)
+	}
+
+	for _, bad := range []string{"/Users/testuser/SAPUILandscape.xml", "parallels:", "parallels:vm", "parallels::x"} {
+		if _, _, ok := ParseParallelsRef(bad); ok {
+			t.Errorf("ParseParallelsRef(%q) = ok, want not recognised", bad)
+		}
+	}
+}
+
+func TestWindowsPathFromIncludeURL(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"file://fileserver.example/public/SAPUILandscape.XML", `\\fileserver.example\public\SAPUILandscape.XML`, true},
+		{"file:///C:/Users/testuser/SAPUILandscapeGlobal.xml", `C:\Users\testuser\SAPUILandscapeGlobal.xml`, true},
+		{"https://intranet.example/landscape.xml", "", false},
+		{"file://", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := WindowsPathFromIncludeURL(tt.in)
+		if ok != tt.ok || got != tt.want {
+			t.Errorf("WindowsPathFromIncludeURL(%q) = %q,%v want %q,%v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
