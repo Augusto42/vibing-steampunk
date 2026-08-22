@@ -30,9 +30,29 @@ That last assertion failed on its first run and found a real defect: four gCTS
 entries whitelisted tools that no mode registers, because `registerGCTSTools` is
 never called. The entries are gone. See the open decision below.
 
+## Also done, same day
+
+**All eight remaining claim corrections**, each checked against the code rather
+than taken on the audit's word — and one the audit had wrong: abaplint has 13
+rules of which 8 are on by default, so "8 lint rules" was defensible and the
+phrasing was not. Statement patterns are 95, not 91 and not 94.
+
+**Released as v2.42.0**, after the corrections rather than before, so the
+announcement does not point at numbers already known to be false.
+
+**Field reports closed.** `save_to_file` now creates its output directory. The
+git export nests by subpackage again on the system that was running an older
+copy of the class. A WebSocket opened after a session refresh used the session
+from startup — a real bug, found while chasing a symptom that turned out to be a
+stale process holding a deleted inode.
+
+**gCTS probed.** Live on two systems of four (200, empty repository list), 403
+where authorization is missing, 404 on 7.50 where it does not exist. So the
+service is not dead — the wiring is.
+
 ## Queued, in the order they pay off
 
-**1. The rest of the claim corrections.** Each is small and independent:
+**1. ~~The rest of the claim corrections~~ — done.** Kept here for the record:
 
 - `README.md:3` — "everywhere ADT is available" contradicts our own
   `pkg/adt/compat.go`, which records that a resource present on S/4 is absent on
