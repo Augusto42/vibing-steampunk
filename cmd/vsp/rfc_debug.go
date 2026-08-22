@@ -345,9 +345,18 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		return nil
 	case "eframe":
 		if arg(1) == "" {
-			return fmt.Errorf("usage: eframe <STACK-URI> — from estack, to read another frame's variables")
+			return fmt.Errorf("usage: eframe <N|STACK-URI> — a frame number from estack, or its URI")
 		}
-		if ferr := dbg.GoToFrame(ctx, arg(1)); ferr != nil {
+		// A number is how a person refers to a frame; the URI is what SAP calls
+		// it. Accept both, because the URI can only be had by reading a stack
+		// first, which makes it useless in a script.
+		var ferr error
+		if n := num(1); n > 0 {
+			ferr = dbg.GoToFrameAt(ctx, n)
+		} else {
+			ferr = dbg.GoToFrame(ctx, arg(1))
+		}
+		if ferr != nil {
 			return ferr
 		}
 		fmt.Fprintln(os.Stderr, "cursor moved; elocals now reads that frame")

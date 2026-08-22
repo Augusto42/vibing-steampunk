@@ -35,8 +35,59 @@ func (d *Debugger) Vars(ctx context.Context, names []string) ([]adt.DebugVariabl
 
 // Expand returns the children of one composite variable — a structure's
 // components, a table's rows, or one of the debugger's synthetic roots.
+// maxExpandedTableRows bounds what one expansion asks for. A debugger stops in
+// code that may hold a table of a million rows, and reading all of them would
+// hang the session it is trying to describe.
+const maxExpandedTableRows = 100
+
 func (d *Debugger) Expand(ctx context.Context, parentID string) (*adt.DebugChildVariablesInfo, error) {
 	res, err := d.ADTChildVariables(ctx, []string{parentID})
+	if err != nil {
+		return nil, err
+	}
+	info, err := adt.ParseChildVariablesXML(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	// A synthetic root such as @ROOT answers with hierarchies and no variables,
+	// and that is a complete answer — Locals() is built on exactly that. Only an
+	// answer empty of both is worth a second look.
+	if info != nil && (len(info.Variables) > 0 || len(info.Hierarchies) > 0) {
+		return info, nil
+	}
+
+	// An internal table is the one thing that does not expand by its own name:
+	// SAP answers with an empty body rather than an error, so "expand this
+	// table" looked like "this table has nothing in it" — even for a table that
+	// had just been reported as holding two rows. Its rows are addressable, but
+	// only one subscript at a time: LT_ROWS[1], LT_ROWS[2]. Ask for them.
+	return d.expandTableRows(ctx, parentID, info)
+}
+
+// expandTableRows reads a table's rows as children, or reports that the
+// variable was not a table after all — in which case the empty answer stands.
+func (d *Debugger) expandTableRows(ctx context.Context, parentID string, empty *adt.DebugChildVariablesInfo) (*adt.DebugChildVariablesInfo, error) {
+	described, err := d.Vars(ctx, []string{parentID})
+	if err != nil || len(described) == 0 {
+		// Nothing more to learn; the empty expansion was the answer, and it is
+		// returned as it came rather than replaced by one we made up.
+		return empty, nil
+	}
+	table := described[0]
+	if table.MetaType != adt.DebugMetaTypeTable || table.TableLines <= 0 {
+		return empty, nil
+	}
+
+	rows := table.TableLines
+	if rows > maxExpandedTableRows {
+		rows = maxExpandedTableRows
+	}
+	subscripts := make([]string, 0, rows)
+	for i := 1; i <= rows; i++ {
+		subscripts = append(subscripts, fmt.Sprintf("%s[%d]", parentID, i))
+	}
+
+	res, err := d.ADTChildVariables(ctx, subscripts)
 	if err != nil {
 		return nil, err
 	}
@@ -179,6 +230,29 @@ func (d *Debugger) SetVariable(ctx context.Context, name, value string) error {
 // It is how the caller's half of a call boundary is reached: stopped inside a
 // unit, step up one frame and the arguments as the caller sees them are
 // readable. The uri is a frame's StackURI from the stack document.
+// GoToFrameAt moves the cursor to a frame by its position in the stack, which
+// is how a person refers to one — "the caller", "frame 2" — rather than by the
+// URI SAP names it with. The URI is a long opaque string that only exists in
+// the output of a previous stack read, so requiring it means no script can move
+// frames, and neither can anything driving the debugger programmatically.
+//
+// Positions are 1-based and count from the innermost frame, the same order the
+// stack is printed in.
+func (d *Debugger) GoToFrameAt(ctx context.Context, position int) error {
+	info, err := d.StackInfo(ctx)
+	if err != nil {
+		return err
+	}
+	if position < 1 || position > len(info.Stack) {
+		return fmt.Errorf("the stack has %d frames; there is no frame %d", len(info.Stack), position)
+	}
+	uri := info.Stack[position-1].StackURI
+	if strings.TrimSpace(uri) == "" {
+		return fmt.Errorf("frame %d carries no URI to move to; this release may not allow moving to it", position)
+	}
+	return d.GoToFrame(ctx, uri)
+}
+
 func (d *Debugger) GoToFrame(ctx context.Context, stackURI string) error {
 	res, err := d.ADT(ctx, "PUT", stackURI, nil, nil)
 	if err != nil {
