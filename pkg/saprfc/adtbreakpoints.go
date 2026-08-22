@@ -97,7 +97,7 @@ func (d *Debugger) ADTSetBreakpoints(ctx context.Context, bps []adt.Breakpoint) 
 	}
 	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger/breakpoints",
 		[]ADTHeader{{Name: "Content-Type", Value: "application/xml"},
-			{Name: "Accept", Value: "application/xml"}}, []byte(body))
+			{Name: "Accept", Value: acceptAnything}}, []byte(body))
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func (d *Debugger) ADTBreakpoints(ctx context.Context) ([]adt.Breakpoint, error)
 	q.Set("terminalId", term)
 
 	res, err := d.ADT(ctx, "GET", "/sap/bc/adt/debugger/breakpoints?"+q.Encode(),
-		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func (d *Debugger) ResolveSourceURI(ctx context.Context, name string) (string, e
 	q.Set("maxResults", "20")
 
 	res, err := d.ADT(ctx, "GET", "/sap/bc/adt/repository/informationsystem/search?"+q.Encode(),
-		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil {
 		return "", err
 	}

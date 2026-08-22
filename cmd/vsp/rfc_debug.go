@@ -234,7 +234,16 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 				who.ID, who.User, who.Program, who.Include, who.Line, who.Type, who.Name)
 		}
 		if cerr != nil {
-			return cerr
+			if who == nil {
+				return cerr
+			}
+			// The debuggee was caught and attached; only the stack read failed.
+			// Reporting that as an error throws away a session that is alive
+			// and attached — on a release with no stack resource, every catch
+			// would look like a catch that did not happen. Say what went wrong
+			// and leave the session usable.
+			fmt.Fprintf(os.Stderr, "attached, but the stack could not be read: %v\n", cerr)
+			return nil
 		}
 		if rfcDebugRaw {
 			fmt.Println(string(stack.Body))

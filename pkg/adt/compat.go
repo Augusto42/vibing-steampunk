@@ -121,6 +121,12 @@ type CompatReport struct {
 	Release  string         `json:"release"`
 	Database string         `json:"database"`
 	Results  []CompatResult `json:"results"`
+	// DebuggerSurface is the set of debugger resources this release advertises
+	// in its own discovery document, sorted. It is here because most of the
+	// debugger cannot be probed with a request — /debugger/stack answers 404 on
+	// every release until a program is actually stopped — so the only thing
+	// comparable across systems without stopping one is what each says it has.
+	DebuggerSurface []string `json:"debuggerSurface,omitempty"`
 }
 
 // vendor content types, tried in the order a caller would.
@@ -206,6 +212,37 @@ func CompatChecks() []CompatCheck {
 			Method: http.MethodGet, Path: "/sap/bc/adt/debugger/breakpoints",
 			Accepts: []string{acceptAny},
 		},
+		// The breakpoint kinds a release supports, each its own resource and
+		// each answerable with no debug session held. These are the only part
+		// of the debugger surface that can be compared across systems without
+		// stopping a program, and what they list differs by release — which is
+		// exactly what a caller setting a non-line breakpoint needs to know
+		// before it tries.
+		{
+			ID: "debugger.bp.statements", Purpose: "statement breakpoints the release knows",
+			Method: http.MethodGet, Path: "/sap/bc/adt/debugger/breakpoints/statements",
+			Accepts: []string{acceptAny},
+		},
+		{
+			ID: "debugger.bp.conditions", Purpose: "conditional breakpoint support",
+			Method: http.MethodGet, Path: "/sap/bc/adt/debugger/breakpoints/conditions",
+			Accepts: []string{acceptAny},
+		},
+		{
+			ID: "debugger.bp.messagetypes", Purpose: "message breakpoints",
+			Method: http.MethodGet, Path: "/sap/bc/adt/debugger/breakpoints/messagetypes",
+			Accepts: []string{acceptAny},
+		},
+		{
+			ID: "debugger.bp.validations", Purpose: "breakpoint validation rules",
+			Method: http.MethodGet, Path: "/sap/bc/adt/debugger/breakpoints/validations",
+			Accepts: []string{acceptAny},
+		},
+		{
+			ID: "debugger.bp.vit", Purpose: "VIT breakpoints; absent before 7.5x",
+			Method: http.MethodGet, Path: "/sap/bc/adt/debugger/breakpoints/vit",
+			Accepts: []string{acceptAny},
+		},
 		{
 			ID: "atc.runs", Purpose: "ATC checks",
 			Method: http.MethodGet, Path: "/sap/bc/adt/atc/runs",
@@ -260,7 +297,43 @@ func (c *Client) RunCompatProbe(ctx context.Context, targets CompatTargets, dept
 		}
 		report.Results = append(report.Results, c.runCompatCheck(ctx, check, path, query))
 	}
+	report.DebuggerSurface = c.debuggerSurface(ctx)
 	return report
+}
+
+// debuggerSurface lists the debugger resources the discovery document
+// advertises. An unreachable or unreadable discovery yields nothing rather than
+// an error: the surface is extra information, not a check that can fail.
+func (c *Client) debuggerSurface(ctx context.Context) []string {
+	res, err := c.transport.Request(ctx, "/sap/bc/adt/discovery", &RequestOptions{
+		Method: http.MethodGet,
+		Accept: acceptAny,
+	})
+	if err != nil || res == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	body := string(res.Body)
+	const marker = `href="/sap/bc/adt/debugger`
+	for {
+		i := strings.Index(body, marker)
+		if i < 0 {
+			break
+		}
+		rest := body[i+len(`href="`):]
+		j := strings.Index(rest, `"`)
+		if j < 0 {
+			break
+		}
+		seen[rest[:j]] = true
+		body = rest[j:]
+	}
+	out := make([]string, 0, len(seen))
+	for href := range seen {
+		out = append(out, href)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // apcCheckID names the check that cannot be asked with an ordinary request.
@@ -443,6 +516,12 @@ func (r *CompatReport) Text() string {
 		}
 		fmt.Fprintf(&b, "%-26s %-15s %-6s %s\n", res.ID, res.Outcome, statusText(res.Status), note)
 	}
+	if len(r.DebuggerSurface) > 0 {
+		fmt.Fprintf(&b, "\nDebugger resources advertised (%d):\n", len(r.DebuggerSurface))
+		for _, href := range r.DebuggerSurface {
+			fmt.Fprintf(&b, "  %s\n", href)
+		}
+	}
 	return b.String()
 }
 
@@ -498,7 +577,58 @@ func DiffCompatReports(a, b *CompatReport) string {
 	if differences == 0 {
 		out.WriteString("(the two systems agree on every check)\n")
 	}
+	if surface := diffDebuggerSurface(a, b); surface != "" {
+		out.WriteString("\n" + surface)
+	}
 	return out.String()
+}
+
+// diffDebuggerSurface reports which debugger resources one release has and the
+// other does not. A resource missing here is a feature that cannot be reached
+// on that system no matter how the request is shaped, so it belongs in the
+// comparison even though no check can ask for it directly.
+func diffDebuggerSurface(a, b *CompatReport) string {
+	if len(a.DebuggerSurface) == 0 && len(b.DebuggerSurface) == 0 {
+		return ""
+	}
+	in := func(list []string, want string) bool {
+		for _, got := range list {
+			if got == want {
+				return true
+			}
+		}
+		return false
+	}
+	all := append(append([]string{}, a.DebuggerSurface...), b.DebuggerSurface...)
+	sort.Strings(all)
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "%-46s %-12s %s\n", "DEBUGGER RESOURCE", orUnknown(a.System), orUnknown(b.System))
+	out.WriteString(strings.Repeat("-", 84) + "\n")
+	differences, last := 0, ""
+	for _, href := range all {
+		if href == last {
+			continue
+		}
+		last = href
+		left, right := in(a.DebuggerSurface, href), in(b.DebuggerSurface, href)
+		if left == right {
+			continue
+		}
+		differences++
+		fmt.Fprintf(&out, "%-46s %-12s %s\n", href, yesNo(left), yesNo(right))
+	}
+	if differences == 0 {
+		return ""
+	}
+	return out.String()
+}
+
+func yesNo(present bool) string {
+	if present {
+		return "yes"
+	}
+	return "—"
 }
 
 func describe(r CompatResult) string {

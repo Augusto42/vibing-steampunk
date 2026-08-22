@@ -132,3 +132,65 @@ knew the logon name, so `--user` had to be typed. The transport
 organizer answers it over plain ADT — asking for your own requests
 returns a tree named after you, even when you own none — so
 `vsp adt debug` now resolves it itself. See `pkg/saprfc/adtwhoami.go`.
+
+## Cross-release conformance, and what it found
+
+Run against three releases: 7.50, 7.57, 7.58. Only the 7.58 recordings
+may be committed, so the comparison lives in `vsp compat` — the probe is
+in the repository, the answers are not.
+
+`vsp compat -s <a> --against <b>` now also diffs the debugger. Two
+additions:
+
+- The five non-line breakpoint resources — statements, conditions,
+  messagetypes, validations, vit — are checks now. They are the only
+  part of the debugger that answers with no session held, so they are
+  the only part comparable without stopping a program.
+- The report carries the debugger resources each release advertises in
+  its own discovery document, and the diff shows what one has and the
+  other does not.
+
+Differences found, by release:
+
+| resource | 7.50 | 7.57 | 7.58 |
+|---|---|---|---|
+| `/debugger/stack` | — | yes | yes |
+| `/debugger/breakpoints/vit` | — | yes | yes |
+| `/debugger/memorysizes` | — | — | yes |
+
+Discovery under-reports: 7.50 does not advertise
+`/debugger/breakpoints/vit` and yet answers it with 200. So absence from
+discovery is a hint, not a verdict — the only proof is asking.
+
+### The one that mattered
+
+**7.50 has no `/sap/bc/adt/debugger/stack`.** The listener catches the
+debuggee and the attach succeeds; the first stack read returns 404 "No
+suitable resource found". Since the catch itself reads the stack, every
+caught debuggee was thrown away, and the ADT debugger was simply
+unusable on that release.
+
+The stack is there — the release serves it from the dispatcher instead,
+`POST /sap/bc/adt/debugger?method=getStack`, as the same `dbg:stack`
+document the existing parser already reads. `ADTStack` now tries the
+resource, falls back once on a 404, and remembers which shape answered,
+so the discovery costs one request per session rather than one per step.
+A refusal is not retried: a 403 or a 500 means something the caller
+needs to hear, and trying another shape would hide it.
+
+Verified end to end on 7.50 afterwards: stack, locals with values, step
+into the FORM, step back out — the same script that passes on 7.58.
+
+Two more reliability fixes came out of the same run:
+
+- **A failed stack read no longer discards an attached session.** The
+  catch reports the debuggee it caught and the stack problem separately.
+  Without this, a release-specific gap in one read looked like "nobody
+  stopped".
+- **Every debugger request asked for `application/xml`.** ADT matches on
+  URI *and* media type and reports a mismatch as 404 "No suitable
+  resource found", not 406 — so a resource answering only its own vendor
+  type reads as a resource that does not exist. All eight call sites now
+  ask for `*/*`, the rule the transport layer already documents. This
+  was not what broke 7.50's stack, but it is the same trap, and it did
+  break the "who am I" lookup on 7.57 the first time it ran.

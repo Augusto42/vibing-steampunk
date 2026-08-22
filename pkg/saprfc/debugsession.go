@@ -48,6 +48,11 @@ type Debugger struct {
 	bpRejects []adt.Breakpoint
 	// Whether breakpoints in SAP's own code are allowed to fire at all.
 	systemDebugging bool
+	// Which shape this system answers the call stack in, learned on the first
+	// read. Releases before the dedicated resource existed answer the
+	// dispatcher instead, and the difference costs one 404 to discover — once
+	// per session rather than once per step.
+	stackShape stackShape
 	// Numbers the multipart boundaries so two batches on one session cannot
 	// collide.
 	batchSeq int

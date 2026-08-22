@@ -192,7 +192,7 @@ func (t *Tracer) NewParameters(ctx context.Context, p TraceParams) (string, erro
 	res, err := t.adt.Do(ctx, ADTRequest{
 		Method: "POST", URI: traceBase + "/parameters",
 		Headers: []ADTHeader{{Name: "Content-Type", Value: "application/xml"},
-			{Name: "Accept", Value: "application/xml"}},
+			{Name: "Accept", Value: acceptAnything}},
 		Body: []byte(body),
 	})
 	if err != nil {

@@ -45,6 +45,17 @@ type adtDebuggeeList struct {
 
 // ADTListen posts the blocking listener and returns the debuggee that stopped,
 // or nil when the wait timed out with nobody there.
+// acceptAnything is what every debugger request asks for.
+//
+// Naming a concrete type looks tidier and is a portability bug. ADT matches a
+// resource on the URI *and* the media type it can produce, and when nothing
+// matches it reports 404 "No suitable resource found" — not 406. So a release
+// whose stack resource answers only its own vendor type reads, to a caller
+// asking for application/xml, as a debugger that has no stack resource at all.
+// That is exactly how 7.50 presented itself until this was widened: listener
+// and attach worked, and the first stack read said the resource did not exist.
+const acceptAnything = "*/*"
+
 func (d *Debugger) ADTListen(ctx context.Context, user, ideID, terminalID string, timeoutSeconds int) (*ADTDebuggee, error) {
 	// An empty user means this session's own, not "everybody": ADT registers the
 	// listener under the name it is given, and a listener registered under no
@@ -97,7 +108,7 @@ func (d *Debugger) ADTAttach(ctx context.Context, debuggeeID, user string) (*ADT
 	q.Set("dynproDebugging", "true")
 
 	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?"+q.Encode(),
-		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -108,21 +119,72 @@ func (d *Debugger) ADTAttach(ctx context.Context, debuggeeID, user string) (*ADT
 }
 
 // ADTStack reads the attached debuggee's call stack.
+// stackShape is how a release delivers the call stack.
+type stackShape int
+
+const (
+	stackShapeUnknown stackShape = iota
+	// stackShapeResource is the dedicated resource, present from 7.5x on.
+	stackShapeResource
+	// stackShapeDispatcher is the older shape: the same getStack method, posted
+	// to the debugger resource itself. 7.50 has no /debugger/stack at all.
+	stackShapeDispatcher
+)
+
+// ADTStack reads the call stack of the stopped program.
+//
+// Two releases, two shapes. Newer ones expose /sap/bc/adt/debugger/stack; 7.50
+// does not have that resource — it is absent from the discovery document and
+// answers 404 — and serves the same document from the dispatcher instead. Both
+// return dbg:stack with the same entries, so only the request differs, and
+// which one works is remembered after the first read.
 func (d *Debugger) ADTStack(ctx context.Context) (*ADTResponse, error) {
 	q := url.Values{}
 	q.Set("method", "getStack")
 	q.Set("emode", "_")
 	q.Set("semanticURIs", "true")
 
-	res, err := d.ADT(ctx, "GET", "/sap/bc/adt/debugger/stack?"+q.Encode(),
-		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+	if d.stackShape != stackShapeDispatcher {
+		res, err := d.ADT(ctx, "GET", "/sap/bc/adt/debugger/stack?"+q.Encode(),
+			[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+		if err == nil && res.Status == 200 {
+			d.stackShape = stackShapeResource
+			return res, nil
+		}
+		// 404 here means the resource is not on this release, which is a
+		// different thing from "the stack could not be read" and is worth one
+		// retry in the older shape. Anything else is a real failure: retrying a
+		// refusal or a server error in another shape only hides it.
+		if !stackResourceAbsent(res) {
+			if err != nil {
+				return nil, err
+			}
+			return res, adtError("stack", res)
+		}
+		if d.stackShape == stackShapeResource {
+			// It worked before on this very session, so a 404 now is news
+			// about the session, not about the release.
+			return res, adtError("stack", res)
+		}
+	}
+
+	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?"+q.Encode(),
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil {
 		return nil, err
 	}
 	if res.Status != 200 {
 		return res, adtError("stack", res)
 	}
+	d.stackShape = stackShapeDispatcher
 	return res, nil
+}
+
+// stackResourceAbsent reports the one answer worth retrying in the older shape:
+// the resource itself is not there. A transport failure gives no response at
+// all, and that is not evidence about the release.
+func stackResourceAbsent(res *ADTResponse) bool {
+	return res != nil && res.Status == 404
 }
 
 // ADTVariables reads named variables from the attached debuggee. The names it
@@ -196,7 +258,7 @@ func (d *Debugger) ADTDetach(ctx context.Context) error {
 	// still has to release the debuggee, so continue is the fallback rather than
 	// terminateDebuggee, which would kill the user's session outright.
 	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?method=detach",
-		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil || res.Status < 200 || res.Status >= 300 {
 		_, _ = d.ADTStep(ctx, "stepContinue")
 	}
@@ -231,7 +293,7 @@ func (d *Debugger) ADTStep(ctx context.Context, method string) (*ADTResponse, er
 	q.Set("method", method)
 
 	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/debugger?"+q.Encode(),
-		[]ADTHeader{{Name: "Accept", Value: "application/xml"}}, nil)
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil {
 		return nil, err
 	}

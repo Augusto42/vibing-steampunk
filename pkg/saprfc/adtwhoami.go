@@ -23,9 +23,13 @@ const whoAmIResource = "/sap/bc/adt/cts/transportrequests?_action=FIND&trfunctio
 // CurrentUser asks the system whose session this is.
 func CurrentUser(ctx context.Context, transport ADTTransport) (string, error) {
 	res, err := transport.Do(ctx, ADTRequest{
-		Method:  "GET",
-		URI:     whoAmIResource,
-		Headers: []ADTHeader{{Name: "Accept", Value: "application/xml"}},
+		Method: "GET",
+		URI:    whoAmIResource,
+		// Not a concrete type: this resource answers with its own
+		// transportorganizertree media type, and naming application/xml here
+		// gets a 406 on releases that take Accept literally — the same trap the
+		// transport layer documents for every other ADT resource.
+		Headers: []ADTHeader{{Name: "Accept", Value: "*/*"}},
 	})
 	if err != nil {
 		return "", err
