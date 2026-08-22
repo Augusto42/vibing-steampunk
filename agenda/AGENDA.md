@@ -33,6 +33,44 @@ December–March. Needs triage: what is still alive after the rewrites since.
 
 ---
 
+## Handover to wsl-claude — 2026-08-22, from claude-mac-m2
+
+You are closer to the real work systems, so two things are yours:
+
+**1. Take the `GetFunctionGroup` module-list fix** (details under Issue #154
+below — read that first; the reported 406 is *not* the bug worth fixing).
+
+Where: `pkg/adt/client.go`, `GetFunctionGroup`. It returns metadata and leaves
+`Functions` nil, always. The module list lives behind the `objectstructure`
+link on the group; `GetFunctionGroupAllSources` in the same file already walks
+it and parses `abapsource:objectStructureElement` children, picking the ones
+with `adtcore:type="FUGR/FF"` — reuse that rather than writing a second parser.
+Each child carries `adtcore:name` and a `definitionIdentifier` link to its
+`source/main`, which is enough to fill `FunctionModule` (`pkg/adt/xml.go:143`).
+
+Watch for: the group endpoint answers 406 to `application/xml`, so keep the
+vendor content types and their q-ordering — `...groups.v2+xml` also 406s on the
+backend I tested. And a namespaced group works with `%2F`, `%2f`, or a
+lowercased name; only raw slashes 404. Do not "fix" the encoding.
+
+**2. Confirm on a real ERP 6.0 non-HANA system.** Everything above was measured
+against an S/4-generation backend. The reporter's system is ERP 6.0, which is
+exactly where the content types may differ, and it is the one thing I could not
+check from here. If the vendor types behave differently there, that changes the
+fix, not just the test.
+
+Then #154 can be answered: the 406 is already fixed on main by `edd94bc`, which
+landed five days after their build — ask them to retest — and the module list is
+the real gap.
+
+Nothing is held back on this machine: everything is merged and pushed, working
+tree clean, no unpushed branches. `git pull` is enough.
+
+Also waiting on you, unchanged: rebase `feat/function-module-edit` onto current
+main before pushing it — see the next section.
+
+---
+
 ## Cross-machine coordination
 
 **`feat/function-module-edit` (`cf39e41`) is not pushed.** It exists only on the
