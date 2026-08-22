@@ -73,10 +73,13 @@ func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *G
 		return c.GetInterface(ctx, name)
 
 	case "FUNC":
-		if opts.Parent == "" {
-			return "", fmt.Errorf("parent (function group name) is required for FUNC type")
+		// The group is derivable from the module name, so asking the caller for
+		// it was never necessary — only convenient for us.
+		group, err := c.functionGroupFor(ctx, opts.Parent, name)
+		if err != nil {
+			return "", err
 		}
-		return c.GetFunction(ctx, name, opts.Parent)
+		return c.GetFunction(ctx, name, group)
 
 	case "FUGR":
 		// GetFunctionGroup returns JSON metadata (function module list), not source
@@ -153,20 +156,21 @@ type WriteSourceOptions struct {
 	TestSource  string          // Test source for CLAS (auto-creates test include)
 	Transport   string          // Transport request number
 	Method      string          // For CLAS only: update only this method (source must be METHOD...ENDMETHOD block)
+	Parent      string          // For FUNC only: function group. Empty resolves it from the module name.
 }
 
 // WriteSourceResult represents the result of WriteSource operation
 type WriteSourceResult struct {
-	Success       bool                       `json:"success"`
-	ObjectType    string                     `json:"objectType"`
-	ObjectName    string                     `json:"objectName"`
-	ObjectURL     string                     `json:"objectUrl"`
-	Mode          string                     `json:"mode"` // "created" or "updated"
-	Method        string                     `json:"method,omitempty"` // Method name if method-level update
-	SyntaxErrors  []SyntaxCheckResult        `json:"syntaxErrors,omitempty"`
-	Activation    *ActivationResult          `json:"activation,omitempty"`
-	TestResults   *UnitTestResult            `json:"testResults,omitempty"` // For CLAS with TestSource
-	Message       string                     `json:"message,omitempty"`
+	Success      bool                `json:"success"`
+	ObjectType   string              `json:"objectType"`
+	ObjectName   string              `json:"objectName"`
+	ObjectURL    string              `json:"objectUrl"`
+	Mode         string              `json:"mode"`             // "created" or "updated"
+	Method       string              `json:"method,omitempty"` // Method name if method-level update
+	SyntaxErrors []SyntaxCheckResult `json:"syntaxErrors,omitempty"`
+	Activation   *ActivationResult   `json:"activation,omitempty"`
+	TestResults  *UnitTestResult     `json:"testResults,omitempty"` // For CLAS with TestSource
+	Message      string              `json:"message,omitempty"`
 }
 
 // WriteSource is a unified tool for writing ABAP source code across different object types.
@@ -216,12 +220,19 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		ObjectName: name,
 	}
 
+	// Function modules take their own path: they are addressed through their
+	// group, and creating one needs an interface rather than just source, which
+	// is what the create action is for.
+	if objectType == "FUNC" {
+		return c.writeSourceFunctionModule(ctx, name, source, opts)
+	}
+
 	// Validate object type
 	switch objectType {
 	case "PROG", "CLAS", "INTF", "DDLS", "BDEF", "SRVD", "SRVB":
 		// Supported types
 	default:
-		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, DDLS, BDEF, SRVD, SRVB)", objectType)
+		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, DDLS, BDEF, SRVD, SRVB)", objectType)
 		return result, nil
 	}
 
@@ -590,9 +601,9 @@ func (c *Client) writeSourceCreate(ctx context.Context, objectType, name, source
 		// SRVB (Service Binding) - source is JSON configuration
 		// Parse JSON to get binding parameters
 		var srvbConfig struct {
-			ServiceDefName string `json:"serviceDefName"`
-			BindingType    string `json:"bindingType"`    // ODATA
-			BindingVersion string `json:"bindingVersion"` // V2 or V4
+			ServiceDefName  string `json:"serviceDefName"`
+			BindingType     string `json:"bindingType"`     // ODATA
+			BindingVersion  string `json:"bindingVersion"`  // V2 or V4
 			BindingCategory string `json:"bindingCategory"` // 0=WebAPI, 1=UI
 		}
 		if err := json.Unmarshal([]byte(source), &srvbConfig); err != nil {
@@ -658,7 +669,6 @@ func (c *Client) writeSourceCreate(ctx context.Context, objectType, name, source
 		return result, nil
 	}
 }
-
 
 // writeSourceUpdate handles update workflow
 func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source string, opts *WriteSourceOptions) (*WriteSourceResult, error) {
@@ -1034,12 +1044,12 @@ func (c *Client) writeClassMethodUpdate(ctx context.Context, className, methodNa
 
 // SourceDiff represents a diff between two sources.
 type SourceDiff struct {
-	Object1     string   `json:"object1"`
-	Object2     string   `json:"object2"`
-	Identical   bool     `json:"identical"`
-	AddedLines  int      `json:"addedLines"`
-	RemovedLines int     `json:"removedLines"`
-	Diff        string   `json:"diff"`
+	Object1      string `json:"object1"`
+	Object2      string `json:"object2"`
+	Identical    bool   `json:"identical"`
+	AddedLines   int    `json:"addedLines"`
+	RemovedLines int    `json:"removedLines"`
+	Diff         string `json:"diff"`
 }
 
 // CompareSource compares source code of two objects and returns a unified diff.
@@ -1184,8 +1194,12 @@ func generateUnifiedDiff(name1, name2 string, lines1, lines2 []string) string {
 				inHunk = true
 				hunkStart1 = line1 - len(contextBefore)
 				hunkStart2 = line2 - len(contextBefore)
-				if hunkStart1 < 1 { hunkStart1 = 1 }
-				if hunkStart2 < 1 { hunkStart2 = 1 }
+				if hunkStart1 < 1 {
+					hunkStart1 = 1
+				}
+				if hunkStart2 < 1 {
+					hunkStart2 = 1
+				}
 				// Add context before
 				for _, ctx := range contextBefore {
 					hunkContent.WriteString(fmt.Sprintf(" %s\n", ctx.text))
@@ -1213,12 +1227,12 @@ func generateUnifiedDiff(name1, name2 string, lines1, lines2 []string) string {
 
 // CloneObjectResult represents the result of cloning an object.
 type CloneObjectResult struct {
-	Success     bool   `json:"success"`
-	SourceName  string `json:"sourceName"`
-	TargetName  string `json:"targetName"`
-	ObjectType  string `json:"objectType"`
-	Package     string `json:"package"`
-	Message     string `json:"message"`
+	Success    bool   `json:"success"`
+	SourceName string `json:"sourceName"`
+	TargetName string `json:"targetName"`
+	ObjectType string `json:"objectType"`
+	Package    string `json:"package"`
+	Message    string `json:"message"`
 }
 
 // CloneObject copies an ABAP object to a new name.
@@ -1294,18 +1308,18 @@ func (c *Client) CloneObject(ctx context.Context, objectType, sourceName, target
 
 // ClassInfo contains metadata about an ABAP class.
 type ClassInfo struct {
-	Name          string   `json:"name"`
-	Description   string   `json:"description,omitempty"`
-	Package       string   `json:"package,omitempty"`
-	Category      string   `json:"category,omitempty"`      // Regular, Abstract, Final
-	Visibility    string   `json:"visibility,omitempty"`    // Public, Protected, Private
-	Superclass    string   `json:"superclass,omitempty"`
-	Interfaces    []string `json:"interfaces,omitempty"`
-	Methods       []string `json:"methods,omitempty"`
-	Attributes    []string `json:"attributes,omitempty"`
-	HasTestClass  bool     `json:"hasTestClass"`
-	IsAbstract    bool     `json:"isAbstract"`
-	IsFinal       bool     `json:"isFinal"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Package      string   `json:"package,omitempty"`
+	Category     string   `json:"category,omitempty"`   // Regular, Abstract, Final
+	Visibility   string   `json:"visibility,omitempty"` // Public, Protected, Private
+	Superclass   string   `json:"superclass,omitempty"`
+	Interfaces   []string `json:"interfaces,omitempty"`
+	Methods      []string `json:"methods,omitempty"`
+	Attributes   []string `json:"attributes,omitempty"`
+	HasTestClass bool     `json:"hasTestClass"`
+	IsAbstract   bool     `json:"isAbstract"`
+	IsFinal      bool     `json:"isFinal"`
 }
 
 // GetClassInfo retrieves class metadata without full source code.

@@ -54,6 +54,8 @@ High-level edit (recommended - auto lock/unlock/activate):
   SAP(action="edit", target="CLAS ZCL_TEST", params={"source": "CLASS zcl_test..."})
   SAP(action="edit", target="PROG ZREPORT", params={"source": "REPORT zreport..."})
   SAP(action="edit", target="INTF ZIF_TEST", params={"source": "INTERFACE zif_test..."})
+  SAP(action="edit", target="FUNC ZMY_FM", params={"source": "FUNCTION zmy_fm...ENDFUNCTION."})
+      the function group is resolved from the module name; pass params={"parent": "ZMY_FG"} to name it
   SAP(action="edit", target="DDLS ZDDL_VIEW", params={"source": "@AbapCatalog..."})
 
 Method-level edit (CLAS only):
@@ -369,23 +371,54 @@ Use SAP(action="help", target="tips") for best practices and workflow guides.`)
 }
 
 // getUnhandledErrorMessage returns a helpful error message when no route matched.
+// validActionsLine is the one place the action list is written down. It had
+// drifted from the dispatcher in both directions at once: "rfc" was routed but
+// absent from the list, so a caller was told the feature did not exist, while
+// "system" and "analyze" were listed without their target or type and so looked
+// broken when they were merely under-specified.
+const validActionsLine = "Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, help\n"
+
+// actionsNeedingTarget are the actions the dispatcher can only route once it
+// knows what they are aimed at.
+var actionsNeedingTarget = map[string]bool{
+	"read":   true,
+	"edit":   true,
+	"create": true,
+	"delete": true,
+	"system": true,
+}
+
+func actionNeedsTarget(action string) bool { return actionsNeedingTarget[action] }
+
 func getUnhandledErrorMessage(action, objectType, objectName string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "No handler found for action=%q", action)
-	if objectType != "" {
-		fmt.Fprintf(&sb, " target=%q", objectType)
-		if objectName != "" {
-			fmt.Fprintf(&sb, " %q", objectName)
+	// Say which of the three the caller is missing. "No handler found" reads as
+	// "this action does not exist" and sends people looking for a feature that
+	// is present — several actions simply need a target, or a type in params,
+	// and the old message listed them as valid without ever saying so.
+	switch {
+	case objectType == "" && actionNeedsTarget(action):
+		fmt.Fprintf(&sb, "action=%q needs a target.", action)
+	case action == "analyze":
+		fmt.Fprintf(&sb, "action=%q needs params={\"type\": ...}.", action)
+	default:
+		fmt.Fprintf(&sb, "No handler found for action=%q", action)
+		if objectType != "" {
+			fmt.Fprintf(&sb, " target=%q", objectType)
+			if objectName != "" {
+				fmt.Fprintf(&sb, " %q", objectName)
+			}
 		}
+		sb.WriteString(".")
 	}
-	sb.WriteString(".\n\n")
+	sb.WriteString("\n\n")
 
 	switch action {
 	case "read":
 		sb.WriteString("Supported read targets: CLAS, PROG, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, TABL, TABL_CONTENTS, DEVC, MSAG, TRAN, TYPE_INFO, STRUCT, CDS_DEPS\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"read\") for examples.")
 	case "edit":
-		sb.WriteString("Supported edit targets: CLAS, PROG, INTF, DDLS, BDEF, SRVD, LOCK, UNLOCK, UPDATE_SOURCE, ACTIVATE, ACTIVATE_PACKAGE, EDITSOURCE, PUBLISH_SERVICE, UNPUBLISH_SERVICE\n")
+		sb.WriteString("Supported edit targets: CLAS, PROG, INTF, FUNC, DDLS, BDEF, SRVD, LOCK, UNLOCK, UPDATE_SOURCE, ACTIVATE, ACTIVATE_PACKAGE, EDITSOURCE, PUBLISH_SERVICE, UNPUBLISH_SERVICE\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"edit\") for examples.")
 	case "create":
 		sb.WriteString("Supported create targets: OBJECT, DEVC, TABL, CLONE, PROGRAM, CLASS_WITH_TESTS, CLAS_TEST_INCLUDE\n")
@@ -393,8 +426,17 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 	case "debug":
 		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_*\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"debug\") for examples.")
+	case "system":
+		sb.WriteString("Supported system targets: INFO, COMPONENTS, CONNECTION, FEATURES\n")
+		sb.WriteString("Example: SAP(action=\"system\", target=\"INFO\")")
+	case "analyze":
+		sb.WriteString("Supported analysis types (params.type): call_graph, object_structure, callers, callees,\n")
+		sb.WriteString("analyze_call_graph, compare_call_graphs, trace_execution, check_boundaries, graph_stats,\n")
+		sb.WriteString("co_change, impact, where_used_config, usage_examples, health, cr_history, tr_boundaries,\n")
+		sb.WriteString("cr_boundaries\n")
+		sb.WriteString("Example: SAP(action=\"analyze\", params={\"type\": \"check_boundaries\", \"package\": \"$ZDEV\"})")
 	default:
-		sb.WriteString("Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, help\n")
+		sb.WriteString(validActionsLine)
 		sb.WriteString("Use SAP(action=\"help\") for full documentation.")
 	}
 

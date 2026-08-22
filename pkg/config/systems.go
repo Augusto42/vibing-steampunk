@@ -52,6 +52,17 @@ type SystemConfig struct {
 	// Optional safety settings per system
 	ReadOnly        bool     `json:"read_only,omitempty"`
 	AllowedPackages []string `json:"allowed_packages,omitempty"`
+
+	// Transport safety, per system. These exist here and not only as server
+	// flags because the command line has no other way to reach them: the flags
+	// belong to the root command, which is the MCP server, so a subcommand that
+	// tried to pass one was told the flag does not exist. Without these fields
+	// `vsp transport list` could never succeed, whatever the caller typed.
+	EnableTransports        bool     `json:"enable_transports,omitempty"`
+	TransportReadOnly       bool     `json:"transport_read_only,omitempty"`
+	AllowedTransports       []string `json:"allowed_transports,omitempty"`
+	AllowTransportableEdits bool     `json:"allow_transportable_edits,omitempty"`
+	BlockFreeSQL            bool     `json:"block_free_sql,omitempty"`
 }
 
 // SSOSettings configures browser single sign-on for one system.

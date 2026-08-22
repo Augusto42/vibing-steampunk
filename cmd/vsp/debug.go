@@ -124,6 +124,9 @@ func runDebug(cmd *cobra.Command, args []string) error {
 		cfg.Password,
 		cfg.InsecureSkipVerify,
 	)
+	if len(cfg.Cookies) > 0 {
+		wsClient.SetCookies(cfg.Cookies)
+	}
 
 	// Try to connect WebSocket (optional - falls back to HTTP if unavailable)
 	wsConnected := false
