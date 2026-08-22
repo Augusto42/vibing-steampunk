@@ -55,6 +55,15 @@ type systemParams struct {
 	ReadOnly        bool
 	AllowedPackages []string
 
+	// Transport safety. The command line reaches these only through the system
+	// config or the environment; the equivalent flags live on the root command
+	// and are rejected by every subcommand.
+	EnableTransports        bool
+	TransportReadOnly       bool
+	AllowedTransports       []string
+	AllowTransportableEdits bool
+	BlockFreeSQL            bool
+
 	Cache     bool
 	CachePath string
 }
@@ -121,8 +130,14 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			TransportAttribute: sys.TransportAttribute,
 			ReadOnly:           sys.ReadOnly,
 			AllowedPackages:    sys.AllowedPackages,
-			Cache:              sys.Cache,
-			CachePath:          sys.CachePath,
+
+			EnableTransports:        sys.EnableTransports || envFlag("SAP_ENABLE_TRANSPORTS"),
+			TransportReadOnly:       sys.TransportReadOnly || envFlag("SAP_TRANSPORT_READ_ONLY"),
+			AllowedTransports:       firstNonEmptyList(sys.AllowedTransports, splitList(os.Getenv("SAP_ALLOWED_TRANSPORTS"))),
+			AllowTransportableEdits: sys.AllowTransportableEdits || envFlag("SAP_ALLOW_TRANSPORTABLE_EDITS"),
+			BlockFreeSQL:            sys.BlockFreeSQL || envFlag("SAP_BLOCK_FREE_SQL"),
+			Cache:                   sys.Cache,
+			CachePath:               sys.CachePath,
 		}, nil
 	}
 
@@ -166,6 +181,24 @@ func resolveTransportAttributeFromEnv() string {
 	return ""
 }
 
+// envFlag reads a boolean environment variable, accepting the spellings people
+// actually type.
+func envFlag(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// firstNonEmptyList returns the configured list, falling back to the environment.
+func firstNonEmptyList(configured, fromEnv []string) []string {
+	if len(configured) > 0 {
+		return configured
+	}
+	return fromEnv
+}
+
 // splitList parses a comma-separated environment value into a list.
 func splitList(v string) []string {
 	var out []string
@@ -195,6 +228,26 @@ func getClient(params *systemParams) (*adt.Client, error) {
 	}
 	if len(params.AllowedPackages) > 0 {
 		safety.AllowedPackages, restricted = params.AllowedPackages, true
+	}
+	if params.BlockFreeSQL {
+		safety.BlockFreeSQL, restricted = true, true
+	}
+	// Transport safety is opt-in, so enabling it is not a restriction — but it
+	// still has to reach the client, or the transport commands stay blocked no
+	// matter how the system is configured.
+	if params.EnableTransports {
+		safety.EnableTransports = true
+		restricted = true
+	}
+	if params.TransportReadOnly {
+		safety.TransportReadOnly, restricted = true, true
+	}
+	if len(params.AllowedTransports) > 0 {
+		safety.AllowedTransports, restricted = params.AllowedTransports, true
+	}
+	if params.AllowTransportableEdits {
+		safety.AllowTransportableEdits = true
+		restricted = true
 	}
 	if restricted {
 		opts = append(opts, adt.WithSafety(safety))
