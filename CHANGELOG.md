@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.42.0] - 2026-08-22
+### Bug Fixes
+
+- **adt:** Check syntax before locking, and let a forbidden HEAD fall back to GET ([`ff32cd7`](https://github.com/oisee/vibing-steampunk/commit/ff32cd713a26507f79569a0988edece5e24df83a))
+- **cli:** A read_only system must be read-only on the command line too ([`b9769d4`](https://github.com/oisee/vibing-steampunk/commit/b9769d490a83430c086bb7029c2d8fd79651d087))
+- **install:** Refuse an embedded archive that is empty instead of deploying nothing ([`a9db9eb`](https://github.com/oisee/vibing-steampunk/commit/a9db9eb1e4e792f41143b97e223c85a5c4a84492))
+- **adt:** Stop reading NoModification as read-only, and stop leaking the lock ([`9b98997`](https://github.com/oisee/vibing-steampunk/commit/9b9899703cccf76b570914d8020e8fdd44237707))
+- **http:** Recover a browser session that expires without a 401 ([`e66bc18`](https://github.com/oisee/vibing-steampunk/commit/e66bc183ece3d40ed1f67af6060cb0dca084b603))
+- **cli:** Let a system declare its transport safety, so the transport commands can run ([`ae5f684`](https://github.com/oisee/vibing-steampunk/commit/ae5f684228a548ac71c39cffe9f7b90e52b517b6))
+- **mcp:** Say what the call is missing instead of that the action does not exist ([`8a5670b`](https://github.com/oisee/vibing-steampunk/commit/8a5670bfff9be850ef465bacca030d95e0a2d8ea))
+- **abap:** Let the git service compile against either abapGit release ([`64560a1`](https://github.com/oisee/vibing-steampunk/commit/64560a15aea7cfe51128d84c07843ea2c7713693))
+- **make:** Install wrote to /bin, and add a link target for development ([`ff88b00`](https://github.com/oisee/vibing-steampunk/commit/ff88b0065deb34ad5c7a02507ba3bc306618a91a))
+- **http:** Take the session id SAP reissues, instead of sending two ([`b9c22f3`](https://github.com/oisee/vibing-steampunk/commit/b9c22f3fb4417a149ce819447a86763959444505))
+- **make:** Build the platform-named binary, and link build/vsp at it ([`cd8f550`](https://github.com/oisee/vibing-steampunk/commit/cd8f550704357aeeb66d0aa307660d1b877bb7f3))
+- **landscape:** Find and read what SAP GUI for Java writes ([`56505cb`](https://github.com/oisee/vibing-steampunk/commit/56505cb15e9b6821631f4192084c100cecb5d31e))
+- **adt:** Return the modules of a function group, on old releases too ([`e76c5f5`](https://github.com/oisee/vibing-steampunk/commit/e76c5f51ac1308ff4337c9a23514353d929910fe))
+- **landscape:** Stop inventing hosts, and address systems the way they answer ([`9fd0421`](https://github.com/oisee/vibing-steampunk/commit/9fd042191606c2ece2686e478ce01f1f6fbe6619))
+- Publish the tool counts the server actually registers, and pin them ([`4f78dcb`](https://github.com/oisee/vibing-steampunk/commit/4f78dcb471c148d5fbc9c0037f19db323431b138))
+- **test:** Drop a discarded fmt.Sprint that vet rejects ([`915f5d2`](https://github.com/oisee/vibing-steampunk/commit/915f5d2b92727ab3f393cb825d8e39b113ca5751))
+
+
+### Features
+
+- **saprfc:** A password that refuses to print, and auth acceptance criteria ([`6884161`](https://github.com/oisee/vibing-steampunk/commit/6884161bea1bcaf2e1893362f7eb518b04b912ae))
+- **adt:** The debugger over plain HTTPS, for systems with no RFC channel ([`89542ef`](https://github.com/oisee/vibing-steampunk/commit/89542ef87028627d24d5c01077bf04fdfd9fbd0e))
+- **debug:** Read debugger variables over the ADT tunnel ([`5392864`](https://github.com/oisee/vibing-steampunk/commit/539286469e705fe8c1890bb0bcc59124d3aea7c3))
+- **debug:** A typed variable model, and two bugs the transports hid ([`2460c9b`](https://github.com/oisee/vibing-steampunk/commit/2460c9bd29aad97b8ee7ee1b1245f9687cfc7096))
+- **debug:** Breakpoints through ADT, so the debugger needs no Z code at all ([`01640c3`](https://github.com/oisee/vibing-steampunk/commit/01640c3b0e1ca66696193f0ee5751656f501945f))
+- **mcp:** The debugger tools work, and are enabled by default again ([`1d94300`](https://github.com/oisee/vibing-steampunk/commit/1d943009ff3566a4cfd23829812cd045b9d3feb1))
+- **trace:** The measured call tree, over either transport ([`13cc062`](https://github.com/oisee/vibing-steampunk/commit/13cc0621de1ad81847138cfad795065576315823))
+- **debug:** Keep customer code the default, and report the lines SAP refused ([`db08ea4`](https://github.com/oisee/vibing-steampunk/commit/db08ea4452c76e119ef0ba887cda7f59f80fc791))
+- **trace:** Record a unit statement by statement, with its values ([`bc88bfc`](https://github.com/oisee/vibing-steampunk/commit/bc88bfc0d1434f6ad780fd3f569a513771c46941))
+- **debug:** Write variables, and move between stack frames ([`f469af7`](https://github.com/oisee/vibing-steampunk/commit/f469af7ea0696d615fcf2249878bb3bfd9f7fb56))
+- **lua:** One debug session for the whole script, and one API instead of two ([`4c6fbb3`](https://github.com/oisee/vibing-steampunk/commit/4c6fbb3ffd53cbc9b5b2f40c3fde56f3174abb8e))
+- **adt:** Create RFC-enabled function modules, no SE37 shell needed ([`3f948e4`](https://github.com/oisee/vibing-steampunk/commit/3f948e4d6c5d61d395629e29d12f932f5e4be658))
+- **auth:** Browser SSO that keeps its own session ([`26ce707`](https://github.com/oisee/vibing-steampunk/commit/26ce7076d64d6e4795dccd41dcd7b32ba2b1bc2f))
+- **adt:** Edit a function module in one call, and read one without its group ([`cf39e41`](https://github.com/oisee/vibing-steampunk/commit/cf39e413d42d4de4aa1f55a1f66d401e8e834224))
+- **ws:** Authenticate the WebSocket transport with a browser session ([`feb6cda`](https://github.com/oisee/vibing-steampunk/commit/feb6cda034cdf41210fbbc98625be1b66622bc61))
+- **landscape:** Read the systems SAP GUI already knows about ([`88a9273`](https://github.com/oisee/vibing-steampunk/commit/88a9273d8abf63a8163d89683f01e3478faa0473))
+- **landscape:** Find every landscape this machine can reach, VMs included ([`4396051`](https://github.com/oisee/vibing-steampunk/commit/4396051757639107a4a3dd8cf0ecc336235ddfae))
+- **compat:** Ask a system what it supports, and how to route each capability ([`4894713`](https://github.com/oisee/vibing-steampunk/commit/4894713a8cd99d615d3ad8bbb9351f3606a264f3))
+- **detect:** Find the port a system serves ADT on, before configuring it ([`571f198`](https://github.com/oisee/vibing-steampunk/commit/571f1989bab6565f539a2daa2d212f32dc423973))
+- **detect:** --all sweeps every port, and the instance shapes the shortlist ([`05a7930`](https://github.com/oisee/vibing-steampunk/commit/05a79304723e5273e7ca6f1a3057c25a83ae1b5c))
+- **detect:** Prefer TLS, and follow the name a certificate points at ([`3211cce`](https://github.com/oisee/vibing-steampunk/commit/3211cce2db925b24cc149909d8e4355c7a11c235))
+- **detect:** Print both config templates, and say which one to take ([`7d15030`](https://github.com/oisee/vibing-steampunk/commit/7d15030272603c4ad85a4d1bfabe47c99ab7ac51))
+
+
+
 ## [2.41.0] - 2026-08-21
 ### Bug Fixes
 
