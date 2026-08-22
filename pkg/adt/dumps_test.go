@@ -102,8 +102,8 @@ func TestProgramIdentityOutranksProximity(t *testing.T) {
 	sameProgramFarAway := AppLogEntry{Program: "ZCL_DEMO_ORDER", User: "OTHER", At: dumpAt.Add(-4 * time.Minute)}
 	sameUserRightBefore := AppLogEntry{Program: "SAPMHTTP", User: "TESTUSER", At: dumpAt.Add(-1 * time.Second)}
 
-	farScore, farWhy := rankLogAgainstDump(sameProgramFarAway, dump, dumpAt.Sub(sameProgramFarAway.At))
-	nearScore, _ := rankLogAgainstDump(sameUserRightBefore, dump, dumpAt.Sub(sameUserRightBefore.At))
+	farScore, farWhy := rankLogAgainstDump(sameProgramFarAway, dump, nil, dumpAt.Sub(sameProgramFarAway.At))
+	nearScore, _ := rankLogAgainstDump(sameUserRightBefore, dump, nil, dumpAt.Sub(sameUserRightBefore.At))
 
 	if farScore <= nearScore {
 		t.Fatalf("the program that dumped should outrank a coincidence one second away: %d vs %d", farScore, nearScore)
@@ -122,8 +122,8 @@ func TestALogAfterTheDumpRanksBelowOneBefore(t *testing.T) {
 	before := AppLogEntry{Program: "OTHER", User: "TESTUSER", At: dumpAt.Add(-2 * time.Second)}
 	after := AppLogEntry{Program: "OTHER", User: "TESTUSER", At: dumpAt.Add(2 * time.Second)}
 
-	beforeScore, _ := rankLogAgainstDump(before, dump, dumpAt.Sub(before.At))
-	afterScore, afterWhy := rankLogAgainstDump(after, dump, dumpAt.Sub(after.At))
+	beforeScore, _ := rankLogAgainstDump(before, dump, nil, dumpAt.Sub(before.At))
+	afterScore, afterWhy := rankLogAgainstDump(after, dump, nil, dumpAt.Sub(after.At))
 
 	if beforeScore <= afterScore {
 		t.Fatalf("before should outrank after: %d vs %d", beforeScore, afterScore)

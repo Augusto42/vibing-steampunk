@@ -115,12 +115,15 @@ func explainDump(ctx context.Context, client *adt.Client, cmd *cobra.Command, du
 	if err != nil {
 		return err
 	}
+	// Read separately for display; the correlation already used it for ranking.
+	stack, stackErr := client.DumpStack(ctx, dump.ID)
 
 	if asJSON {
 		return emitJSON(struct {
-			Dump    adt.Dump       `json:"dump"`
-			Matches []adt.LogMatch `json:"matches"`
-		}{dump, matches})
+			Dump    adt.Dump        `json:"dump"`
+			Stack   []adt.DumpFrame `json:"stack,omitempty"`
+			Matches []adt.LogMatch  `json:"matches"`
+		}{dump, stack, matches})
 	}
 
 	fmt.Printf("%s  %s\n", stamp(dump.At), dump.ErrorType)
@@ -129,6 +132,24 @@ func explainDump(ctx context.Context, client *adt.Client, cmd *cobra.Command, du
 		fmt.Printf("  %s\n", dump.Message)
 	}
 	fmt.Println()
+
+	switch {
+	case stackErr != nil:
+		fmt.Fprintf(os.Stderr, "the call stack could not be read: %v\n\n", stackErr)
+	case len(stack) > 0:
+		fmt.Println("Call stack at the failure:")
+		for _, f := range stack {
+			where := f.Program
+			if f.Include != "" && f.Include != f.Program {
+				where += "/" + f.Include
+			}
+			fmt.Printf("  %3d %-12s %s:%d\n", f.Position, f.Type, where, f.Line)
+			if f.Name != "" {
+				fmt.Printf("      %s\n", f.Name)
+			}
+		}
+		fmt.Println()
+	}
 
 	if len(matches) == 0 {
 		fmt.Println("Nothing was written to the application log in that window.")

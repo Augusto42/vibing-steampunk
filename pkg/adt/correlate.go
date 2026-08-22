@@ -31,12 +31,15 @@ type LogMatch struct {
 	Offset time.Duration `json:"-"`
 }
 
-// The ladder. Only the first rung is structural today; the rungs above it are
-// where the call stack and the call graph will attach, once `vsp dumps` can
-// read a dump's stack and pkg/graph can walk from the failing line.
+// The ladder. The top two rungs are structural: they say the writing program
+// was on the path, not merely nearby. The lower ones are the clock, and are
+// scored low on purpose.
 const (
 	// scoreSameProgram: the log was written by the program that dumped.
 	scoreSameProgram = 100
+	// scoreOnStack: written by a program on the dump's call stack. On the
+	// causal path by construction — the stack is what was running.
+	scoreOnStack = 80
 	// scoreSameUserBefore: same user, shortly before the dump. Weak, and
 	// honestly weak: one person doing one thing produces many such rows.
 	scoreSameUserBefore = 40
@@ -54,6 +57,21 @@ const (
 // cause would be, and after, because error handling writes there and is worth
 // seeing even though it explains nothing.
 func (c *Client) CorrelateDump(ctx context.Context, dump Dump, tolerance time.Duration, limit int) ([]LogMatch, error) {
+	// The stack is the strongest evidence available without a call graph, and
+	// it costs one request. A dump that will not give up its stack is not a
+	// reason to refuse the correlation — it only means the top rung is unused.
+	var stack []DumpFrame
+	if dump.ID != "" {
+		if frames, err := c.DumpStack(ctx, dump.ID); err == nil {
+			stack = frames
+		}
+	}
+	return c.correlateWithStack(ctx, dump, stack, tolerance, limit)
+}
+
+// correlateWithStack is the body, taking the stack as an argument so it can be
+// tested without a system.
+func (c *Client) correlateWithStack(ctx context.Context, dump Dump, stack []DumpFrame, tolerance time.Duration, limit int) ([]LogMatch, error) {
 	if dump.At.IsZero() {
 		return nil, fmt.Errorf("this dump carries no timestamp, so there is nothing to correlate against")
 	}
@@ -82,7 +100,7 @@ func (c *Client) CorrelateDump(ctx context.Context, dump Dump, tolerance time.Du
 			continue
 		}
 		match := LogMatch{Entry: e, Offset: dump.At.Sub(e.At)}
-		match.Score, match.Why = rankLogAgainstDump(e, dump, match.Offset)
+		match.Score, match.Why = rankLogAgainstDump(e, dump, stack, match.Offset)
 		matches = append(matches, match)
 	}
 
@@ -99,7 +117,7 @@ func (c *Client) CorrelateDump(ctx context.Context, dump Dump, tolerance time.Du
 	return matches, nil
 }
 
-func rankLogAgainstDump(e AppLogEntry, dump Dump, offset time.Duration) (int, string) {
+func rankLogAgainstDump(e AppLogEntry, dump Dump, stack []DumpFrame, offset time.Duration) (int, string) {
 	when := "before"
 	if offset < 0 {
 		when = "after"
@@ -108,6 +126,10 @@ func rankLogAgainstDump(e AppLogEntry, dump Dump, offset time.Duration) (int, st
 
 	if e.Program != "" && dump.Program != "" && equalFoldTrim(e.Program, dump.Program) {
 		return scoreSameProgram, fmt.Sprintf("written by %s, the program that dumped — %s %s", e.Program, gap, when)
+	}
+	if frame, on := frameFor(stack, e.Program); on {
+		return scoreOnStack, fmt.Sprintf("written by %s, frame %d of the dump stack (%s) — %s %s",
+			e.Program, frame.Position, orUnknown(frame.Name), gap, when)
 	}
 	if e.User != "" && dump.User != "" && equalFoldTrim(e.User, dump.User) {
 		if offset >= 0 {
@@ -132,4 +154,18 @@ func equalFoldTrim(a, b string) bool {
 
 func trimUpper(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
+}
+
+// frameFor finds the stack frame a log entry's program belongs to.
+func frameFor(stack []DumpFrame, program string) (DumpFrame, bool) {
+	if strings.TrimSpace(program) == "" {
+		return DumpFrame{}, false
+	}
+	want := trimUpper(program)
+	for _, frame := range stack {
+		if trimUpper(frame.Program) == want {
+			return frame, true
+		}
+	}
+	return DumpFrame{}, false
 }
