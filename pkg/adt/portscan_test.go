@@ -238,7 +238,7 @@ func TestCertificateHostIsALead(t *testing.T) {
 		`x509: certificate is valid for web.example, not app.example`:          "web.example",
 		`x509: certificate is valid for a.example, b.example, not app.example`: "a.example",
 		`x509: certificate signed by unknown authority`:                        "",
-		``:                                                                     "",
+		``: "",
 	}
 	for msg, want := range tests {
 		if got := certificateHost(msg); got != want {
