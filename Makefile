@@ -40,7 +40,7 @@ PLATFORMS_COMMON=linux/amd64 darwin/arm64 windows/amd64
 CURRENT_OS=$(shell go env GOOS)
 CURRENT_ARCH=$(shell go env GOARCH)
 
-.PHONY: all build clean test lint fmt deps tidy help install run
+.PHONY: all build clean test lint fmt deps tidy help install install-user link run
 .PHONY: build-all build-all-all build-linux build-darwin build-windows sso-helper
 .PHONY: deploy-windows sync-embedded release refresh-deps
 
@@ -157,14 +157,26 @@ refresh-deps: ## Refresh embedded ZIPs from SAP (keeps old if SAP unavailable)
 release: build refresh-deps build-all ## Full release: build vsp, refresh deps from SAP, rebuild all platforms
 	@echo "Release build complete."
 
-install: ## Install the binary to GOPATH/bin
-	$(GOBUILD) $(LDFLAGS) -o $(GOPATH)/bin/$(BINARY_NAME) $(CMD_DIR)
+# GOPATH is a Go environment value, not a make variable: left as $(GOPATH) it
+# expanded to nothing and this target installed to /bin.
+GOPATH_BIN=$(shell go env GOPATH)/bin
 
-install-user: build ## Install to ~/.local/bin
+install: ## Install the binary to GOPATH/bin
+	@mkdir -p $(GOPATH_BIN)
+	$(GOBUILD) $(LDFLAGS) -o $(GOPATH_BIN)/$(BINARY_NAME) $(CMD_DIR)
+	@echo "Installed: $(GOPATH_BIN)/$(BINARY_NAME)"
+
+install-user: build ## Copy the binary to ~/.local/bin (independent of this checkout)
 	@mkdir -p ~/.local/bin
 	@cp $(BUILD_DIR)/$(BINARY_NAME) ~/.local/bin/$(BINARY_NAME)
 	@echo "Installed: ~/.local/bin/$(BINARY_NAME)"
-	@echo "Make sure ~/.local/bin is in your PATH"
+	@echo "A copy goes stale on the next build — use 'make link' while developing."
+
+link: build ## Symlink ~/.local/bin/vsp at this checkout, so every build is picked up
+	@mkdir -p ~/.local/bin
+	@ln -sf $(abspath $(BUILD_DIR)/$(BINARY_NAME)) ~/.local/bin/$(BINARY_NAME)
+	@echo "Linked: ~/.local/bin/$(BINARY_NAME) -> $(abspath $(BUILD_DIR)/$(BINARY_NAME))"
+	@echo "'make build' now updates what is on PATH; nothing to re-install."
 
 ## Development
 
