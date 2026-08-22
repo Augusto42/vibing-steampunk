@@ -491,6 +491,14 @@ vsp source CLAS ZCL_MY_CLASS --method GET_DATA   # read single method
 vsp context CLAS ZCL_FOO --depth 2               # source + dependency contracts
 vsp analyze ZCL_MY_CLASS                         # 13 lint rules (offline)
 
+# Getting connected — before there is any config
+vsp detect sap.example.com                       # which port serves ADT, and the config to use
+vsp detect D15 --all                             # exhaustive sweep, by system id from SAP Logon
+vsp landscape list --probe                       # every system SAP Logon knows, and which answer
+vsp landscape import D15 --client 100 --write    # turn one into a .vsp.json entry
+vsp -s dev compat                                # what this system supports, and how to route it
+vsp -s dev compat --against prod                 # what two releases disagree about
+
 # Classic RFC (no SAP SDK)
 vsp rfc info                                     # RFC system info
 vsp rfc call Z_DOUBLE '{"N":21}'                 # call any function module
@@ -751,6 +759,48 @@ Configure multiple SAP systems in `.vsp.json`:
 2. `.vsp/systems.json`
 3. `~/.vsp.json`
 4. `~/.vsp/systems.json`
+
+### Finding a System Before You Can Configure It
+
+Nothing on a workstation knows which port a system serves ADT on. SAP Logon's
+landscape file describes SAP GUI connectivity and carries no HTTP at all; Eclipse
+ADT asks the person setting up the project. The convention — HTTPS at 443nn,
+HTTP at 80nn — is a starting guess and often wrong, because a system behind a web
+dispatcher answers on 443 instead.
+
+```bash
+vsp detect sap.example.com          # scan, and print the config for what answered
+vsp detect DEV --all                # by system id; --all sweeps every conventional port
+```
+
+It reports how far each port got, which separates questions that go to different
+people: **adt** (the port is right, credentials are a separate matter), **SAP
+without ADT** (the port is right and the ICF node is off — that is a conversation
+with basis), **a certificate for another host** (the port is right and the name
+is not — and the scan follows that name, since an application server behind a
+dispatcher presents the dispatcher's certificate). TLS is preferred over plain
+HTTP, and when only plain answers it says so.
+
+`vsp landscape list` reads the systems SAP Logon already knows — including the
+shared one on a company file server, from SAP Logon's own cache rather than over
+the share — and `vsp landscape import` turns them into configuration.
+
+### Knowing What a System Supports
+
+Two SAP releases answer the same ADT request differently, in ways nothing
+documents and no feature flag captures: a resource present on one is missing on
+the other, and a content type accepted by one is refused by the other.
+
+```bash
+vsp -s dev compat                   # quick: what decides routing, in seconds
+vsp -s dev compat --full            # the whole surface
+vsp -s dev compat --against prod    # only what the two disagree about
+```
+
+It reports, per capability, which route the system supports and which to prefer —
+because a table of 200s and 404s leaves the reader to work that out again.
+Measured across an S/4-generation and an ERP-generation system, five of six
+capabilities route the same way; RFC is the one that does not.
 
 ### Browser SSO (Entra, SAML, Kerberos)
 
