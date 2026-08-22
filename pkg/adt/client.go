@@ -447,6 +447,17 @@ func (c *Client) GetFunctionGroup(ctx context.Context, groupName string) (*Funct
 		return nil, fmt.Errorf("parsing function group: %w", err)
 	}
 
+	// The metadata document carries no modules, so the list is fetched
+	// separately — see functions_list.go. A group whose modules cannot be
+	// listed is still a group worth returning: the caller asked for the group,
+	// and losing its metadata to a failure of the second call would be the
+	// worse answer.
+	if modules, err := c.ListFunctionModules(ctx, groupName); err == nil {
+		fg.Functions = modules
+	} else if c.config.Verbose {
+		fmt.Fprintf(os.Stderr, "[WARN] function group %s: %v\n", groupName, err)
+	}
+
 	return &fg, nil
 }
 
