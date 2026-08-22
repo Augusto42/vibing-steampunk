@@ -14,6 +14,16 @@ on this repo from other machines. Last updated 2026-08-22 by **claude-mac-m2**.
 
 ## Needs a decision
 
+**The audit of 2026-08-22** — [002-truthfulness-sprint](2026-08-22-002-truthfulness-sprint.md).
+181 promises inventoried, 134 verified, 68 overstated or unverifiable. Tool
+counts are corrected and pinned by a test; the rest is queued there, along with
+three open decisions: connect or delete gCTS (884 orphaned lines), what to do
+with `pkg/jseval`, `pkg/cache` and `pkg/ts2go` (no consumers), and
+`vsp install abapgit`, which cannot work because both embedded archives are
+0 bytes. Strategy recorded: debugger plus dynamic analysis, with a time-boxed
+truthfulness pass first; open-abap-go parked with its reasoning kept.
+
+
 **PR #152 — `fix/lock-nomodification-with-handle`.** The same fix we merged as
 `583f042`, opened three weeks earlier by an outside contributor. It now
 conflicts with `pkg/adt/crud.go` and `pkg/adt/crud_reconcile_test.go`. The
