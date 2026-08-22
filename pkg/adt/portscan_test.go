@@ -209,3 +209,58 @@ func TestExhaustiveIsWiderThanTheShortlist(t *testing.T) {
 		t.Error("the exhaustive set is no larger than the shortlist")
 	}
 }
+
+func TestBestPrefersTLS(t *testing.T) {
+	// On a single sign-on system the session cookie is the whole credential.
+	// Choosing a plain port because it sorted first would send it in clear.
+	r := &PortScanResult{Findings: []PortFinding{
+		{Port: 8020, Kind: PortADT, Secure: false, URL: "http://h:8020"},
+		{Port: 443, Kind: PortADT, Secure: true, URL: "https://h:443"},
+	}}
+	best := r.Best()
+	if best == nil || !best.Secure {
+		t.Fatalf("best = %+v, want the TLS one", best)
+	}
+}
+
+func TestBestTakesPlainWhenThereIsNoTLS(t *testing.T) {
+	// Preferring TLS must not mean refusing to answer when none is offered.
+	r := &PortScanResult{Findings: []PortFinding{
+		{Port: 8020, Kind: PortADT, Secure: false, URL: "http://h:8020"},
+	}}
+	if best := r.Best(); best == nil || best.Port != 8020 {
+		t.Errorf("best = %+v, want the plain one", best)
+	}
+}
+
+func TestCertificateHostIsALead(t *testing.T) {
+	tests := map[string]string{
+		`x509: certificate is valid for web.example, not app.example`:          "web.example",
+		`x509: certificate is valid for a.example, b.example, not app.example`: "a.example",
+		`x509: certificate signed by unknown authority`:                        "",
+		``:                                                                     "",
+	}
+	for msg, want := range tests {
+		if got := certificateHost(msg); got != want {
+			t.Errorf("certificateHost(%q) = %q, want %q", msg, got, want)
+		}
+	}
+}
+
+func TestCertificateLeadFindsTheOtherName(t *testing.T) {
+	// A mismatch is not a dead end: on a system fronted by a web dispatcher the
+	// application server presents the dispatcher's certificate, and that name
+	// is the HTTPS address the caller was looking for.
+	r := &PortScanResult{Findings: []PortFinding{
+		{Port: 8020, Kind: PortADT, Secure: false},
+		{Port: 443, Kind: PortTLSMismatch, CertHost: "web.example"},
+	}}
+	if got := r.CertificateLead(); got != "web.example" {
+		t.Errorf("lead = %q, want web.example", got)
+	}
+
+	none := &PortScanResult{Findings: []PortFinding{{Port: 8020, Kind: PortADT}}}
+	if got := none.CertificateLead(); got != "" {
+		t.Errorf("lead = %q, want none", got)
+	}
+}

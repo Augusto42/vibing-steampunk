@@ -35,6 +35,12 @@ type PortFinding struct {
 	// Detail carries what a reader needs and cannot guess — a certificate for
 	// another name, most often.
 	Detail string `json:"detail,omitempty"`
+	// CertHost is the name a mismatched certificate was issued for. It is not
+	// an error detail but a lead: that is the name this port is served under,
+	// and reaching it is a matter of using it.
+	CertHost string `json:"certHost,omitempty"`
+	// Secure reports whether the answer came over TLS.
+	Secure bool `json:"secure"`
 }
 
 // PortKind is how far a probe of one port got.
@@ -62,15 +68,37 @@ type PortScanResult struct {
 }
 
 // Best returns the port to configure, if the scan found one.
+//
+// Among ports that answered, TLS wins. A session cookie is the whole credential
+// on a single sign-on system, and sending it in clear because a plain port
+// happened to sort first is not a trade worth making silently.
 func (r *PortScanResult) Best() *PortFinding {
 	for _, kind := range []PortKind{PortADT, PortSAPNoADT, PortTLSMismatch, PortHTTP} {
-		for i := range r.Findings {
-			if r.Findings[i].Kind == kind {
-				return &r.Findings[i]
+		for _, secure := range []bool{true, false} {
+			for i := range r.Findings {
+				if r.Findings[i].Kind == kind && r.Findings[i].Secure == secure {
+					return &r.Findings[i]
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// CertificateLead returns a name some port is served under, when the scan met a
+// certificate for a host other than the one asked about.
+//
+// A mismatch is not a dead end: it says the service is there and names where it
+// lives. On a system fronted by a web dispatcher the application server presents
+// the dispatcher's certificate, and that name is the HTTPS address the caller
+// was looking for.
+func (r *PortScanResult) CertificateLead() string {
+	for _, f := range r.Findings {
+		if f.CertHost != "" {
+			return f.CertHost
+		}
+	}
+	return ""
 }
 
 // CandidatePorts returns the ports worth trying for a host, most likely first.
@@ -195,11 +223,13 @@ func probePort(ctx context.Context, host string, port int, client string, insecu
 
 	for _, scheme := range schemesFor(port) {
 		base := fmt.Sprintf("%s://%s", scheme, address)
-		kind, status, detail := probeADTPath(ctx, base, client, insecure)
+		kind, status, detail, certHost := probeADTPath(ctx, base, client, insecure)
 		if kind == "" {
 			continue
 		}
-		finding.Kind, finding.Status, finding.Detail, finding.URL = kind, status, detail, base
+		finding.Kind, finding.Status, finding.Detail = kind, status, detail
+		finding.URL, finding.CertHost = base, certHost
+		finding.Secure = scheme == "https"
 		if kind == PortADT {
 			return finding
 		}
@@ -219,7 +249,7 @@ func schemesFor(port int) []string {
 }
 
 // probeADTPath asks the ADT discovery resource and classifies the answer.
-func probeADTPath(ctx context.Context, base, client string, insecure bool) (PortKind, int, string) {
+func probeADTPath(ctx context.Context, base, client string, insecure bool) (kind PortKind, status int, detail, certHost string) {
 	httpClient := &http.Client{
 		Timeout: 6 * time.Second,
 		Transport: &http.Transport{
@@ -237,7 +267,7 @@ func probeADTPath(ctx context.Context, base, client string, insecure bool) (Port
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		return "", 0, ""
+		return "", 0, "", ""
 	}
 	// SAP hands Negotiate and the ADT resources to recognised clients only on
 	// some systems; asking as Eclipse avoids a refusal that is about the
@@ -249,10 +279,10 @@ func probeADTPath(ctx context.Context, base, client string, insecure bool) (Port
 		if strings.Contains(err.Error(), "certificate") {
 			// The server is there and answering TLS; the name used to reach it
 			// is not one the certificate covers. That is a hostname problem,
-			// not a port problem, and saying so saves the next hour.
-			return PortTLSMismatch, 0, certificateDetail(err.Error())
+			// not a port problem, and the certificate names the host to use.
+			return PortTLSMismatch, 0, certificateDetail(err.Error()), certificateHost(err.Error())
 		}
-		return "", 0, ""
+		return "", 0, "", ""
 	}
 	defer resp.Body.Close()
 
@@ -260,20 +290,40 @@ func probeADTPath(ctx context.Context, base, client string, insecure bool) (Port
 		strings.ToLower(resp.Header.Get("server")), "sap")
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		return PortADT, resp.StatusCode, ""
+		return PortADT, resp.StatusCode, "", ""
 	case resp.StatusCode == http.StatusUnauthorized:
 		// ADT is there and wants credentials, which is the port answering.
-		return PortADT, resp.StatusCode, "wants authentication"
+		return PortADT, resp.StatusCode, "wants authentication", ""
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		// A redirect from an ADT path is the single sign-on handshake starting.
-		return PortADT, resp.StatusCode, "redirects to sign in"
+		return PortADT, resp.StatusCode, "redirects to sign in", ""
 	case resp.StatusCode == http.StatusNotFound && sapResponse:
-		return PortSAPNoADT, resp.StatusCode, "SAP answers; the ADT node looks inactive"
+		return PortSAPNoADT, resp.StatusCode, "SAP answers; the ADT node looks inactive", ""
 	case sapResponse:
-		return PortSAPNoADT, resp.StatusCode, ""
+		return PortSAPNoADT, resp.StatusCode, "", ""
 	default:
-		return PortHTTP, resp.StatusCode, ""
+		return PortHTTP, resp.StatusCode, "", ""
 	}
+}
+
+// certificateHost pulls the name a certificate was issued for out of a TLS
+// error, so a mismatch becomes a lead rather than a complaint.
+func certificateHost(msg string) string {
+	const marker = "certificate is valid for "
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(marker):]
+	// The message reads "valid for a, b, not c" — the first name is enough,
+	// and everything from ", not " onward is the name that failed.
+	if j := strings.Index(rest, ", not "); j >= 0 {
+		rest = rest[:j]
+	}
+	if j := strings.IndexAny(rest, ",\""); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
 }
 
 // certificateDetail pulls the readable part out of a TLS error.

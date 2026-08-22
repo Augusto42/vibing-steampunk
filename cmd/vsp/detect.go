@@ -87,6 +87,19 @@ func runDetect(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "scanning %s on %d ports...\n", host, len(ports))
 	result := adt.ScanForADT(cmd.Context(), host, ports, clientNr, insecure)
 
+	// A mismatched certificate names the host this port is served under, and
+	// that is usually the HTTPS address the caller wanted. Following it costs
+	// one more scan and turns "use plain HTTP" into "use TLS, over there".
+	if lead := result.CertificateLead(); lead != "" && !strings.EqualFold(lead, host) {
+		if best := result.Best(); best == nil || !best.Secure || best.Kind != adt.PortADT {
+			fmt.Fprintf(os.Stderr, "a certificate here names %s — scanning it too...\n", lead)
+			if viaCert := adt.ScanForADT(cmd.Context(), lead, ports, clientNr, insecure); viaCert.Best() != nil {
+				result.Findings = append(result.Findings, viaCert.Findings...)
+				result.Host = lead
+			}
+		}
+	}
+
 	if asJSON {
 		blob, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -140,6 +153,11 @@ func printSuggestion(result *adt.PortScanResult, sid, clientNr string) {
 	switch best.Kind {
 	case adt.PortADT:
 		fmt.Printf("Use %s\n", best.URL)
+		if !best.Secure {
+			fmt.Println("This is plain HTTP: the session cookie travels in clear, and a system that")
+			fmt.Println("sets login/ticket_only_by_https will refuse to issue one at all. No TLS port")
+			fmt.Println("answered here — try --all if this was the shortlist.")
+		}
 	case adt.PortSAPNoADT:
 		fmt.Printf("SAP answers on %s, but the ADT node did not.\n", best.URL)
 		fmt.Println("Ask basis to activate /sap/bc/adt in SICF; the port itself is right.")
