@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -131,5 +130,4 @@ func TestModesAreDistinct(t *testing.T) {
 	if !(counts["hyperfocused"] < counts["focused"] && counts["focused"] < counts["expert"]) {
 		t.Errorf("modes are not ordered by size: %v", counts)
 	}
-	fmt.Sprint(counts)
 }
