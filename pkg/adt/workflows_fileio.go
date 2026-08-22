@@ -12,11 +12,11 @@ import (
 
 // RenameObjectResult contains the result of renaming an object.
 type RenameObjectResult struct {
-	OldName    string `json:"oldName"`
-	NewName    string `json:"newName"`
-	ObjectType string `json:"objectType"`
-	Success    bool   `json:"success"`
-	Message    string `json:"message,omitempty"`
+	OldName    string   `json:"oldName"`
+	NewName    string   `json:"newName"`
+	ObjectType string   `json:"objectType"`
+	Success    bool     `json:"success"`
+	Message    string   `json:"message,omitempty"`
 	Errors     []string `json:"errors,omitempty"`
 }
 
@@ -214,6 +214,16 @@ func (c *Client) SaveToFile(ctx context.Context, objType CreatableObjectType, ob
 	result.LineCount = len(strings.Split(source, "\n"))
 
 	// 4. Write to file
+	// Create the directory rather than failing on it. A caller naming an output
+	// directory has said where they want the file; refusing because that
+	// directory does not exist yet turns a one-line call into two, and the error
+	// arrives as a write failure on the object rather than as "make the folder".
+	if dir := filepath.Dir(result.FilePath); dir != "" && dir != "." {
+		if mkErr := os.MkdirAll(dir, 0755); mkErr != nil {
+			return nil, fmt.Errorf("creating output directory %s: %w", dir, mkErr)
+		}
+	}
+
 	err = os.WriteFile(result.FilePath, []byte(source), 0644)
 	if err != nil {
 		result.Message = fmt.Sprintf("Failed to write file: %v", err)
@@ -282,6 +292,16 @@ func (c *Client) SaveClassIncludeToFile(ctx context.Context, className string, i
 	result.LineCount = len(strings.Split(source, "\n"))
 
 	// 4. Write to file
+	// Create the directory rather than failing on it. A caller naming an output
+	// directory has said where they want the file; refusing because that
+	// directory does not exist yet turns a one-line call into two, and the error
+	// arrives as a write failure on the object rather than as "make the folder".
+	if dir := filepath.Dir(result.FilePath); dir != "" && dir != "." {
+		if mkErr := os.MkdirAll(dir, 0755); mkErr != nil {
+			return nil, fmt.Errorf("creating output directory %s: %w", dir, mkErr)
+		}
+	}
+
 	err = os.WriteFile(result.FilePath, []byte(source), 0644)
 	if err != nil {
 		result.Message = fmt.Sprintf("Failed to write file: %v", err)
