@@ -166,3 +166,61 @@ func TestPowerShellQuote(t *testing.T) {
 		t.Errorf("got %s, want the apostrophe doubled", got)
 	}
 }
+
+// SAP GUI for Java writes no systemid at all: the system lives in name, and
+// the file is called SAPGUILandscape.xml rather than SAPUILandscape.xml. Its
+// entries were dropped entirely before, so on macOS the tool found nothing
+// even with SAP GUI installed and configured.
+const sampleJavaLandscape = `<?xml version="1.0" encoding="UTF-8"?>
+<Landscape updated="2026-01-01T00:00:00Z" version="1" generator="SAP GUI for Java 7.80 rev 7">
+  <Services>
+    <Service client="001" user="TESTUSER" name="DEV" expert="1" uuid="j1" type="SAPGUI" server="devsys.example:3200" mode="1"/>
+    <Service client="001" user="TESTUSER" name="A description, not a system" uuid="j2" type="SAPGUI" server="ghost.example:3200"/>
+  </Services>
+</Landscape>`
+
+func TestLandscapeJavaFlavourUsesNameAsSystemID(t *testing.T) {
+	lf, err := ParseLandscapeBytes([]byte(sampleJavaLandscape), "java")
+	if err != nil {
+		t.Fatalf("ParseLandscapeBytes: %v", err)
+	}
+	systems := lf.Systems("java")
+
+	if len(systems) != 1 {
+		t.Fatalf("got %d systems, want 1 — only the entry whose name is shaped like a system id", len(systems))
+	}
+	got := systems[0]
+	if got.SystemID != "DEV" {
+		t.Errorf("SystemID = %q, want %q", got.SystemID, "DEV")
+	}
+	if got.Host != "devsys.example" {
+		t.Errorf("Host = %q, want %q", got.Host, "devsys.example")
+	}
+	if got.InstanceNr != "00" {
+		t.Errorf("InstanceNr = %q, want %q — 3200 is instance 00", got.InstanceNr, "00")
+	}
+}
+
+// The name is only a fallback for a missing system id, never a rename: a
+// Windows file's blank systemid still drops the entry rather than promoting
+// its description.
+func TestLandscapeBlankSystemIDStillDropsTheEntry(t *testing.T) {
+	for _, s := range parseSample(t) {
+		if strings.EqualFold(s.SystemID, "NO SYSTEM ID") || s.Host == "ghost.example" {
+			t.Errorf("entry with a blank systemid survived as %+v", s)
+		}
+	}
+}
+
+func TestLooksLikeSystemID(t *testing.T) {
+	for _, ok := range []string{"DEV", "A4H", "PRD", "S4H", "123"} {
+		if !looksLikeSystemID(ok) {
+			t.Errorf("looksLikeSystemID(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", "DE", "DEVS", "A description", "D-V", "a4h"} {
+		if looksLikeSystemID(bad) {
+			t.Errorf("looksLikeSystemID(%q) = true, want false", bad)
+		}
+	}
+}

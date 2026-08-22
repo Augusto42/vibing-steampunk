@@ -123,6 +123,16 @@ func (lf *LandscapeFile) Systems(source string) []LandscapeSystem {
 		// passes an emptiness check and turns into a nameless row.
 		systemID := strings.ToUpper(strings.TrimSpace(s.SystemID))
 		if systemID == "" {
+			// SAP GUI for Java does not write systemid at all — its entries
+			// carry the system in name ("A4H"). Only accept a name that is
+			// shaped like a system id: on Windows files name is a free-text
+			// description, and an entry whose systemid is blank there is meant
+			// to be dropped, not renamed after its description.
+			if candidate := strings.ToUpper(strings.TrimSpace(s.Name)); looksLikeSystemID(candidate) {
+				systemID = candidate
+			}
+		}
+		if systemID == "" {
 			continue
 		}
 		sys := LandscapeSystem{
@@ -161,6 +171,21 @@ func (lf *LandscapeFile) Systems(source string) []LandscapeSystem {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+// looksLikeSystemID reports whether a string has the shape of a SAP system id:
+// three alphanumerics. It is the only thing that makes a name safe to use when
+// systemid is missing.
+func looksLikeSystemID(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // splitHostPort splits "host:port", tolerating a bare host.
@@ -296,6 +321,10 @@ func DNSSearchDomains(ctx context.Context) []string {
 // landscapeFileName is the file SAP GUI writes.
 const landscapeFileName = "SAPUILandscape.xml"
 
+// javaLandscapeFileName is what SAP GUI for Java writes instead — same schema,
+// different name.
+const javaLandscapeFileName = "SAPGUILandscape.xml"
+
 // FindLandscapeFiles returns the landscape files worth reading, most specific
 // first: an explicit path, then SAPLOGON_LSXML_FILE, then the per-platform
 // default location.
@@ -325,10 +354,16 @@ func FindLandscapeFiles(ctx context.Context, explicit string) []string {
 			candidates = append(candidates, filepath.Join(appData, "SAP", "Common", landscapeFileName))
 		}
 	default:
-		// SAP GUI for Java keeps its own copy.
+		// SAP GUI for Java keeps its own copy, and names it differently:
+		// SAPGUILandscape.xml, not the SAPUILandscape.xml Windows writes.
+		// On macOS it lives under Library/Preferences, not a dot-directory.
 		if home, err := os.UserHomeDir(); err == nil {
 			candidates = append(candidates,
+				filepath.Join(home, "Library", "Preferences", "SAP", javaLandscapeFileName),
+				filepath.Join(home, "Library", "Preferences", "SAP", landscapeFileName),
+				filepath.Join(home, ".SAPGUI", "Configuration", javaLandscapeFileName),
 				filepath.Join(home, ".SAPGUI", "Configuration", landscapeFileName),
+				filepath.Join(home, ".sapgui", javaLandscapeFileName),
 				filepath.Join(home, ".sapgui", landscapeFileName))
 		}
 	}
