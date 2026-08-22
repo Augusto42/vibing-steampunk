@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ func init() {
 	landscapeCmd.PersistentFlags().StringSlice("domain", nil, "DNS domains to qualify short host names with (default: detected)")
 	landscapeListCmd.Flags().String("filter", "", "Only systems whose ID or name contains this")
 	landscapeListCmd.Flags().Bool("probe", false, "Try each candidate address and report which one answers")
+	landscapeListCmd.Flags().Bool("resolve", false, "Resolve short host names to the name a certificate will match (implied by --probe)")
 	landscapeImportCmd.Flags().String("client", "", "SAP client for the imported systems")
 	landscapeImportCmd.Flags().Bool("sso", true, "Mark imported systems as browser single sign-on")
 	landscapeImportCmd.Flags().Bool("write", false, "Actually write .vsp.json (without this, print what would be added)")
@@ -148,6 +150,11 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 	}
 
 	seen := map[string]bool{}
+	// The cached copy of the shared landscape is the same bytes as the include
+	// that names it. Reading both would list every shared system twice, so a
+	// source already seen by content is skipped — which also makes the network
+	// read unnecessary rather than merely redundant.
+	seenContent := map[[32]byte]bool{}
 	var systems []adt.LandscapeSystem
 
 	for len(queue) > 0 {
@@ -166,6 +173,12 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 			fmt.Fprintf(os.Stderr, "note: %v\n", err)
 			continue
 		}
+		if digest := sha256.Sum256(blob); seenContent[digest] {
+			continue
+		} else {
+			seenContent[digest] = true
+		}
+
 		lf, err := adt.ParseLandscapeBytes(blob, src.name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "note: %v\n", err)
@@ -261,6 +274,15 @@ func runLandscapeList(cmd *cobra.Command, args []string) error {
 
 	probe, _ := cmd.Flags().GetBool("probe")
 	domains := searchDomains(cmd)
+
+	// Resolving is a DNS lookup per system, and the ones that fail are the slow
+	// ones — on a landscape of a hundred and sixty that turns a listing into a
+	// wait. It earns its cost when the address is about to be used, so it is
+	// done for --probe and on request, and skipped for a plain look.
+	resolve, _ := cmd.Flags().GetBool("resolve")
+	if probe || resolve {
+		adt.CanonicalHosts(cmd.Context(), systems, domains)
+	}
 	fmt.Printf("%-6s %-34s %-28s %-4s %s\n", "SID", "NAME", "HOST", "NR", "ADT")
 	fmt.Println(strings.Repeat("-", 110))
 	for _, s := range systems {
@@ -279,8 +301,9 @@ func runLandscapeList(cmd *cobra.Command, args []string) error {
 			s.SystemID, truncate(s.Name, 34), truncate(s.Host, 28), s.InstanceNr, adtCol)
 	}
 	if !probe {
-		fmt.Println("\nAddresses are derived from the instance number and are candidates.")
-		fmt.Println("Add --probe to see which one actually answers.")
+		fmt.Println("\nAddresses are candidates: the default one first, then those derived")
+		fmt.Println("from the instance number. Add --probe to see which one answers, or")
+		fmt.Println("--resolve to expand short host names without connecting.")
 	}
 	return nil
 }
@@ -331,6 +354,7 @@ func runLandscapeImport(cmd *cobra.Command, args []string) error {
 	}
 
 	domains := searchDomains(cmd)
+	adt.CanonicalHosts(cmd.Context(), systems, domains)
 	clientNr, _ := cmd.Flags().GetString("client")
 	useSSO, _ := cmd.Flags().GetBool("sso")
 	write, _ := cmd.Flags().GetBool("write")
