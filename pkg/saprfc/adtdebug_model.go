@@ -132,6 +132,11 @@ func (d *Debugger) Locals(ctx context.Context) ([]adt.DebugVariable, error) {
 	if len(parents) == 0 {
 		return roots.Variables, nil
 	}
+	// Remember them. The batched capture cannot afford to ask @ROOT and then
+	// its children as two round trips per statement, and it used to guess
+	// @LOCALS — which this release does not have, so every recorded trace came
+	// out with no values in it at all.
+	d.localsRoots = parents
 
 	res, err := d.ADTChildVariables(ctx, parents)
 	if err != nil {
@@ -262,4 +267,37 @@ func (d *Debugger) GoToFrame(ctx context.Context, stackURI string) error {
 		return adtError("goToStack", res)
 	}
 	return nil
+}
+
+// localsRootsFor returns the hierarchy roots that hold the stopped frame's
+// variables on this system, discovering them once per session.
+//
+// SAP does not agree with itself about the name: some releases offer @LOCALS,
+// this one offers @GLOBALS and, inside a subroutine, @PARAMETERS. Asking @ROOT
+// is how you find out, and the answer holds for the session.
+func (d *Debugger) localsRootsFor(ctx context.Context) []string {
+	if len(d.localsRoots) > 0 {
+		return d.localsRoots
+	}
+	roots, err := d.Expand(ctx, "@ROOT")
+	if err != nil || roots == nil {
+		return []string{localsRoot}
+	}
+	var parents []string
+	for _, h := range roots.Hierarchies {
+		if strings.EqualFold(h.ChildID, localsRoot) || strings.EqualFold(h.ChildName, localsRoot) {
+			parents = []string{h.ChildID}
+			break
+		}
+	}
+	if parents == nil {
+		for _, h := range roots.Hierarchies {
+			parents = append(parents, h.ChildID)
+		}
+	}
+	if len(parents) == 0 {
+		return []string{localsRoot}
+	}
+	d.localsRoots = parents
+	return parents
 }

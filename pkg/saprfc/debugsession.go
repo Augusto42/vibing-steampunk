@@ -48,6 +48,11 @@ type Debugger struct {
 	bpRejects []adt.Breakpoint
 	// Whether breakpoints in SAP's own code are allowed to fire at all.
 	systemDebugging bool
+	// The hierarchy roots that hold a stopped frame's variables here, learned
+	// once. Releases disagree on the name — @LOCALS on some, @GLOBALS plus
+	// @PARAMETERS on others — and a batched capture cannot spend a round trip
+	// per statement rediscovering it.
+	localsRoots []string
 	// Which shape this system answers the call stack in, learned on the first
 	// read. Releases before the dedicated resource existed answer the
 	// dispatcher instead, and the difference costs one 404 to discover — once
