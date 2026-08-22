@@ -383,6 +383,15 @@ func newToolResultError(message string) *mcp.CallToolResult {
 // feature behind ZADT_VSP was unreachable for a client-side reason. The upgrade
 // request carries a cookie like any other HTTP request; this passes it on.
 func (s *Server) applyWSAuth(setCookies func(map[string]string)) {
+	// Ask the ADT client rather than the config. A session that expires is
+	// replaced wholesale, and the config holds the map handed over at startup —
+	// so a server that has been running long enough to re-authenticate would
+	// open every WebSocket with the dead session while its ordinary calls
+	// carried on working, which is a confusing way to fail.
+	if live := s.adtClient.CurrentCookies(); len(live) > 0 {
+		setCookies(live)
+		return
+	}
 	if len(s.config.Cookies) > 0 {
 		setCookies(s.config.Cookies)
 	}

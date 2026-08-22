@@ -711,6 +711,34 @@ func (t *Transport) resetCookieJar() {
 	}
 }
 
+// CurrentCookies returns a copy of the session this client is using now.
+//
+// The session is not the one it started with: an expiry replaces the whole map,
+// so anything that took a snapshot at startup is holding a dead one. A caller
+// that needs to authenticate elsewhere — opening a WebSocket, say — has to ask
+// at the moment it connects rather than remember.
+func (t *Transport) CurrentCookies() map[string]string {
+	t.cookiesMu.RLock()
+	defer t.cookiesMu.RUnlock()
+	if len(t.config.Cookies) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(t.config.Cookies))
+	for name, value := range t.config.Cookies {
+		out[name] = value
+	}
+	return out
+}
+
+// SetCookies replaces the session this client authenticates with. This is what
+// a re-authentication does, and it is exported so a caller that obtained a
+// session some other way can hand it over without rebuilding the client.
+func (t *Transport) SetCookies(cookies map[string]string) {
+	t.cookiesMu.Lock()
+	defer t.cookiesMu.Unlock()
+	t.config.Cookies = cookies
+}
+
 // addCookies adds user-provided cookies to a request under cookiesMu read lock.
 func (t *Transport) addCookies(req *http.Request) {
 	t.cookiesMu.RLock()

@@ -244,6 +244,17 @@ func (c *Client) AllowPackageTemporarily(pkg string) func() {
 
 // --- Search Operations ---
 
+// SetCookies replaces the session this client authenticates with.
+func (c *Client) SetCookies(cookies map[string]string) {
+	c.transport.SetCookies(cookies)
+}
+
+// CurrentCookies returns the session this client is authenticating with now,
+// which is not necessarily the one it was given. See Transport.CurrentCookies.
+func (c *Client) CurrentCookies() map[string]string {
+	return c.transport.CurrentCookies()
+}
+
 // SearchObject searches for ABAP objects by name pattern.
 // The query parameter supports wildcards (* for multiple chars, ? for single char).
 func (c *Client) SearchObject(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
