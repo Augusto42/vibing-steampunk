@@ -1,6 +1,8 @@
 # Vibing Steampunk (vsp)
 
-**AI-Agentic Development Unlocked for ABAP** — ECC, S/4HANA, everywhere ADT is available.
+**AI-Agentic Development Unlocked for ABAP** — any system with ADT enabled, 7.50 upwards.
+The available surface varies by release, and `vsp compat` reports it per system: RAP needs
+S/4, AMDP needs HANA, and some ADT resources present on S/4 are absent on ERP.
 
 > **ADT ↔ MCP Bridge**: Gives Claude (and other AI assistants) full access to SAP ADT APIs.
 > Read code, write code, debug, deploy, run tests — all through natural language (or DSL for automation).
@@ -12,7 +14,7 @@
 >
 > See also: [OData ↔ MCP Bridge](https://github.com/oisee/odata_mcp_go) for SAP data access.
 >
-> **Want to review or test?** Start here: **[Reviewer Guide](docs/reviewer-guide.md)** — 8 hands-on tasks, no SAP needed.
+> **Want to review or test?** Start here: **[Reviewer Guide](docs/reviewer-guide.md)** — 11 hands-on tasks, 6 of them fully offline.
 
 ![Vibing ABAP Developer](./media/vibing-steampunk.png)
 
@@ -150,9 +152,12 @@ unless `--values` is given, because a capture at a code boundary is business dat
 by construction.
 
 It is a deliberate mode, and the numbers say why. A stop needs the step, the
-stack and the variables; as three requests that is 45ms, about 1300 stops a
-minute. `/sap/bc/adt/debugger/batch` takes all three as one multipart document
-and works through the tunnel: **14ms, some 4300 stops a minute**. Two other
+stack and the variables — four round trips, since variables take two. Measured
+on A4H over a LAN in August 2026 that is about 45ms a stop, some 1300 a minute.
+`/sap/bc/adt/debugger/batch` takes them as one multipart document and works
+through the tunnel: **14ms, some 4300 stops a minute** on the same system. The
+harness is `pkg/saprfc/step_cost_test.go`, behind the `integration` tag; the
+numbers are one machine on one network, not a specification. Two other
 measured limits shape it — SAP allows **30 external breakpoints per user**, and
 stepping past the end of a unit whose caller is standard code ends the debuggee
 rather than stopping, which is why a recording ends with an explicit `exit`
@@ -221,7 +226,9 @@ vsp rfc adt POST /sap/bc/adt/atc/runs Content-Type=application/xml --body run.xm
 ```
 
 Read paths are proven (discovery, program source with `ETag`/`Last-Modified`, a
-missing object answering ADT's own 404 document), and **so are the write paths**:
+missing object answering ADT's own 404 document). The write sequence has been
+**demonstrated by hand** on A4H and is not yet covered by a test, so it is shown
+here as a worked example rather than as a guarantee:
 
 ```
 POST …/oo/classes/zcl_x?_action=LOCK&accessMode=MODIFY   → 200, a lock handle
@@ -364,8 +371,12 @@ graph LR
 
 **Compression by object type:**
 
-| What | Keeps | Strips | Typical ratio |
-|------|-------|--------|:-------------:|
+Ratios below are observed on real objects, not computed by a test — treat them
+as orders of magnitude. The 1x for interfaces is structural: an interface is
+already its own contract, so nothing is stripped.
+
+| What | Keeps | Strips | Observed ratio |
+|------|-------|--------|:--------------:|
 | **Class** | `CLASS DEFINITION` + `PUBLIC SECTION` | Protected, Private, Implementation | **7–30x** |
 | **Interface** | Full `INTERFACE...ENDINTERFACE` | — | 1x (already compact) |
 | **Function Module** | `FUNCTION` line + `*"` signature block | Body | **5–15x** |
@@ -439,7 +450,7 @@ Zero dependencies, zero FFI. Pure Go, ~3.5M tokens/sec, ready for lint rules in 
 
 ### ABAP LSP — Real-Time Diagnostics
 
-`vsp lsp --stdio` gives Claude Code (and other editors) **automatic** error detection and navigation for ABAP files. No explicit tool calls — the LSP pushes diagnostics on every save and compressed dependency context on file open.
+`vsp lsp --stdio` gives Claude Code (and other editors) **automatic** error detection and navigation for ABAP files. No explicit tool calls — the LSP pushes diagnostics **as you type**, debounced, and compressed dependency context on file open.
 
 See [LSP setup](#abap-lsp-for-claude-code) for configuration.
 
@@ -463,7 +474,9 @@ Compile WebAssembly binaries to native ABAP — advanced prototype, verified on 
 | Self-hosting compiler | 785 lines | Running on SAP |
 | Batch deploy | `vsp deploy *.clas.abap` | 40 classes, 0 failures |
 
-> *Branch: `feat/wasm-abap`. See [reports/2026-03-20-001](reports/2026-03-20-001-wasm-abap-achievement.md) for full details.*
+> *On main: `pkg/wasmcomp/` and `embedded/abap/wasm_compiler/`. The original
+> branch `feat/wasm-abap` is kept for history. See
+> [reports/2026-03-20-001](reports/2026-03-20-001-wasm-abap-achievement.md).*
 
 ### Full CLI Toolchain — SAP from the Terminal
 

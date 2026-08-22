@@ -50,7 +50,7 @@ pkg/
   adt/                ADT client (HTTP, CSRF, sessions, all SAP ops)
   graph/              Dependency graph engine (in progress)
   ctxcomp/            Context compression (dep resolution for read)
-  abaplint/           ABAP lexer + parser (91 statements, 8 lint rules)
+  abaplint/           ABAP lexer + parser (95 statement patterns; 13 lint rules, 8 on by default)
   dsl/                Fluent API, YAML workflows, batch ops
   cache/              In-memory + SQLite
   scripting/          Lua engine
