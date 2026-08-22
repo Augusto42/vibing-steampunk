@@ -152,7 +152,28 @@ customer, the system, or a live account?" If yes, redact.
 
 ## Conventions
 
-Reports: `reports/YYYY-MM-DD-NNN-title.md`. SAP objects: `ZADT_<nn>_<name>`, `ZCL_ADT_<name>`, packages `$ZADT*`.
+Reports: `reports/YYYY-MM-DD-NNN-title.md`.
+
+**SAP object names.** After the kind prefix comes a *domain* token, then the
+name. Ours is `VSP`. There is never an underscore straight after `Z`.
+
+| Kind | Form | Ours |
+|------|------|------|
+| Class | `ZCL_<domain>_<name>` | `ZCL_VSP_GIT_SERVICE`, `ZCL_VSP_APC_HANDLER` |
+| Interface | `ZIF_<domain>_<name>` | `ZIF_VSP_SERVICE` |
+| Program | `Z<domain>_<name>` | `ZVSP_ENQUEUE_RESET` |
+| Function group | `Z<domain>_<name>` | `ZVSP_GIT` |
+| Function module | `Z<domain>_<name>` | `ZVSP_GIT_CALL` |
+| Message class | `Z<domain>_<name>` | `ZVSP_GIT` |
+| Package | `$ZADT_VSP` | |
+
+A numeric bucket may sit between domain and name — `ZCL_VSP_00_AMDP_TEST` — and
+we use it only for test fixtures. Landscapes that carry it everywhere use it to
+mirror package structure; we do not.
+
+Names predating this — `ZADT_CL_TADIR_MOVE`, `ZCL_ADT_00_AMDP_TEST` — are the
+older `ADT` domain and put `CL` in the wrong place. Both have `ZCL_VSP_*`
+successors; do not add more.
 
 ---
 
