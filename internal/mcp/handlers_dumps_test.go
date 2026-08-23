@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
 // The whole reason this file exists: a day of post-mortem work landed in the
@@ -226,5 +227,43 @@ func TestParseDumpDateSpellings(t *testing.T) {
 	}
 	if _, err := parseDumpDate("2026-13-99", false); err == nil {
 		t.Error("an impossible date parsed")
+	}
+}
+
+// Answerable() is all-or-nothing: one unit that came back makes it true, and
+// the "not a finding of zero callers" caveat then stays silent. But "exposed"
+// is the union over units, so a unit whose where-used list failed subtracts
+// callers from the headline list without subtracting anything from the
+// reader's confidence in it.
+func TestAPartlyAnsweredImpactStillNamesWhatItCouldNotAsk(t *testing.T) {
+	result := &adt.DumpImpactResult{Units: []adt.ImpactUnit{
+		{Object: "ZCL_DEMO_OK"},
+		{Object: "ZCL_DEMO_DENIED", Err: "ADT API error: status 403"},
+		{Object: "ZCL_DEMO_LOCAL", Note: "a local class has no where-used list"},
+	}}
+	if !result.Answerable() {
+		t.Fatal("one unit answered, so the all-or-nothing caveat does not fire — that is the gap this covers")
+	}
+
+	unanswered := unansweredUnits(result)
+	if len(unanswered) != 2 {
+		t.Fatalf("both the error and the note leave a hole in the answer, got %d: %v", len(unanswered), unanswered)
+	}
+	joined := strings.Join(unanswered, "; ")
+	for _, want := range []string{"ZCL_DEMO_DENIED", "403", "ZCL_DEMO_LOCAL", "no where-used list"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("the reader needs %q to know what to do next:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "ZCL_DEMO_OK") {
+		t.Fatalf("a unit that answered is not a gap:\n%s", joined)
+	}
+}
+
+// Every unit answering means nothing to disclose.
+func TestAFullyAnsweredImpactHasNoGaps(t *testing.T) {
+	result := &adt.DumpImpactResult{Units: []adt.ImpactUnit{{Object: "ZCL_DEMO_OK"}}}
+	if got := unansweredUnits(result); len(got) != 0 {
+		t.Fatalf("nothing was missed, got %v", got)
 	}
 }

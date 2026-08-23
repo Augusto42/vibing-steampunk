@@ -1032,7 +1032,13 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 			// GetSource for FUGR returns JSON metadata (function module list), which has
 			// no ABAP statements and yields zero dependencies. For accurate graph analysis
 			// we need the actual source: TOP include + all fmodules + all sub-includes.
-			source, err = client.GetFunctionGroupAllSources(ctx, obj.objName)
+			var missed []adt.Unsearched
+			source, missed, err = client.GetFunctionGroupAllSources(ctx, obj.objName)
+			// A sub-source that failed to load yields no dependencies, which
+			// downstream is indistinguishable from having none.
+			for _, m := range missed {
+				fmt.Fprintf(os.Stderr, "    WARN: %s %s: %s: %s\n", obj.objType, obj.objName, m.Object, m.Reason)
+			}
 		} else {
 			source, err = client.GetSource(ctx, obj.objType, obj.objName, nil)
 		}

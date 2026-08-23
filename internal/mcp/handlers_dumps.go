@@ -283,10 +283,33 @@ func (s *Server) handleDumpImpact(ctx context.Context, request mcp.CallToolReque
 	}
 	if !result.Answerable() {
 		notes = append(notes, noteImpactUnanswerable)
+	} else if unanswered := unansweredUnits(result); len(unanswered) > 0 {
+		// Answerable() is all-or-nothing: one unit that came back is enough to
+		// make it true. But "exposed" is the union over units, so a unit that
+		// failed subtracts callers from the headline list without subtracting
+		// anything from the reader's confidence in it.
+		notes = append(notes, fmt.Sprintf(
+			"%d of %d units could not be asked about, so the exposure below is a floor, not a total: %s",
+			len(unanswered), len(result.Units), strings.Join(unanswered, "; ")))
 	}
 	notes = append(notes, noteImpactIsNotBlame)
 
 	return newToolResultJSON(dumpImpactResult{DumpImpactResult: result, Notes: notes}), nil
+}
+
+// unansweredUnits names the units whose where-used list is missing from the
+// answer, with the reason each is missing.
+func unansweredUnits(result *adt.DumpImpactResult) []string {
+	var out []string
+	for _, u := range result.Units {
+		switch {
+		case u.Err != "":
+			out = append(out, u.Object+" ("+u.Err+")")
+		case u.Note != "":
+			out = append(out, u.Object+" ("+u.Note+")")
+		}
+	}
+	return out
 }
 
 // --- Application log ---

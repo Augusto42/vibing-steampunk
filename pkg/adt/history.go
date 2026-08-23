@@ -362,11 +362,17 @@ func (hm *HistoryManager) GetRecordingStats() map[string]interface{} {
 }
 
 // SearchHistory searches recordings and frames for specific patterns.
-func (hm *HistoryManager) SearchHistory(query HistoryQuery) []HistorySearchResult {
+//
+// The second return value is the recordings that could not be opened. It is not
+// decoration: a debugging search comes back empty either because the variable
+// never held that value or because the file holding the proof would not load,
+// and those two send an investigator in opposite directions.
+func (hm *HistoryManager) SearchHistory(query HistoryQuery) ([]HistorySearchResult, []Unsearched) {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 
 	var results []HistorySearchResult
+	var missed []Unsearched
 
 	for _, idx := range hm.index {
 		if query.RecordingFilter.Program != "" && !strings.Contains(idx.Program, query.RecordingFilter.Program) {
@@ -375,6 +381,9 @@ func (hm *HistoryManager) SearchHistory(query HistoryQuery) []HistorySearchResul
 
 		recording, err := hm.loadRecordingFromFile(idx.FilePath)
 		if err != nil {
+			// The index still lists this recording, so from outside it looks
+			// searched. It was not.
+			missed = append(missed, Unsearched{Object: idx.ID, Reason: err.Error()})
 			continue
 		}
 
@@ -389,13 +398,13 @@ func (hm *HistoryManager) SearchHistory(query HistoryQuery) []HistorySearchResul
 				})
 
 				if query.Limit > 0 && len(results) >= query.Limit {
-					return results
+					return results, missed
 				}
 			}
 		}
 	}
 
-	return results
+	return results, missed
 }
 
 // frameMatchesQuery checks if a frame matches the search query.
