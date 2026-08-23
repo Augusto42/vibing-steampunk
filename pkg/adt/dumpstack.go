@@ -40,16 +40,31 @@ var ErrDumpDetailUnavailable = errors.New("this release does not serve individua
 
 // DumpStack reads the call stack of one dump.
 func (c *Client) DumpStack(ctx context.Context, dumpID string) ([]DumpFrame, error) {
+	formatted, err := c.formattedDump(ctx, dumpID)
+	if err != nil {
+		return nil, err
+	}
+	return parseDumpStack(formatted), nil
+}
+
+// formattedDump fetches the plain-text rendering of one dump.
+//
+// Everything brittle we read about a single dump — the stack, the header table,
+// the termination point — comes out of this one document, so it is fetched
+// once and parsed several times rather than fetched per field. The documents
+// run from 45 KB to nearly a megabyte, and a similarity search reads one per
+// candidate, so a second round trip per dump would be felt.
+func (c *Client) formattedDump(ctx context.Context, dumpID string) (string, error) {
 	path := dumpDetailPath(dumpID) + "/formatted"
 	res, err := c.transport.Request(ctx, path, &RequestOptions{Method: "GET", Accept: acceptAny})
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
-			return nil, ErrDumpDetailUnavailable
+			return "", ErrDumpDetailUnavailable
 		}
-		return nil, fmt.Errorf("reading the dump: %w", err)
+		return "", fmt.Errorf("reading the dump: %w", err)
 	}
-	return parseDumpStack(string(res.Body)), nil
+	return string(res.Body), nil
 }
 
 // dumpDetailPath turns a feed id into the detail resource. The feed points at
