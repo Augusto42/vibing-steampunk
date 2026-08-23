@@ -87,6 +87,34 @@ func (s *Server) handleX(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 ---
 
+## Provoking a failure on a live system
+
+Testing the unhappy path means making something fail, and the cheapest
+way to make SAP say no is the one that costs the most. A wrong password
+for a **real** user counts against `login/fails_to_user_lock`, and one
+sweep is dozens of requests — `vsp compat` locked the developer account
+for a day this way, after which the *correct* password also returns 401.
+
+Reach for these in order. The first three touch no credential at all:
+
+1. **A client-side refusal** — `SAP_BLOCK_FREE_SQL=1`,
+   `adt.WithBlockFreeSQL()`, `--disallowed-ops`. The request is never
+   sent, and the error is the one a safety-blocked user would see.
+2. **An `httptest` server returning 403.** The authorisation case with
+   no SAP anywhere near it, and it runs in CI.
+3. **An object or package that does not exist** — a real 404 from a
+   real session.
+4. **An unresolvable hostname** — fails before any credential leaves the
+   process.
+5. **A user that does not exist**, if a genuine 401 is unavoidable.
+   Nothing can be locked, because there is nothing to lock. It still
+   writes to the security audit log, so keep it to a few requests rather
+   than a sweep.
+
+Never a real user with a wrong password. Not once, not "just to see":
+the cost is not a failed request, it is the system for everyone until
+the lock clears — midnight on a stock A4H, `SU01` otherwise.
+
 ## Common Issues
 
 1. **CSRF errors** — auto-refreshed in `http.go`
