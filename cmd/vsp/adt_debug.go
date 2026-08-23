@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/oisee/vibing-steampunk/pkg/adt"
@@ -127,6 +129,32 @@ function group — those are function modules and need an RFC channel:
 
 		dbg := saprfc.NewADTDebugger(transport, rfcDebugUser)
 		defer func() { _ = dbg.Close(ctx) }()
+
+		// A deferred close does not run when the process is signalled, and an
+		// interrupted debug session is the common case rather than the rare
+		// one: a -c script that hangs gets Ctrl-C or a timeout kill. What it
+		// leaves behind is not tidy-up work — an AMDP session holds a debug
+		// work process from a pool shared across the whole system, and
+		// stopExisting only reaches your own user, so nobody else can release
+		// it. One interrupted run cost the next debugger on that system five
+		// minutes of DEBUGGER_NO_MORE_DBG_WPS.
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(stop)
+		go func() {
+			sig, ok := <-stop
+			if !ok {
+				return
+			}
+			// The session's own context may already be cancelled, and the
+			// cleanup still has to reach the server, so it gets a fresh one
+			// with a bound short enough not to hang the exit.
+			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			fmt.Fprintf(os.Stderr, "\n%v — releasing the debug session before exit\n", sig)
+			_ = dbg.Close(cleanup)
+			os.Exit(130)
+		}()
 
 		if script != "" {
 			for _, line := range strings.Split(script, ";") {

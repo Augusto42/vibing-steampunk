@@ -97,6 +97,18 @@ func NewADTDebugger(transport ADTTransport, user string) *Debugger {
 // tidy: an attached debuggee and a registered listener both outlive the
 // conversation otherwise, and a stale ABDBG_LISTENER row blocks the next attach.
 func (d *Debugger) Close(ctx context.Context) error {
+	// An AMDP session holds something scarcer than a listener row: a debug work
+	// process, and the pool of those is shared across the whole system rather
+	// than per user. A session that goes away without giving one back leaves it
+	// held, and — because stopExisting only reaches your own user — nobody else
+	// can take it back. The next AMDP debugger on the system, under any user,
+	// gets DEBUGGER_NO_MORE_DBG_WPS and no way to fix it.
+	//
+	// So this comes first and its failure is not allowed to skip the rest.
+	if d.amdpMain != "" {
+		_ = d.AMDPTerminate(ctx, true)
+	}
+
 	if d.session == nil {
 		// No pooled connection to give back — but an ADT-only session still owns
 		// a debuggee and a listener row on the server, and nothing else will
