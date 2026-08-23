@@ -225,3 +225,71 @@ func TestAMDPCallsNeedASession(t *testing.T) {
 		}
 	}
 }
+
+const amdpScalarAnswer = `<amdpdbg:mainResponseList xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger">` +
+	`<amdpdbg:mainResponse amdpdbg:kind="GET_SCALAR_VALUES" amdpdbg:requestId="REQ-1" amdpdbg:debuggeeId="d">` +
+	`<amdpdbg:value><amdpdbg:scalarValues>` +
+	`<amdpdbg:scalarValue amdpdbg:name="LV_I" amdpdbg:type="INTEGER" amdpdbg:isNullValue="false" ` +
+	`amdpdbg:offset="0" amdpdbg:length="1" amdpdbg:originalLength="1">1</amdpdbg:scalarValue>` +
+	`</amdpdbg:scalarValues></amdpdbg:value></amdpdbg:mainResponse></amdpdbg:mainResponseList>`
+
+// Reading a variable is asynchronous and does not say so: the resource answers
+// with an empty body and puts a request id in Location, so a caller reading the
+// body concludes the variable has no value or does not exist. The answer
+// arrives later through the same queue, tagged with that id.
+func TestAnAnswerIsMatchedToItsRequest(t *testing.T) {
+	if !amdpAnswers([]byte(amdpScalarAnswer), "REQ-1") {
+		t.Fatal("the answer carries REQ-1 and should be recognised")
+	}
+	if amdpAnswers([]byte(amdpScalarAnswer), "REQ-2") {
+		t.Fatal("a caller waiting for one request must not be handed another's answer")
+	}
+	if amdpAnswers([]byte(amdpBreakDocument), "REQ-1") {
+		t.Fatal("a stop is not an answer to a variable read")
+	}
+	if amdpAnswers([]byte("not xml"), "REQ-1") {
+		t.Fatal("rubbish answers nothing")
+	}
+}
+
+func TestScalarValuesAreRead(t *testing.T) {
+	values := AMDPScalarValues([]byte(amdpScalarAnswer))
+	if len(values) != 1 {
+		t.Fatalf("expected one variable, got %d", len(values))
+	}
+	v := values[0]
+	if v.Name != "LV_I" || v.Type != "INTEGER" || v.Value != "1" {
+		t.Fatalf("read as %+v", v)
+	}
+	if v.IsNull {
+		t.Fatal("isNullValue was false")
+	}
+	if v.Truncated() {
+		t.Fatal("length equals originalLength; nothing was cut")
+	}
+}
+
+// A value cut at the window boundary is indistinguishable from a short one
+// unless the difference is stated.
+func TestATruncatedValueSaysSo(t *testing.T) {
+	long := AMDPScalar{Name: "LV_TEXT", Type: "NVARCHAR", Value: "abc", Length: 3, OriginalLength: 900}
+	if !long.Truncated() {
+		t.Fatal("900 characters exist and 3 came back")
+	}
+	if got := FormatAMDPScalar(long); !strings.Contains(got, "3 of 900") {
+		t.Fatalf("the reader must be told what was cut, got %q", got)
+	}
+	short := AMDPScalar{Name: "LV_I", Type: "INTEGER", Value: "1", Length: 1, OriginalLength: 1}
+	if got := FormatAMDPScalar(short); strings.Contains(got, "of") {
+		t.Fatalf("a complete value carries no note, got %q", got)
+	}
+}
+
+// NULL is not the empty string, and rendering it as one would lose the
+// difference between a variable that holds nothing and one that holds "".
+func TestNullIsNotEmpty(t *testing.T) {
+	null := AMDPScalar{Name: "LV_X", Type: "NVARCHAR", IsNull: true}
+	if got := FormatAMDPScalar(null); !strings.Contains(got, "NULL") {
+		t.Fatalf("got %q", got)
+	}
+}

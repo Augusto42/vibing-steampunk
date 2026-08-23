@@ -369,7 +369,22 @@ func (d *Debugger) AMDPStep(ctx context.Context, debuggeeID, kind string) (*ADTR
 	return res, nil
 }
 
+// amdpVariableWindow is how much of a value one read asks for.
+//
+// A SQLScript variable can be an NVARCHAR of considerable size, and the
+// resource pages rather than truncating, so some window has to be named. This
+// one is large enough that a scalar never needs a second read and small enough
+// that a mistake costs a request rather than a session.
+const amdpVariableWindow = 8192
+
 // AMDPVariable reads one variable of the stopped SQLScript.
+//
+// offset and length are shown as optional in the discovery template —
+// variables/{varname}{?offset,length} — and are not: the server answers 400
+// "Parameter offset could not be found." without them. That cost a run to find,
+// and it is the third time today that a template's optional-looking parameter
+// turned out to be required. Read the braces as documentation of the parameter
+// names, not of what may be left out.
 func (d *Debugger) AMDPVariable(ctx context.Context, debuggeeID, name string) (*ADTResponse, error) {
 	if d.amdpMain == "" {
 		return nil, fmt.Errorf("no AMDP debug session on this connection; start one first")
@@ -377,8 +392,8 @@ func (d *Debugger) AMDPVariable(ctx context.Context, debuggeeID, name string) (*
 	if strings.TrimSpace(debuggeeID) == "" {
 		return nil, fmt.Errorf("no debuggee: nothing has stopped yet")
 	}
-	uri := fmt.Sprintf("/sap/bc/adt/amdp/debugger/main/%s/debuggees/%s/variables/%s",
-		url.PathEscape(d.amdpMain), url.PathEscape(debuggeeID), url.PathEscape(name))
+	uri := fmt.Sprintf("/sap/bc/adt/amdp/debugger/main/%s/debuggees/%s/variables/%s?offset=0&length=%d",
+		url.PathEscape(d.amdpMain), url.PathEscape(debuggeeID), url.PathEscape(name), amdpVariableWindow)
 	res, err := d.ADT(ctx, "GET", uri, []ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
 	if err != nil {
 		return nil, err
@@ -387,6 +402,66 @@ func (d *Debugger) AMDPVariable(ctx context.Context, debuggeeID, name string) (*
 		return res, adtError("amdp variable "+name, res)
 	}
 	return res, nil
+}
+
+// AMDPReadVariable asks for a variable's value and waits for it.
+//
+// The read is asynchronous, which the empty answer does not advertise.
+// CL_AMDP_DBG_ADT_RES_VARS calls get_scalar_values and puts the resulting
+// request id in the Location header, leaving the body empty — so a caller that
+// reads the body sees nothing and concludes the variable has no value, or does
+// not exist. It is the queue again, one level further down: every operation
+// here is a command, and its result arrives through the main response list
+// keyed by that request id.
+func (d *Debugger) AMDPReadVariable(ctx context.Context, debuggeeID, name string, maxEvents int) (*ADTResponse, error) {
+	asked, err := d.AMDPVariable(ctx, debuggeeID, name)
+	if err != nil {
+		return nil, err
+	}
+	requestID := strings.TrimSpace(asked.Header("location"))
+	if requestID == "" {
+		return nil, fmt.Errorf("reading %s was accepted without a request id, so there is nothing to wait for", name)
+	}
+	return d.AMDPAwaitRequest(ctx, requestID, maxEvents)
+}
+
+// AMDPAwaitRequest resumes until the answer to one request comes back.
+//
+// Answers to other requests, and the acknowledgements that always lead, are
+// walked past rather than returned: a caller waiting for a variable must not be
+// handed the queue's next item and told it is the value.
+func (d *Debugger) AMDPAwaitRequest(ctx context.Context, requestID string, maxEvents int) (*ADTResponse, error) {
+	if maxEvents <= 0 {
+		maxEvents = 12
+	}
+	for i := 0; i < maxEvents; i++ {
+		res, err := d.AMDPResume(ctx)
+		if err != nil {
+			return res, err
+		}
+		if amdpAnswers(res.Body, requestID) {
+			return res, nil
+		}
+	}
+	return nil, fmt.Errorf("no answer to request %s within %d events", requestID, maxEvents)
+}
+
+// amdpAnswers reports whether one of the responses carries this request id.
+func amdpAnswers(body []byte, requestID string) bool {
+	var doc struct {
+		Responses []struct {
+			RequestID string `xml:"requestId,attr"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return false
+	}
+	for _, r := range doc.Responses {
+		if strings.TrimSpace(r.RequestID) == requestID {
+			return true
+		}
+	}
+	return false
 }
 
 // AMDPPosition is where a stopped debuggee is.
@@ -483,4 +558,71 @@ func (d *Debugger) AMDPTrace(ctx context.Context, debuggeeID string, maxSteps in
 		}
 	}
 	return stops, nil
+}
+
+// AMDPScalar is one variable of a stopped SQLScript, as SAP reports it.
+type AMDPScalar struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Value is what the window asked for. OriginalLength says how long the
+	// whole thing is, so a caller can tell a complete value from a first page —
+	// without it, a truncated string reads as the value itself.
+	Value          string `json:"value"`
+	Length         int    `json:"length"`
+	OriginalLength int    `json:"originalLength"`
+	IsNull         bool   `json:"isNull"`
+}
+
+// Truncated reports whether more of the value exists than was returned.
+func (s AMDPScalar) Truncated() bool {
+	return s.OriginalLength > s.Length
+}
+
+// AMDPScalarValues reads the variables out of a GET_SCALAR_VALUES answer.
+func AMDPScalarValues(body []byte) []AMDPScalar {
+	var doc struct {
+		Responses []struct {
+			Value struct {
+				Scalars []struct {
+					Name           string `xml:"name,attr"`
+					Type           string `xml:"type,attr"`
+					IsNull         string `xml:"isNullValue,attr"`
+					Length         int    `xml:"length,attr"`
+					OriginalLength int    `xml:"originalLength,attr"`
+					Text           string `xml:",chardata"`
+				} `xml:"scalarValues>scalarValue"`
+			} `xml:"value"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+	var out []AMDPScalar
+	for _, r := range doc.Responses {
+		for _, sc := range r.Value.Scalars {
+			out = append(out, AMDPScalar{
+				Name:           sc.Name,
+				Type:           sc.Type,
+				Value:          sc.Text,
+				Length:         sc.Length,
+				OriginalLength: sc.OriginalLength,
+				IsNull:         strings.EqualFold(strings.TrimSpace(sc.IsNull), "true"),
+			})
+		}
+	}
+	return out
+}
+
+// FormatAMDPScalar renders one variable for a person.
+func FormatAMDPScalar(s AMDPScalar) string {
+	if s.IsNull {
+		return fmt.Sprintf("%-24s %-12s NULL", s.Name, s.Type)
+	}
+	line := fmt.Sprintf("%-24s %-12s %s", s.Name, s.Type, s.Value)
+	if s.Truncated() {
+		// Said outright, because a value cut at the window boundary is
+		// indistinguishable from a short one otherwise.
+		line += fmt.Sprintf("  … %d of %d characters", s.Length, s.OriginalLength)
+	}
+	return line
 }

@@ -557,11 +557,20 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		if arg(1) == "" {
 			return fmt.Errorf("usage: avar <NAME> — a variable of the stopped SQLScript")
 		}
-		res, aerr := dbg.AMDPVariable(ctx, amdpDebuggee, arg(1))
+		res, aerr := dbg.AMDPReadVariable(ctx, amdpDebuggee, arg(1), num(2))
 		if aerr != nil {
 			return aerr
 		}
-		fmt.Println(string(res.Body))
+		values := saprfc.AMDPScalarValues(res.Body)
+		if len(values) == 0 {
+			// The answer came back and named nothing, which is not the same as
+			// a variable that is not in scope — say which happened.
+			fmt.Fprintf(os.Stderr, "the debuggee answered about %s without a value\n", strings.ToUpper(arg(1)))
+			return nil
+		}
+		for _, v := range values {
+			fmt.Println(saprfc.FormatAMDPScalar(v))
+		}
 		return nil
 	case "astop":
 		if aerr := dbg.AMDPTerminate(ctx, true); aerr != nil {
