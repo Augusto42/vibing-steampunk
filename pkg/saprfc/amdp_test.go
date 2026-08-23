@@ -293,3 +293,81 @@ func TestNullIsNotEmpty(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+const amdpStopWithVariables = `<amdpdbg:mainResponseList xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger">` +
+	`<amdpdbg:mainResponse amdpdbg:kind="ON_BREAK" amdpdbg:debuggeeId="d"><amdpdbg:value>` +
+	`<amdpdbg:abapPosition amdpdbg:procedureName="ZCL_DEMO=&gt;CALC" adtcore:uri="x#start=45"/>` +
+	`<amdpdbg:variables>` +
+	`<amdpdbg:variable amdpdbg:scope="system" amdpdbg:name="::ROWCOUNT" amdpdbg:type="BIGINT" ` +
+	`amdpdbg:isNullValue="false" amdpdbg:tableHandle="0" amdpdbg:tableLength="0"/>` +
+	`<amdpdbg:variable amdpdbg:scope="output" amdpdbg:name="ET_RESULT" amdpdbg:type="table" ` +
+	`amdpdbg:isNullValue="false" amdpdbg:tableHandle="3000001" amdpdbg:tableLength="5"/>` +
+	`<amdpdbg:variable amdpdbg:scope="local" amdpdbg:name="LV_VALUE" amdpdbg:type="NVARCHAR(100)" ` +
+	`amdpdbg:isNullValue="true" amdpdbg:tableHandle="0" amdpdbg:tableLength="0"/>` +
+	`</amdpdbg:variables></amdpdbg:value></amdpdbg:mainResponse></amdpdbg:mainResponseList>`
+
+// The stop describes the whole scope, so finding out what is there costs no
+// request at all. Asking the variable resource one name at a time is for values
+// that changed since, not for discovery.
+func TestTheStopCarriesTheWholeScope(t *testing.T) {
+	vars := AMDPVariablesAtStop([]byte(amdpStopWithVariables))
+	if len(vars) != 3 {
+		t.Fatalf("expected three variables, got %d", len(vars))
+	}
+	byName := map[string]AMDPVariableInfo{}
+	for _, v := range vars {
+		byName[v.Name] = v
+	}
+	if byName["IV_MISSING"].Name != "" {
+		t.Fatal("nothing should be invented")
+	}
+	if byName["ET_RESULT"].Scope != "output" || byName["LV_VALUE"].Scope != "local" {
+		t.Fatalf("scopes read as %+v", vars)
+	}
+	if !byName["LV_VALUE"].IsNull {
+		t.Fatal("LV_VALUE is null at this stop")
+	}
+}
+
+// A table is told from a scalar by its handle, not by its type string — the
+// type of a table is the literal word "table", which carries nothing else.
+func TestATableIsRecognisedByItsHandle(t *testing.T) {
+	vars := AMDPVariablesAtStop([]byte(amdpStopWithVariables))
+	for _, v := range vars {
+		switch v.Name {
+		case "ET_RESULT":
+			if !v.IsTable() {
+				t.Fatal("handle 3000001 means a table")
+			}
+			if v.TableLength != 5 {
+				t.Fatalf("row count is %d", v.TableLength)
+			}
+		default:
+			if v.IsTable() {
+				t.Fatalf("%s has handle %q and is not a table", v.Name, v.TableHandle)
+			}
+		}
+	}
+}
+
+// The row count is what a reader wants from a table here, and the handle is
+// what any deeper read will need, so both are shown rather than the useless
+// type word.
+func TestATableRendersItsSizeAndHandle(t *testing.T) {
+	table := AMDPVariableInfo{Scope: "output", Name: "ET_RESULT", Type: "table",
+		TableHandle: "3000001", TableLength: 5}
+	got := FormatAMDPVariableInfo(table)
+	if !strings.Contains(got, "table[5]") || !strings.Contains(got, "3000001") {
+		t.Fatalf("got %q", got)
+	}
+	null := AMDPVariableInfo{Scope: "local", Name: "LV_VALUE", Type: "NVARCHAR(100)", IsNull: true}
+	if got := FormatAMDPVariableInfo(null); !strings.Contains(got, "NULL") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAStopWithNoVariablesIsNotAnError(t *testing.T) {
+	if vars := AMDPVariablesAtStop([]byte(amdpBreakDocument)); len(vars) != 0 {
+		t.Fatalf("that stop carries no variables, got %+v", vars)
+	}
+}

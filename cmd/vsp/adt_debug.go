@@ -56,6 +56,7 @@ function group — those are function modules and need an RFC channel:
   aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
   astep [over|continue] step the stopped AMDP debuggee
   atrace [MAX]       walk the stopped AMDP program, one JSON object per line
+  alocals [all]      everything in scope at the stop, from the stop itself
   avar <NAME>        read a variable of the stopped SQLScript
   astop              end the AMDP session
   erec [MAX]         record from here: one JSON object per stop

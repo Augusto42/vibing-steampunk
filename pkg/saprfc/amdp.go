@@ -694,3 +694,79 @@ func (d *Debugger) AMDPTableRows(ctx context.Context, session *AMDPSession, debu
 	}
 	return res, nil
 }
+
+// AMDPVariableInfo is one variable as the stop event describes it.
+//
+// The stop already carries every variable in scope — name, type, scope,
+// nullness and, for a table, its handle. Nothing had to be asked for. That is
+// worth knowing before reaching for the variable resource: reading one at a
+// time is for values that changed since the stop, not for finding out what is
+// there.
+type AMDPVariableInfo struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Scope is system, input, output or local. The system ones are HANA's own
+	// (::ROWCOUNT and friends) and are usually noise.
+	Scope  string `json:"scope"`
+	IsNull bool   `json:"isNull"`
+	// TableHandle is non-zero for a table-valued variable and zero for a
+	// scalar, which is how the two are told apart.
+	TableHandle string `json:"tableHandle,omitempty"`
+	TableLength int    `json:"tableLength,omitempty"`
+	IsTrimmed   bool   `json:"isTrimmed,omitempty"`
+}
+
+// IsTable reports whether this variable holds a table rather than a scalar.
+func (v AMDPVariableInfo) IsTable() bool {
+	return v.TableHandle != "" && v.TableHandle != "0"
+}
+
+// AMDPVariablesAtStop reads the variables a stop event carries.
+func AMDPVariablesAtStop(body []byte) []AMDPVariableInfo {
+	var doc struct {
+		Responses []struct {
+			Value struct {
+				Variables []struct {
+					Name        string `xml:"name,attr"`
+					Type        string `xml:"type,attr"`
+					Scope       string `xml:"scope,attr"`
+					IsNull      string `xml:"isNullValue,attr"`
+					TableHandle string `xml:"tableHandle,attr"`
+					TableLength int    `xml:"tableLength,attr"`
+					IsTrimmed   string `xml:"isTrimmed,attr"`
+				} `xml:"variables>variable"`
+			} `xml:"value"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+	var out []AMDPVariableInfo
+	for _, r := range doc.Responses {
+		for _, v := range r.Value.Variables {
+			out = append(out, AMDPVariableInfo{
+				Name:        v.Name,
+				Type:        v.Type,
+				Scope:       v.Scope,
+				IsNull:      strings.EqualFold(strings.TrimSpace(v.IsNull), "true"),
+				TableHandle: strings.TrimSpace(v.TableHandle),
+				TableLength: v.TableLength,
+				IsTrimmed:   strings.EqualFold(strings.TrimSpace(v.IsTrimmed), "true"),
+			})
+		}
+	}
+	return out
+}
+
+// FormatAMDPVariableInfo renders one variable of a stopped procedure.
+func FormatAMDPVariableInfo(v AMDPVariableInfo) string {
+	what := v.Type
+	if v.IsTable() {
+		// The row count is the useful part of a table here, and the handle is
+		// what any deeper read will need.
+		what = fmt.Sprintf("table[%d] handle %s", v.TableLength, v.TableHandle)
+	} else if v.IsNull {
+		what += " = NULL"
+	}
+	return fmt.Sprintf("%-8s %-26s %s", v.Scope, v.Name, what)
+}

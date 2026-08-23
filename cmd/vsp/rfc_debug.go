@@ -67,6 +67,7 @@ semicolon-separated script and exits. Commands:
   aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
   astep [over|continue] step the stopped AMDP debuggee
   atrace [MAX]       walk the stopped AMDP program, one JSON object per line
+  alocals [all]      everything in scope at the stop, from the stop itself
   avar <NAME>        read a variable of the stopped SQLScript
   astop              end the AMDP session
   erec [MAX]         record from here: one JSON object per stop, stepping over
@@ -131,6 +132,10 @@ var amdpDebuggee string
 // table-valued variables lives outside the debugger and needs the whole
 // address, including the HANA session id that only the start call hands out.
 var amdpSession *saprfc.AMDPSession
+
+// amdpStopBody is the last stop event, kept because it describes the whole
+// scope and nothing else will hand that over a second time.
+var amdpStopBody []byte
 
 const adtTerminalID = "56535000000000000000000000006462"
 
@@ -507,6 +512,10 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 	case "aresume":
 		res, aerr := dbg.AMDPAwaitStop(ctx, num(1))
 		if res != nil {
+			// Kept whole: the stop carries the variables and the call stack,
+			// and asking again for what it already said would be a request
+			// spent on nothing.
+			amdpStopBody = res.Body
 			if pos := saprfc.AMDPStopPosition(res.Body); pos != nil {
 				// Kept so astep and avar have something to address: every
 				// resource below the session is per debuggee, and the id
@@ -576,6 +585,25 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		}
 		for _, v := range values {
 			fmt.Println(saprfc.FormatAMDPScalar(v))
+		}
+		return nil
+	case "alocals":
+		// Everything in scope, from the stop itself: no request, because the
+		// stop already said it.
+		if amdpStopBody == nil {
+			return fmt.Errorf("nothing has stopped yet, so there is no scope to show")
+		}
+		vars := saprfc.AMDPVariablesAtStop(amdpStopBody)
+		if len(vars) == 0 {
+			fmt.Fprintln(os.Stderr, "the stop named no variables")
+			return nil
+		}
+		showSystem := strings.EqualFold(arg(1), "all")
+		for _, v := range vars {
+			if !showSystem && v.Scope == "system" {
+				continue
+			}
+			fmt.Println(saprfc.FormatAMDPVariableInfo(v))
 		}
 		return nil
 	case "atable":
