@@ -174,7 +174,7 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 			answer["note"] = emptyWhereUsedNote
 		}
 	case "callees":
-		callees, err := s.adtClient.Callees(ctx, objectURI)
+		callees, gaps, err := s.adtClient.Callees(ctx, objectURI)
 		if err != nil {
 			// Unwrapped: these errors already name the object, and a second
 			// sentence around them reads as two different failures.
@@ -182,12 +182,28 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 		}
 		answer["source"] = sourceCrossReference
 		answer["total"] = len(callees)
+		if len(gaps) > 0 {
+			// One of the two tables answered and the other did not. The list
+			// below is real but short, and "total" would otherwise read as the
+			// whole truth — so name the table that is missing from it.
+			answer["unsearched"] = gaps
+			answer["gap"] = adt.UnsearchedNote(gaps, 2, "cross-reference table")
+		}
 		if len(callees) > limit {
 			callees = callees[:limit]
 		}
 		answer["callees"] = callees
 		if len(callees) == 0 {
 			answer["note"] = emptyCalleesNote
+			if n := s.adtClient.InactiveReferenceCount(ctx, objectURI); n > 0 {
+				// The empty note lists three readings; this decides between
+				// them, so it replaces rather than accompanies it.
+				answer["note"] = fmt.Sprintf("No row for this object's includes, but %d are "+
+					"recorded against an inactive version of it, in the index SAP keeps for "+
+					"objects with unactivated changes. This object does reference things; the "+
+					"version activated on this system does not.", n)
+				answer["inactive_references"] = n
+			}
 		} else {
 			answer["caveat"] = calleeCaveat
 		}

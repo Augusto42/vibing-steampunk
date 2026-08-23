@@ -915,12 +915,26 @@ func runGraph(cmd *cobra.Command, args []string) error {
 // by include and a second hop means a fresh pair of queries per child, for an
 // answer that gets less useful the wider it grows.
 func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objType string) error {
-	callees, err := client.Callees(ctx, objURI)
+	callees, gaps, err := client.Callees(ctx, objURI)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n\nFalling back to a plain table scan.\n\n", err)
 		return graphFromCross(ctx, client, name, objType, "callees")
 	}
+	if note := adt.UnsearchedNote(gaps, 2, "cross-reference table"); note != "" {
+		// Printed before the rows, not after: a reader who sees a plausible
+		// table first has already drawn the conclusion by the time a footnote
+		// tells them it was partial.
+		fmt.Printf("  %s\n\n", note)
+	}
 	if len(callees) == 0 {
+		if n := client.InactiveReferenceCount(ctx, objURI); n > 0 {
+			// One of the three readings below, decided rather than listed.
+			fmt.Printf("  No row for this object's includes — but %d are recorded "+
+				"against an inactive version of it, in the index SAP keeps for "+
+				"objects with unactivated changes. So this object does reference "+
+				"things; the version that was activated here does not.\n", n)
+			return nil
+		}
 		// Empty here is often true. The tables record global types, classes,
 		// methods and external calls; a class doing only local work has no
 		// row, and neither has a routine that calls nothing outside its own
@@ -984,14 +998,30 @@ func graphFromCross(ctx context.Context, client *adt.Client, name, objType, dire
 		}
 	}
 
-	// Execute all queries and merge
+	// Execute all queries and merge.
+	//
+	// The rows are collected before anything is printed, so a query that failed
+	// can be reported ahead of them. This used to skip failures silently, and
+	// this is the *fallback* path — reached when the good reader has already
+	// failed — so a second silent failure here left the object looking as if it
+	// referenced nothing at all.
 	seen := map[string]bool{}
+	var found []string
+	var gaps []adt.Unsearched
 	for _, sql := range queries {
 		result, err := client.RunQuery(ctx, sql, 200)
-		if err != nil {
-			continue // skip failed queries silently
-		}
-		if result == nil {
+		if err != nil || result == nil {
+			table := "cross-reference table"
+			for _, t := range []string{"WBCROSSGT", "CROSS"} {
+				if strings.Contains(sql, " FROM "+t+" ") {
+					table = t
+				}
+			}
+			reason := "the query returned nothing at all"
+			if err != nil {
+				reason = err.Error()
+			}
+			gaps = append(gaps, adt.Unsearched{Object: table, Reason: reason})
 			continue
 		}
 		for _, row := range result.Rows {
@@ -1010,9 +1040,16 @@ func graphFromCross(ctx context.Context, client *adt.Client, name, objType, dire
 			}
 			if key != "" && key != name && !seen[key] {
 				seen[key] = true
-				fmt.Printf("  %s\n", key)
+				found = append(found, key)
 			}
 		}
+	}
+
+	if note := adt.UnsearchedNote(gaps, len(queries), "query"); note != "" {
+		fmt.Printf("  %s\n\n", note)
+	}
+	for _, key := range found {
+		fmt.Printf("  %s\n", key)
 	}
 
 	if len(seen) == 0 {
@@ -1593,13 +1630,18 @@ func runSlim(cmd *cobra.Command, args []string) error {
 				classNames = append(classNames, obj.Name)
 			}
 		}
+		var uninspected []adt.Unsearched
 		if len(classNames) > 0 {
 			fmt.Fprintf(os.Stderr, "Fetching class structures (%d classes)...\n", len(classNames))
 			for i, cls := range classNames {
 				fmt.Fprintf(os.Stderr, "\r  [%d/%d] %-40s", i+1, len(classNames), cls)
 				structure, err := client.GetClassObjectStructure(ctx, cls)
 				if err != nil {
-					continue // skip classes we can't inspect
+					// A class whose structure will not load keeps its entry and
+					// gets no methods, which is indistinguishable from a class
+					// that has none — and this report is about what is unused.
+					uninspected = append(uninspected, adt.Unsearched{Object: "CLAS " + cls, Reason: err.Error()})
+					continue
 				}
 				methods := structure.GetMethods()
 				var methodNames []string
@@ -1617,6 +1659,9 @@ func runSlim(cmd *cobra.Command, args []string) error {
 				}
 			}
 			fmt.Fprintf(os.Stderr, "\r\n")
+		}
+		if note := adt.UnsearchedNote(uninspected, len(classNames), "class"); note != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", note)
 		}
 	}
 
@@ -1833,9 +1878,18 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	// Step 2: Fetch source for each caller
 	fmt.Fprintf(os.Stderr, "Fetching source for %d callers...\n", len(callerNames))
 	var callers []graph.CallerSource
+	var unread []adt.Unsearched
 	for _, c := range callerNames {
 		source, err := client.GetSource(ctx, c.objType, c.name, nil)
 		if err != nil || source == "" {
+			// It still called the target; only the snippet is missing. Dropping
+			// it silently makes the example list look like the whole of the
+			// usage rather than the part that could be shown.
+			reason := "the source came back empty"
+			if err != nil {
+				reason = err.Error()
+			}
+			unread = append(unread, adt.Unsearched{Object: c.objType + " " + c.name, Reason: reason})
 			continue
 		}
 		isTest := graph.IsTestCaller(c.name, "")
@@ -1847,6 +1901,10 @@ func runExamples(cmd *cobra.Command, args []string) error {
 			IsTest:  isTest,
 			Source:  source,
 		})
+	}
+
+	if note := adt.UnsearchedNote(unread, len(callerNames), "caller"); note != "" {
+		fmt.Fprintf(os.Stderr, "%s\n", note)
 	}
 
 	// Step 3: Extract examples

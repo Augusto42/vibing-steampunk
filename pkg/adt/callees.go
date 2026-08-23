@@ -70,14 +70,20 @@ type calleeTarget struct {
 // buys breadth and breadth here is a liability: two hops out of any class in a
 // real system reaches most of the system, and an answer that includes
 // everything says nothing.
-func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, error) {
+// The two tables are read independently and either can fail on its own. A
+// half-read answer is the dangerous case: CROSS is the only place a call to a
+// function module appears, so losing it turns "I could not read CROSS" into the
+// confident and wrong "this object calls no function modules". The gaps are
+// returned alongside the rows for the same reason Unsearched exists — a result
+// that could not look everywhere says so, and names what it missed.
+func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, []Unsearched, error) {
 	target, err := calleeTargetFromURI(objectURI)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	predicate, err := c.includePredicate(ctx, target)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var out []Callee
@@ -88,11 +94,31 @@ func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, error
 	// object's own doing; an INDIRECT row is a type implied by a type it did
 	// name, and reporting those makes every class look like it depends on half
 	// of DDIC.
+	var gaps []Unsearched
 	wb, wbErr := c.RunQuery(ctx,
 		"SELECT INCLUDE, OTYPE, NAME, DIRECT FROM WBCROSSGT WHERE "+predicate, calleeRowLimit)
 	if wbErr != nil {
 		failures = append(failures, fmt.Errorf("WBCROSSGT: %w", wbErr))
+		gaps = append(gaps, Unsearched{Object: "WBCROSSGT", Reason: wbErr.Error()})
 	} else if wb != nil {
+		// A name too long for WBCROSSGT's NAME column is stored there as a
+		// hash. Decode before the rows are read as names, and drop the ones
+		// that could not be decoded rather than reporting forty hex characters
+		// as the thing this object references — the gap says so instead.
+		if lost := c.ResolveLongNames(ctx, wb.Rows); len(lost) > 0 {
+			gaps = append(gaps, lost...)
+			failed := make(map[string]bool, len(lost))
+			for _, l := range lost {
+				failed[l.Object] = true
+			}
+			kept := wb.Rows[:0]
+			for _, row := range wb.Rows {
+				if !failed[strings.ToUpper(rowString(row, "NAME"))] {
+					kept = append(kept, row)
+				}
+			}
+			wb.Rows = kept
+		}
 		out = append(out, wbCrossCallees(wb.Rows, target)...)
 	}
 
@@ -103,20 +129,61 @@ func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, error
 		"SELECT INCLUDE, TYPE, NAME, PROG FROM CROSS WHERE "+predicate, calleeRowLimit)
 	if crossErr != nil {
 		failures = append(failures, fmt.Errorf("CROSS: %w", crossErr))
+		gaps = append(gaps, Unsearched{Object: "CROSS", Reason: crossErr.Error()})
 	} else if cross != nil {
 		out = append(out, crossCallees(cross.Rows, target)...)
 	}
 
+	// An empty answer has one more reading, and it is one this can settle
+	// rather than list. WBCROSSGTI is the same index for objects that have
+	// unactivated changes — "Index Global Types for Inactive Objects Where-Used
+	// List" in SAP's own words — and per object the two are disjoint: a class
+	// with only an active version has its rows in WBCROSSGT and none here, and
+	// a program with unactivated changes has the reverse. So an object that
+	// looks like it references nothing may simply have its references filed
+	// against a version this reader does not look at, and saying which is worth
+	// one query — asked only when the answer is empty, which is the only time
+	// it changes anything.
 	// A query that failed and a query that returned nothing look identical
 	// once the rows are merged, and they mean opposite things. Only an empty
 	// answer that no failure could explain is reported as an empty answer.
 	if len(out) == 0 && len(failures) > 0 {
-		return nil, fmt.Errorf("the cross-reference tables could not be read for %s (%s); "+
+		return nil, gaps, fmt.Errorf("the cross-reference tables could not be read for %s (%s); "+
 			"callees are read from CROSS and WBCROSSGT over free SQL, so this answers nothing "+
 			"if free SQL is blocked or the user may not read those tables", objectURI, joinErrors(failures))
 	}
 
-	return mergeCallees(out), nil
+	return mergeCallees(out), gaps, nil
+}
+
+// InactiveReferenceCount answers the one question an empty callee list cannot
+// answer about itself.
+//
+// WBCROSSGTI is the same index for objects carrying unactivated changes — SAP
+// calls it "Index Global Types for Inactive Objects Where-Used List" — and per
+// object the two are disjoint: a class with only an active version has its rows
+// in WBCROSSGT and none here; a program edited and not activated has the
+// reverse. So "no rows" has a reading that used to be listed as a possibility
+// and can instead be decided.
+//
+// It is only worth asking when the list is empty, which is why it is a separate
+// call rather than a second query on every lookup. Its own failure returns
+// zero: a probe that cannot run leaves the empty answer exactly as ambiguous as
+// it already was, and a caveat about a caveat helps nobody.
+func (c *Client) InactiveReferenceCount(ctx context.Context, objectURI string) int {
+	target, err := calleeTargetFromURI(objectURI)
+	if err != nil {
+		return 0
+	}
+	predicate, err := c.includePredicate(ctx, target)
+	if err != nil {
+		return 0
+	}
+	res, err := c.RunQuery(ctx, "SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGTI WHERE "+predicate, calleeRowLimit)
+	if err != nil || res == nil {
+		return 0
+	}
+	return len(res.Rows)
 }
 
 // calleeRowLimit caps each table query. A class with more references than this
@@ -573,10 +640,11 @@ func (c *Client) CallGraph(ctx context.Context, objectURI string, opts *CallGrap
 			})
 		}
 	case "callees":
-		callees, err := c.Callees(ctx, objectURI)
+		callees, gaps, err := c.Callees(ctx, objectURI)
 		if err != nil {
 			return nil, err
 		}
+		root.Unsearched = gaps
 		for _, callee := range callees {
 			if opts.MaxResults > 0 && len(root.Children) >= opts.MaxResults {
 				break

@@ -78,8 +78,8 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 		}
 
 		report := g.CheckBoundaries(pkg, &graph.BoundaryOptions{
-			Whitelist:      whitelist,
-			IncludeDynamic: true,
+			Whitelist:       whitelist,
+			IncludeDynamic:  true,
 			IncludeStandard: format == "full",
 		})
 
@@ -127,8 +127,8 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 		}
 
 		report := g.CheckBoundaries(objPkg, &graph.BoundaryOptions{
-			Whitelist:      whitelist,
-			IncludeDynamic: true,
+			Whitelist:       whitelist,
+			IncludeDynamic:  true,
 			IncludeStandard: format == "full",
 		})
 
@@ -200,8 +200,8 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 		missed := s.resolvePackages(ctx, g)
 
 		report := g.CheckBoundaries(strings.ToUpper(pkg), &graph.BoundaryOptions{
-			Whitelist:      whitelist,
-			IncludeDynamic: true,
+			Whitelist:       whitelist,
+			IncludeDynamic:  true,
 			IncludeStandard: format == "full",
 		})
 
@@ -269,7 +269,7 @@ func (s *Server) resolvePackages(ctx context.Context, g *graph.Graph) []adt.Unse
 		}
 	}
 	if len(unresolved) > 0 {
-		resolveFMviaTFDIR(ctx, s.adtClient, unresolved, nodesByName)
+		missed = append(missed, resolveFMviaTFDIR(ctx, s.adtClient, unresolved, nodesByName)...)
 	}
 	return missed
 }
@@ -321,7 +321,8 @@ func resolveTADIR(ctx context.Context, client *adt.Client, names []string, nodes
 // resolveFMviaTFDIR resolves function modules that aren't in TADIR as R3TR objects.
 // Strategy: TFDIR.FUNCNAME → TFDIR.PNAME (e.g., "SAPLZFUGR") → extract FUGR name
 // → TADIR lookup for the FUGR to get DEVCLASS.
-func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) {
+func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) []adt.Unsearched {
+	var unresolved []adt.Unsearched
 	fugrSet := make(map[string]bool)
 	fmToFugr := make(map[string]string)
 
@@ -339,6 +340,13 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 		query := fmt.Sprintf("SELECT FUNCNAME, PNAME FROM TFDIR WHERE FUNCNAME IN (%s)", strings.Join(quoted, ","))
 		result, err := client.RunQuery(ctx, query, len(batch)*2)
 		if err != nil || result == nil {
+			// A module whose group cannot be looked up keeps its node and
+			// loses its containment. It then sits in the graph belonging to
+			// nothing, which a boundary check reads as a crossing that is not
+			// there — or misses one that is.
+			for _, n := range batch {
+				unresolved = append(unresolved, adt.Unsearched{Object: "FUNC " + n, Reason: errText(err)})
+			}
 			continue
 		}
 		for _, row := range result.Rows {
@@ -358,7 +366,7 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 	}
 
 	if len(fugrSet) == 0 {
-		return
+		return unresolved
 	}
 
 	// TADIR lookup for the function groups
@@ -369,7 +377,13 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 	fugrQuery := fmt.Sprintf("SELECT obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND object = 'FUGR' AND obj_name IN (%s)", strings.Join(fugrQuoted, ","))
 	fugrResult, err := client.RunQuery(ctx, fugrQuery, len(fugrSet)*2)
 	if err != nil || fugrResult == nil {
-		return
+		// The groups were found and their packages were not. Every module
+		// behind them keeps a group and loses a package, which is the same
+		// unlabelled node reached by a different route.
+		for fg := range fugrSet {
+			unresolved = append(unresolved, adt.Unsearched{Object: "FUGR " + fg, Reason: errText(err)})
+		}
+		return unresolved
 	}
 
 	fugrPkg := make(map[string]string) // FUGR name → DEVCLASS
@@ -390,6 +404,7 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 			}
 		}
 	}
+	return unresolved
 }
 
 // handleGraphStats returns statistics about the current in-memory graph.
@@ -741,8 +756,9 @@ func (s *Server) handleImpact(ctx context.Context, request mcp.CallToolRequest) 
 	}
 
 	// Optional: parser-based source augmentation
+	var unread []adt.Unsearched
 	if includeSourceAnalysis {
-		s.augmentGraphWithParser(ctx, g)
+		unread = append(unread, s.augmentGraphWithParser(ctx, g)...)
 	}
 
 	// Optional: co-change augmentation via transport history
@@ -760,8 +776,10 @@ func (s *Server) handleImpact(ctx context.Context, request mcp.CallToolRequest) 
 	}
 	result := graph.Impact(g, targetNodeID, opts)
 
-	// Enrich with package info
-	s.resolvePackages(ctx, g)
+	// Enrich with package info. resolvePackages was built to report what it
+	// could not resolve and its answer used to be discarded here, so an entry
+	// with no package read as an object that has none.
+	unread = append(unread, s.resolvePackages(ctx, g)...)
 	// Re-read package info into results after resolution
 	for i, entry := range result.Entries {
 		if n := g.GetNode(entry.NodeID); n != nil && n.Package != "" {
@@ -769,7 +787,17 @@ func (s *Server) handleImpact(ctx context.Context, request mcp.CallToolRequest) 
 		}
 	}
 
-	data, err := json.MarshalIndent(result, "", "  ")
+	answer := struct {
+		*graph.ImpactResult
+		Unsearched []adt.Unsearched `json:"unsearched,omitempty"`
+		Gap        string           `json:"gap,omitempty"`
+	}{ImpactResult: result}
+	if len(unread) > 0 {
+		answer.Unsearched = unread
+		answer.Gap = adt.UnsearchedNote(unread, len(result.Entries)+len(unread), "object")
+	}
+
+	data, err := json.MarshalIndent(answer, "", "  ")
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("JSON marshal error: %v", err)), nil
 	}
@@ -787,7 +815,7 @@ func (s *Server) handleImpact(ctx context.Context, request mcp.CallToolRequest) 
 // Parser edges are additive: they never remove or contradict CROSS/WBCROSSGT edges.
 // New target nodes discovered by the parser are added to the graph but do NOT
 // trigger further CROSS/WBCROSSGT expansion (that's the backbone's job).
-func (s *Server) augmentGraphWithParser(ctx context.Context, g *graph.Graph) {
+func (s *Server) augmentGraphWithParser(ctx context.Context, g *graph.Graph) []adt.Unsearched {
 	// Collect source-bearing nodes already in the graph
 	type sourceTarget struct {
 		nodeID  string
@@ -795,6 +823,7 @@ func (s *Server) augmentGraphWithParser(ctx context.Context, g *graph.Graph) {
 		objName string
 	}
 	var targets []sourceTarget
+	var unread []adt.Unsearched
 
 	for _, n := range g.Nodes() {
 		switch n.Type {
@@ -819,7 +848,13 @@ func (s *Server) augmentGraphWithParser(ctx context.Context, g *graph.Graph) {
 		// Fetch source via GetSource with explicit type for correct dispatch
 		source, err := s.adtClient.GetSource(ctx, t.objType, t.objName, nil)
 		if err != nil || source == "" {
-			continue // best effort — skip unreadable objects
+			// Best effort, but not silent. This is the pass that finds what the
+			// cross-reference tables miss, so an object whose source will not
+			// load ends up looking like an object that depends on nothing —
+			// and that is how a boundary report comes back clean about code
+			// nobody read.
+			unread = append(unread, adt.Unsearched{Object: t.objType + " " + t.objName, Reason: errText(err)})
+			continue
 		}
 
 		// Extract static deps
@@ -849,6 +884,7 @@ func (s *Server) augmentGraphWithParser(ctx context.Context, g *graph.Graph) {
 			g.AddEdge(e)
 		}
 	}
+	return unread
 }
 
 // augmentGraphWithCoChange merges transport-based co-change data into an existing
@@ -1079,10 +1115,11 @@ func (s *Server) handleWhereUsedConfig(ctx context.Context, request mcp.CallTool
 
 // handleUsageExamples returns concrete caller snippets for a target object.
 // MCP examples:
-//   SAP(action="analyze", params={"type":"usage_examples","object_type":"FUNC","object_name":"Z_MY_FM"})
-//   SAP(action="analyze", params={"type":"usage_examples","object_type":"CLAS","object_name":"ZCL_API","method":"GET_DATA"})
-//   SAP(action="analyze", params={"type":"usage_examples","object_type":"PROG","object_name":"ZLEGACY","form":"BUILD_OUTPUT"})
-//   SAP(action="analyze", params={"type":"usage_examples","object_type":"PROG","object_name":"ZBATCH_RUN","submit":true})
+//
+//	SAP(action="analyze", params={"type":"usage_examples","object_type":"FUNC","object_name":"Z_MY_FM"})
+//	SAP(action="analyze", params={"type":"usage_examples","object_type":"CLAS","object_name":"ZCL_API","method":"GET_DATA"})
+//	SAP(action="analyze", params={"type":"usage_examples","object_type":"PROG","object_name":"ZLEGACY","form":"BUILD_OUTPUT"})
+//	SAP(action="analyze", params={"type":"usage_examples","object_type":"PROG","object_name":"ZBATCH_RUN","submit":true})
 func (s *Server) handleUsageExamples(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
 	target, err := usageTargetFromArgs(args)
@@ -1098,7 +1135,7 @@ func (s *Server) handleUsageExamples(ctx context.Context, request mcp.CallToolRe
 		topN = int(t)
 	}
 
-	callers, err := s.fetchUsageCallerSources(ctx, target, topN)
+	callers, gaps, err := s.fetchUsageCallerSources(ctx, target, topN)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("usage_examples failed: %v", err)), nil
 	}
@@ -1106,7 +1143,19 @@ func (s *Server) handleUsageExamples(ctx context.Context, request mcp.CallToolRe
 	result := graph.FindUsageExamples(target, callers, topN)
 	s.backfillUsagePackages(ctx, callers, result)
 
-	data, err := json.MarshalIndent(result, "", "  ")
+	// Embedded, so an answer with nothing missing marshals exactly as before
+	// and one with something missing cannot be read as complete.
+	answer := struct {
+		*graph.UsageExamplesResult
+		Unsearched []adt.Unsearched `json:"unsearched,omitempty"`
+		Gap        string           `json:"gap,omitempty"`
+	}{UsageExamplesResult: result}
+	if len(gaps) > 0 {
+		answer.Unsearched = gaps
+		answer.Gap = adt.UnsearchedNote(gaps, len(callers)+len(gaps), "possible caller")
+	}
+
+	data, err := json.MarshalIndent(answer, "", "  ")
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("JSON marshal error: %v", err)), nil
 	}
@@ -1243,17 +1292,25 @@ func usageTargetFromArgs(args map[string]any) (graph.UsageTarget, error) {
 	return target, nil
 }
 
-func (s *Server) fetchUsageCallerSources(ctx context.Context, target graph.UsageTarget, topN int) ([]graph.CallerSource, error) {
+func (s *Server) fetchUsageCallerSources(ctx context.Context, target graph.UsageTarget, topN int) ([]graph.CallerSource, []adt.Unsearched, error) {
 	maxCandidates := topN * 4
 	if maxCandidates < 12 {
 		maxCandidates = 12
 	}
 
+	var gaps []adt.Unsearched
 	cands, err := s.fetchUsageCandidatesViaADT(ctx, target, maxCandidates)
+	if err != nil {
+		// The where-used resource failing and finding nobody are different
+		// answers, and falling back to the tables does not make the first one
+		// stop having happened: the fallback sees less.
+		gaps = append(gaps, adt.Unsearched{Object: "ADT where-used", Reason: err.Error()})
+	}
 	if err != nil || len(cands) == 0 {
-		fallback, ferr := s.fetchUsageCandidatesFallback(ctx, target, maxCandidates)
+		fallback, fgaps, ferr := s.fetchUsageCandidatesFallback(ctx, target, maxCandidates)
+		gaps = append(gaps, fgaps...)
 		if ferr != nil && len(cands) == 0 {
-			return nil, ferr
+			return nil, gaps, ferr
 		}
 		if len(cands) == 0 {
 			cands = fallback
@@ -1264,6 +1321,10 @@ func (s *Server) fetchUsageCallerSources(ctx context.Context, target graph.Usage
 	for _, c := range cands {
 		source, err := s.fetchUsageCandidateSource(ctx, c)
 		if err != nil || strings.TrimSpace(source) == "" {
+			// A caller whose source will not load contributes no example. That
+			// is not the same as having no example to give, and total_callers
+			// would otherwise count it as if it had been looked at.
+			gaps = append(gaps, adt.Unsearched{Object: c.Type + " " + c.Name, Reason: errText(err)})
 			continue
 		}
 		callers = append(callers, graph.CallerSource{
@@ -1279,7 +1340,28 @@ func (s *Server) fetchUsageCallerSources(ctx context.Context, target graph.Usage
 		}
 	}
 
-	return callers, nil
+	return callers, gaps, nil
+}
+
+// errText names a failure that may have been a silent one: several of these
+// paths treat "no error but nothing came back" as a failure too, and a reason
+// of "" tells the reader nothing about what to do next.
+func errText(err error) string {
+	if err == nil {
+		return "the source came back empty"
+	}
+	return err.Error()
+}
+
+// tableOfQuery names the cross-reference table a query reads, so a gap can say
+// which half of the answer is missing rather than quoting SQL back.
+func tableOfQuery(query string) string {
+	for _, t := range []string{"WBCROSSGT", "CROSS", "TFDIR", "TADIR"} {
+		if strings.Contains(query, " FROM "+t+" ") {
+			return t
+		}
+	}
+	return "cross-reference table"
 }
 
 func (s *Server) fetchUsageCandidatesViaADT(ctx context.Context, target graph.UsageTarget, maxCandidates int) ([]usageCallerCandidate, error) {
@@ -1433,7 +1515,7 @@ func usageTypeNameFromURI(uri, fallbackName string) (objType, name, parent strin
 	return objType, name, parent
 }
 
-func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.UsageTarget, maxCandidates int) ([]usageCallerCandidate, error) {
+func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.UsageTarget, maxCandidates int) ([]usageCallerCandidate, []adt.Unsearched, error) {
 	var queries []string
 
 	// CROSS-TYPE is one character — C(1), checked against DD03L. The 'FU',
@@ -1459,9 +1541,15 @@ func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.
 
 	seen := make(map[string]bool)
 	var out []usageCallerCandidate
+	var gaps []adt.Unsearched
 	for _, query := range queries {
 		result, err := s.adtClient.RunQuery(ctx, query, maxCandidates*2)
 		if err != nil || result == nil {
+			// Same shape as the callee reader: two tables, either able to fail
+			// alone, and a short list that looks whole. CROSS is where a call
+			// from procedural code is recorded, so losing it quietly turns
+			// "I could not read a table" into "nobody calls this".
+			gaps = append(gaps, adt.Unsearched{Object: tableOfQuery(query), Reason: errText(err)})
 			continue
 		}
 		for _, row := range result.Rows {
@@ -1485,12 +1573,12 @@ func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.
 				IsTest: graph.IsTestCaller(objName, ""),
 			})
 			if len(out) >= maxCandidates {
-				return out, nil
+				return out, gaps, nil
 			}
 		}
 	}
 
-	return out, nil
+	return out, gaps, nil
 }
 
 func (s *Server) fetchUsageCandidateSource(ctx context.Context, cand usageCallerCandidate) (string, error) {
