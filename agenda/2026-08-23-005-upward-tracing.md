@@ -30,7 +30,16 @@ Checked rather than assumed, because two of these are misleading:
 | `WBCROSSGT.INCLUDE` | Where the reference sits. For a class this is a *section* — `…===CI` for the definition — or a method include, `…===CM001`. |
 | `CROSS.PROG` | Present, and empty in every row sampled. Not a shortcut to the owner. |
 
-## The wall: decoding a method include
+## The wall came down
+
+`TMDIR` — `(CLASSNAME, METHODINDX, METHODNAME)` — and the `CM` suffix is
+that index in hexadecimal. `adt.DecodeMethodIncludes` does it, verified
+live. The route to it is recorded in
+[2026-08-23-002](../reports/2026-08-23-002-reading-the-handler.md); what
+follows is what was tried first and did not work, kept because each
+attempt looked reasonable.
+
+## The wall as it looked: decoding a method include
 
 Upward tracing at object level needs `INCLUDE → object`, and that is
 `NormalizeInclude`, now fixed — it used to resolve `LZDEMO_FGU27` to a
@@ -88,3 +97,49 @@ a function pool named `EGACY_REP`.
 
 If a mapping cannot be read from the system, it should fail visibly
 rather than resolve to something plausible.
+
+## An operational hazard found alongside, worth stating plainly
+
+A second SAP user was created so two sessions could debug without
+clobbering each other. It worked for what it was meant to: external
+breakpoints key on `USERNAME`, and `im_max_dbg_contexts` is per user, so
+both separate.
+
+It was not a clean win. **The AMDP debug work-process pool is not
+partitioned by user** — it is a system-wide resource, and A4H appears to
+have very few. So isolation bought a new kind of deadlock: a session that
+dies without calling `astop` leaves a work process held, that orphan is
+**invisible to the other user**, and `stopExisting` only ever reaches
+your own. The one who took it is the only one who can give it back.
+
+Two consequences:
+
+- `astop` is mandatory on the failure path, not only the happy one. A
+  `-c` script that is interrupted mid-`aresume` never reaches it.
+- Before planning around parallel AMDP debugging, someone has to find
+  out **how many of those processes exist**. If it is one, a second user
+  buys nothing for AMDP however well it separates everything else.
+
+The general shape is worth remembering: separating identity separates
+what is keyed by identity, and leaves everything underneath shared —
+while removing the ability to clean up across the boundary you just
+drew.
+
+## `--user` should stay local, and this is a decision rather than a gap
+
+`--system` is a persistent flag and `--user` is not, so `vsp -u X <cmd>`
+fails with an unknown-shorthand error while `-s` works. The obvious fix
+is wrong.
+
+Nine subcommands declare their own `--user`, and in most of them it means
+something else: a *filter* in `dumps`, `applog` and `transport list`, and
+"whose debuggees to listen for" in the two debug shells. The root one is
+the logon account. Making it persistent would put `-u, --user "SAP
+username"` in the Global Flags of every subcommand that already has a
+local `--user` meaning something different — and the resulting mistake
+would be silent, because filtering by the wrong user returns an empty
+result rather than an error.
+
+A named profile in `.vsp.json` is the right way to run as a different
+account. What could fairly be improved is the error message, which is
+confusing precisely because `-u` does exist at the root.
