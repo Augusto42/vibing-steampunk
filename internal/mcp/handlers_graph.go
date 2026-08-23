@@ -1203,7 +1203,11 @@ func (s *Server) fetchUsageCandidatesViaADT(ctx context.Context, target graph.Us
 		return nil, err
 	}
 
-	root, err := s.adtClient.GetCallersOf(ctx, targetURI, 1)
+	// The where-used list, not a call graph resource: the one this used to ask
+	// does not exist, so this branch always failed and every usage example
+	// came from the table fallback below — which was itself asking CROSS for
+	// two-letter type codes the column cannot hold.
+	root, err := s.adtClient.CallGraph(ctx, targetURI, &adt.CallGraphOptions{Direction: "callers"})
 	if err != nil || root == nil {
 		return nil, err
 	}
@@ -1347,16 +1351,21 @@ func usageTypeNameFromURI(uri, fallbackName string) (objType, name, parent strin
 func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.UsageTarget, maxCandidates int) ([]usageCallerCandidate, error) {
 	var queries []string
 
+	// CROSS-TYPE is one character — C(1), checked against DD03L. The 'FU',
+	// 'PR' and 'SU' that used to stand here did not merely fail to match: the
+	// data preview resource rejects them with 400 "'FU' is not a valid value
+	// for C(1,0)", and the error was swallowed as "no callers found". The
+	// codes live in pkg/adt so there is one copy of them.
 	switch target.ObjectType {
 	case "FUNC":
-		queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = 'FU'", target.ObjectName))
+		queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = '%s'", target.ObjectName, adt.CrossTypeFunctionModule))
 	case "SUBMIT":
-		queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = 'PR'", target.ObjectName))
+		queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = '%s'", target.ObjectName, adt.CrossTypeReport))
 	case "PROG":
 		if target.Form != "" {
-			queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = 'SU'", target.Form))
+			queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = '%s'", target.Form, adt.CrossTypeSubroutine))
 		} else {
-			queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = 'PR'", target.ObjectName))
+			queries = append(queries, fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = '%s' AND TYPE = '%s'", target.ObjectName, adt.CrossTypeReport))
 		}
 	case "CLAS", "INTF":
 		queries = append(queries, fmt.Sprintf("SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGT WHERE NAME LIKE '%s%%'", target.ObjectName))

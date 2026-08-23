@@ -1336,123 +1336,29 @@ type CallGraphNode struct {
 
 // CallGraphOptions configures call graph retrieval.
 type CallGraphOptions struct {
-	Direction  string // "callers" or "callees"
-	MaxDepth   int    // Maximum depth to traverse
-	MaxResults int    // Maximum results to return
+	Direction string // "callers" or "callees"
+	// MaxDepth is accepted and ignored. Both sources CallGraph reads are one
+	// hop by construction — see the note on CallGraph in callees.go — and a
+	// field that quietly does nothing is better than one that suggests a
+	// traversal happened.
+	MaxDepth   int
+	MaxResults int // Maximum results to return
 }
 
-// GetCallGraph retrieves the call graph for an ABAP object.
-// Direction can be "callers" (who calls this) or "callees" (what this calls).
-func (c *Client) GetCallGraph(ctx context.Context, objectURI string, opts *CallGraphOptions) (*CallGraphNode, error) {
-	if opts == nil {
-		opts = &CallGraphOptions{
-			Direction:  "callees",
-			MaxDepth:   3,
-			MaxResults: 100,
-		}
-	}
-
-	params := url.Values{}
-	if opts.Direction != "" {
-		params.Set("direction", opts.Direction)
-	}
-	if opts.MaxDepth > 0 {
-		params.Set("maxDepth", fmt.Sprintf("%d", opts.MaxDepth))
-	}
-	if opts.MaxResults > 0 {
-		params.Set("maxResults", fmt.Sprintf("%d", opts.MaxResults))
-	}
-
-	// Build request body with object URI
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<cai:callGraphRequest xmlns:cai="http://www.sap.com/adt/cai">
-  <cai:objectUri>%s</cai:objectUri>
-</cai:callGraphRequest>`, objectURI)
-
-	resp, err := c.transport.Request(ctx, "/sap/bc/adt/cai/callgraph", &RequestOptions{
-		Method:      http.MethodPost,
-		Query:       params,
-		Accept:      "application/xml",
-		ContentType: "application/xml",
-		Body:        []byte(body),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting call graph: %w", err)
-	}
-
-	return parseCallGraphResponse(resp.Body)
-}
-
-// callGraphNodeXML is used for parsing call graph XML responses.
-type callGraphNodeXML struct {
-	URI         string             `xml:"uri,attr"`
-	Name        string             `xml:"name,attr"`
-	Type        string             `xml:"type,attr"`
-	Description string             `xml:"description,attr"`
-	Line        int                `xml:"line,attr"`
-	Column      int                `xml:"column,attr"`
-	Children    []callGraphNodeXML `xml:"node"`
-}
-
-// parseCallGraphResponse parses the call graph XML response.
-func parseCallGraphResponse(data []byte) (*CallGraphNode, error) {
-	type callGraphXML struct {
-		XMLName xml.Name         `xml:"callGraph"`
-		Root    callGraphNodeXML `xml:"node"`
-	}
-
-	var cg callGraphXML
-	if err := xml.Unmarshal(data, &cg); err != nil {
-		return nil, fmt.Errorf("parsing call graph: %w", err)
-	}
-
-	return convertCallGraphNode(&cg.Root), nil
-}
-
-func convertCallGraphNode(n *callGraphNodeXML) *CallGraphNode {
-	if n == nil {
-		return nil
-	}
-	node := &CallGraphNode{
-		URI:         n.URI,
-		Name:        n.Name,
-		Type:        n.Type,
-		Description: n.Description,
-		Line:        n.Line,
-		Column:      n.Column,
-	}
-	for _, child := range n.Children {
-		childCopy := child
-		node.Children = append(node.Children, *convertCallGraphNode(&childCopy))
-	}
-	return node
-}
-
-// GetCallersOf returns who calls the specified object (up traversal).
-// This is a convenience wrapper around GetCallGraph with direction="callers".
-func (c *Client) GetCallersOf(ctx context.Context, objectURI string, maxDepth int) (*CallGraphNode, error) {
-	if maxDepth <= 0 {
-		maxDepth = 5
-	}
-	return c.GetCallGraph(ctx, objectURI, &CallGraphOptions{
-		Direction:  "callers",
-		MaxDepth:   maxDepth,
-		MaxResults: 500,
-	})
-}
-
-// GetCalleesOf returns what the specified object calls (down traversal).
-// This is a convenience wrapper around GetCallGraph with direction="callees".
-func (c *Client) GetCalleesOf(ctx context.Context, objectURI string, maxDepth int) (*CallGraphNode, error) {
-	if maxDepth <= 0 {
-		maxDepth = 5
-	}
-	return c.GetCallGraph(ctx, objectURI, &CallGraphOptions{
-		Direction:  "callees",
-		MaxDepth:   maxDepth,
-		MaxResults: 500,
-	})
-}
+// The three methods that used to stand here — GetCallGraph, GetCallersOf and
+// GetCalleesOf — asked /sap/bc/adt/cai/callgraph, and that resource does not
+// exist. It is in the discovery document of none of 7.50, 7.57 and 7.58 and
+// answers 404 "No suitable resource found" in both directions, checked with a
+// CSRF token in hand so it is the resource that is missing and not the
+// request. Everything built on them therefore reported that no object calls
+// anything, on every system, silently — which is the worst way for a
+// dependency query to be wrong.
+//
+// They are deleted rather than deprecated so that nothing can build on them
+// again. What replaces them is in callees.go: WhereUsed for the up direction
+// (the where-used list behind SE84), Callees for the down direction (the
+// CROSS and WBCROSSGT cross-reference tables), and CallGraph over the two for
+// callers who want the node shape below.
 
 // CallGraphEdge represents a single edge in the call graph.
 type CallGraphEdge struct {
@@ -1659,14 +1565,15 @@ type TraceExecutionOptions struct {
 func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions) (*TraceExecutionResult, error) {
 	result := &TraceExecutionResult{}
 
-	// Step 1: Build static call graph (callees - what gets called from the starting point)
+	// Step 1: Build static call graph (callees - what gets called from the
+	// starting point). One hop, from the cross-reference tables: the recursive
+	// resource this used to ask does not exist, and the comparison below only
+	// needs the edges leaving the object under trace.
 	if opts.ObjectURI != "" {
-		depth := opts.MaxDepth
-		if depth <= 0 {
-			depth = 5
-		}
-
-		staticGraph, err := c.GetCalleesOf(ctx, opts.ObjectURI, depth)
+		staticGraph, err := c.CallGraph(ctx, opts.ObjectURI, &CallGraphOptions{
+			Direction:  "callees",
+			MaxResults: 500,
+		})
 		if err != nil {
 			// Non-fatal: continue without static graph
 			result.StaticGraph = nil

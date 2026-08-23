@@ -145,11 +145,18 @@ Direct usage (call graph):
   vsp graph CLAS ZCL_MY_CLASS
   vsp graph CLAS ZCL_MY_CLASS --direction callers
   vsp graph FUNC Z_MY_FM --direction callers
-  vsp graph CLAS ZCL_MY_CLASS --direction callees --depth 2
+  vsp graph CLAS ZCL_MY_CLASS --direction callees
 
 --direction callers reads the where-used list SE84 uses, so it reports the
-package and the object type rather than a bare list of include names. The
---depth flag does not apply to it: that list is one hop by nature.`,
+package and the object type rather than a bare list of include names.
+
+--direction callees reads the CROSS and WBCROSSGT cross-reference tables, which
+SAP fills at activation. They record references and not calls: a dynamic
+CALL METHOD (name) is in no row, and a reference in dead code is in every one.
+Rows are marked call or reference so the difference is visible. This direction
+needs free SQL; --block-free-sql turns it off and it says so.
+
+Both directions are one hop. --depth is accepted and ignored.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runGraph,
 }
@@ -299,7 +306,12 @@ func init() {
 
 	// Graph flags
 	graphCmd.Flags().String("direction", "callees", "Direction: callees, callers, or both")
-	graphCmd.Flags().Int("depth", 1, "Maximum traversal depth")
+	// --depth is kept so a scripted invocation does not start failing, and it
+	// is marked for what it is. Neither source is recursive: the where-used
+	// list is one hop by nature and the cross-reference tables are keyed by
+	// include, so there was never a traversal for this number to bound.
+	graphCmd.Flags().Int("depth", 1, "Accepted and ignored: both directions are one hop")
+	_ = graphCmd.Flags().MarkDeprecated("depth", "both directions are one hop; the flag does nothing")
 	rootCmd.AddCommand(graphCmd)
 
 	// Graph co-change subcommand
@@ -788,7 +800,6 @@ func runGraph(cmd *cobra.Command, args []string) error {
 	objType := strings.ToUpper(args[0])
 	name := strings.ToUpper(args[1])
 	direction, _ := cmd.Flags().GetString("direction")
-	depth, _ := cmd.Flags().GetInt("depth")
 
 	// Build object URI (url.PathEscape handles namespaced objects like /UI5/CL_REPOSITORY)
 	encodedName := url.PathEscape(strings.ToLower(name))
@@ -839,72 +850,78 @@ func runGraph(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Try ADT call graph first, fallback to WBCROSSGT
-	adtFailed := false
-
+	// Both directions now read a source that exists. The ADT call-graph
+	// resource this command used to try first — /sap/bc/adt/cai/callgraph —
+	// is advertised on none of 7.50, 7.57 and 7.58 and answers 404, so every
+	// run paid for two doomed requests before reaching the tables. What is
+	// left is one query per direction and a fallback that only fires on a real
+	// failure.
+	//
+	// An answer of zero is an answer and is not retried. Falling through on an
+	// empty list would send more requests to say the same thing under a banner
+	// reading "not available" — which would describe a query that had in fact
+	// succeeded.
 	switch direction {
 	case "callers":
-		// The where-used list behind SE84 goes first, because the call-graph
-		// resource GetCallersOf uses answers 404 on 7.58 and every request to
-		// it is a wasted round trip on the way to the table fallback. This one
-		// answers, and it answers with the package and the object type instead
-		// of a bare list of include names.
-		// An answer of zero is an answer and is not retried. Falling through on
-		// an empty list would send two more requests to say the same thing,
-		// under a banner reading "ADT call graph not available" — which would
-		// describe a query that had in fact succeeded.
-		if callers, err := whereUsedCallers(ctx, client, objURI); err == nil {
-			printWhereUsedCallers(callers)
-			return nil
-		}
-		node, err := client.GetCallersOf(ctx, objURI, depth)
+		callers, err := whereUsedCallers(ctx, client, objURI)
 		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(node, 0)
+			fmt.Fprintf(os.Stderr, "The where-used list could not be read (%v); falling back to the cross-reference tables.\n\n", err)
+			return graphFromCross(ctx, client, name, objType, "callers")
 		}
-	case "both":
-		fmt.Println("=== CALLEES (uses) ===")
-		callees, err := client.GetCalleesOf(ctx, objURI, depth)
-		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(callees, 0)
-		}
-		fmt.Println("\n=== CALLERS (used by) ===")
-		callers, err := client.GetCallersOf(ctx, objURI, depth)
-		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(callers, 0)
-		}
-	default: // callees
-		node, err := client.GetCalleesOf(ctx, objURI, depth)
-		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(node, 0)
-		}
-	}
-
-	if !adtFailed {
+		printWhereUsedCallers(callers)
 		return nil
-	}
-
-	// Fallback: use WBCROSSGT table
-	fmt.Fprintf(os.Stderr, "ADT call graph not available, using WBCROSSGT table fallback\n\n")
-
-	switch direction {
-	case "callers":
-		return graphFromCross(ctx, client, name, objType, "callers")
 	case "both":
-		fmt.Println("=== USES (callees from WBCROSSGT) ===")
-		graphFromCross(ctx, client, name, objType, "callees")
-		fmt.Println("\n=== USED BY (callers from WBCROSSGT) ===")
-		return graphFromCross(ctx, client, name, objType, "callers")
-	default:
+		fmt.Println("=== CALLEES (what this uses) ===")
+		if err := printCalleesOf(ctx, client, objURI, name, objType); err != nil {
+			return err
+		}
+		fmt.Println("\n=== CALLERS (what uses this) ===")
+		callers, err := whereUsedCallers(ctx, client, objURI)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "The where-used list could not be read (%v); falling back to the cross-reference tables.\n\n", err)
+			return graphFromCross(ctx, client, name, objType, "callers")
+		}
+		printWhereUsedCallers(callers)
+		return nil
+	default: // callees
+		return printCalleesOf(ctx, client, objURI, name, objType)
+	}
+}
+
+// printCalleesOf prints what an object reaches, from the cross-reference
+// tables. The --depth flag does not reach here on purpose: the tables are keyed
+// by include and a second hop means a fresh pair of queries per child, for an
+// answer that gets less useful the wider it grows.
+func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objType string) error {
+	callees, err := client.Callees(ctx, objURI)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n\nFalling back to a plain table scan.\n\n", err)
 		return graphFromCross(ctx, client, name, objType, "callees")
 	}
+	if len(callees) == 0 {
+		// Empty here is often true. The tables record global types, classes,
+		// methods and external calls; a class doing only local work has no
+		// row, and neither has a routine that calls nothing outside its own
+		// program. The other readings are "never activated on this system" and
+		// "no such object", and the sentence names all three because the empty
+		// list looks the same in every case.
+		fmt.Println("  No row for this object's includes. It may genuinely reference nothing global — " +
+			"the tables hold global types, classes, methods and external calls, nothing local. " +
+			"It may also never have been activated here, or not exist. Ask about a neighbour that " +
+			"should have references to tell which.")
+		return nil
+	}
+	rows := make([][]string, 0, len(callees))
+	for _, c := range callees {
+		what := "reference"
+		if c.Calls {
+			what = "call"
+		}
+		rows = append(rows, []string{c.Name, c.Kind, what, c.Component, c.Source})
+	}
+	fmt.Print(formatTable([]string{"Object", "Kind", "Call?", "Component", "Table"}, rows))
+	fmt.Fprintf(os.Stderr, "\n%d references, recorded at activation — not observed calls.\n", len(callees))
+	return nil
 }
 
 func graphFromCross(ctx context.Context, client *adt.Client, name, objType, direction string) error {
@@ -1043,24 +1060,6 @@ func printWhereUsedCallers(callers []adt.ExposedCaller) {
 	}
 	fmt.Print(formatTable([]string{"Object", "Type", "Package", "Kind", "References in"}, rows))
 	fmt.Fprintf(os.Stderr, "\n%d callers, from the where-used list.\n", len(callers))
-}
-
-func printGraphNode(node *adt.CallGraphNode, indent int) {
-	if node == nil {
-		return
-	}
-	prefix := strings.Repeat("  ", indent)
-	label := node.Name
-	if node.Type != "" {
-		label = node.Type + " " + label
-	}
-	if node.Description != "" {
-		label += " — " + node.Description
-	}
-	fmt.Printf("%s%s\n", prefix, label)
-	for i := range node.Children {
-		printGraphNode(&node.Children[i], indent+1)
-	}
 }
 
 func readStdin() ([]byte, error) {

@@ -46,7 +46,11 @@ type ExposedCaller struct {
 	// Type is SAP's own code — CLAS/OC, FUGR/FF, PROG/P — kept as it arrives
 	// rather than flattened, because the second half distinguishes a function
 	// module from its group and that distinction is the useful part.
-	Type      string `json:"type,omitempty"`
+	Type string `json:"type,omitempty"`
+	// URI is the caller's own ADT path, taken from the container row rather
+	// than rebuilt from the name — a namespaced object or a function module is
+	// not addressable by any rule this side could apply.
+	URI       string `json:"uri,omitempty"`
 	Package   string `json:"package,omitempty"`
 	Component string `json:"component,omitempty"` // the method or routine holding the reference
 	IsTest    bool   `json:"is_test"`
@@ -435,6 +439,7 @@ func exposedCallers(refs []UsageReference, target string) []ExposedCaller {
 		caller := ExposedCaller{
 			Name:      name,
 			Type:      owner.Type,
+			URI:       strings.TrimSpace(owner.URI),
 			Package:   firstNonEmpty(owner.PackageName, r.PackageName),
 			Component: strings.TrimSpace(r.Name),
 			IsTest:    strings.Contains(strings.ToLower(r.UsageInformation), "test"),

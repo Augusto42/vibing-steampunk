@@ -355,21 +355,35 @@ func (s *Server) registerSystemTools(shouldRegister func(string) bool) {
 
 // registerAnalysisTools registers code analysis infrastructure tools.
 func (s *Server) registerAnalysisTools(shouldRegister func(string) bool) {
+	// The four call-graph tools below name their source in their own
+	// descriptions, and that is deliberate. They used to say "call graph" and
+	// mean /sap/bc/adt/cai/callgraph, a resource that exists on no release we
+	// have checked; an agent had no way to know the empty answer it got was a
+	// missing resource rather than an unused object. The two sources that do
+	// answer have different strengths and different blind spots, so the tool
+	// says which one spoke.
+	//
+	// object_uri is no longer required: an agent that knows the object by name
+	// should not have to build a URI to ask about it.
 	if shouldRegister("GetCallGraph") {
 		s.mcpServer.AddTool(mcp.NewTool("GetCallGraph",
-			mcp.WithDescription("Get call hierarchy for methods/functions. Shows callers or callees of an ABAP object."),
+			mcp.WithDescription("Who calls this ABAP object, and what it calls. 'callers' reads the where-used list behind SE84; "+
+				"'callees' reads the CROSS and WBCROSSGT cross-reference tables, which record references made at activation "+
+				"rather than observed calls. One hop in either direction."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,1)"),
+				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/zcl_test). Or give object_type and object_name."),
+			),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
 			),
 			mcp.WithString("direction",
-				mcp.Description("Direction: 'callers' (who calls this) or 'callees' (what this calls). Default: callers"),
-			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth of call hierarchy (default: 3)"),
+				mcp.Description("'callers' (who uses this), 'callees' (what this uses), or 'both'. Default: callers"),
 			),
 			mcp.WithNumber("max_results",
-				mcp.Description("Maximum number of results (default: 100)"),
+				mcp.Description("Maximum number of results (default: 200)"),
 			),
 		), s.handleGetCallGraph)
 	}
@@ -389,49 +403,68 @@ func (s *Server) registerAnalysisTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("GetCallersOf") {
 		s.mcpServer.AddTool(mcp.NewTool("GetCallersOf",
-			mcp.WithDescription("Find all callers of an ABAP object (up traversal). Shows who calls this method/function. Simplified wrapper around GetCallGraph."),
+			mcp.WithDescription("Who references this ABAP object, from the where-used list behind SE84. Reports each caller's "+
+				"package, type and the method the reference sits in. One hop: the list is not recursive. "+
+				"An empty answer and a misspelt name look identical here, so the answer says so."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,1)"),
+				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/zcl_test). Or give object_type and object_name."),
 			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth of caller hierarchy (default: 5)"),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
+			),
+			mcp.WithNumber("max_results",
+				mcp.Description("Maximum number of results (default: 200)"),
 			),
 		), s.handleGetCallersOf)
 	}
 
 	if shouldRegister("GetCalleesOf") {
 		s.mcpServer.AddTool(mcp.NewTool("GetCalleesOf",
-			mcp.WithDescription("Find all callees of an ABAP object (down traversal). Shows what this method/function calls. Simplified wrapper around GetCallGraph."),
+			mcp.WithDescription("What this ABAP object's code reaches, from the CROSS and WBCROSSGT cross-reference tables. "+
+				"These are references recorded when the object was activated, not observed calls: a dynamic CALL METHOD (name) "+
+				"is in no row. Rows marked calls:true are invocations; the rest are type and data references. Needs free SQL."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,1)"),
+				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/zcl_test). Or give object_type and object_name."),
 			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth of callee hierarchy (default: 5)"),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
+			),
+			mcp.WithNumber("max_results",
+				mcp.Description("Maximum number of results (default: 200)"),
 			),
 		), s.handleGetCalleesOf)
 	}
 
 	if shouldRegister("AnalyzeCallGraph") {
 		s.mcpServer.AddTool(mcp.NewTool("AnalyzeCallGraph",
-			mcp.WithDescription("Analyze call graph for an object. Returns statistics: total nodes, edges, max depth, nodes by type. Use for understanding code complexity and dependencies."),
+			mcp.WithDescription("Counts over one object's references: how many, of what kind, in which direction. "+
+				"Same two sources as GetCallGraph, so the same caveats apply — and the depth is always 1, because neither source is recursive."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object to analyze"),
+				mcp.Description("ADT URI of the object to analyze. Or give object_type and object_name."),
+			),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
 			),
 			mcp.WithString("direction",
 				mcp.Description("Direction: 'callers' or 'callees' (default: callees)"),
-			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth to analyze (default: 5)"),
 			),
 		), s.handleAnalyzeCallGraph)
 	}
 
 	if shouldRegister("CompareCallGraphs") {
 		s.mcpServer.AddTool(mcp.NewTool("CompareCallGraphs",
-			mcp.WithDescription("Compare static call graph with actual execution trace. Identifies: common paths, untested paths (static only), and dynamic calls (actual only). Use for test coverage analysis and RCA."),
+			mcp.WithDescription("Compare an object's recorded references with an actual execution trace: what ran, what did not, "+
+				"and what ran without being recorded. The static side comes from the cross-reference tables, so a 'static only' "+
+				"edge may be a type the code names and never calls rather than an untested path."),
 			mcp.WithString("object_uri",
 				mcp.Required(),
 				mcp.Description("ADT URI of the root object"),
