@@ -108,9 +108,19 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 	_ = c.UnlockObject(ctx, newURL, lockResult.LockHandle)
 
 	// 5. Activate new object
-	_, err = c.Activate(ctx, newURL, newName)
+	activation, err := c.Activate(ctx, newURL, newName)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to activate new object: %v", err))
+		return result, nil
+	}
+	// Step 6 deletes the original, and it must not run on the strength of an
+	// activation nobody read. A refusal arrives inside a 200 with the reason in
+	// the body, so looking only at err would delete the object that worked and
+	// keep the copy that does not compile. The copy is left behind, inactive,
+	// for whoever comes to fix it.
+	if !activation.Success {
+		result.Errors = append(result.Errors, activation.ProblemLines()...)
+		result.Message = fmt.Sprintf("%s was created but would not activate, so %s has been left exactly where it was", newName, oldName)
 		return result, nil
 	}
 

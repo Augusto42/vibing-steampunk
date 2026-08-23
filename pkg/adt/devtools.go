@@ -448,14 +448,24 @@ func (c *Client) ActivatePackage(ctx context.Context, packageName string, maxObj
 			continue
 		}
 		obj := rec.Object
-		_, err := c.Activate(ctx, obj.URI, obj.Name)
-		if err != nil {
+		activation, err := c.Activate(ctx, obj.URI, obj.Name)
+		switch {
+		case err != nil:
 			result.Failed = append(result.Failed, ActivationFailed{
 				Name:   obj.Name,
 				Type:   obj.Type,
 				Reason: err.Error(),
 			})
-		} else {
+		case !activation.Success:
+			// The object that refuses to activate answers 200 like the rest, so
+			// counting only transport errors put it in the Activated list and
+			// the summary then said "Activated 12 objects" about eleven.
+			result.Failed = append(result.Failed, ActivationFailed{
+				Name:   obj.Name,
+				Type:   obj.Type,
+				Reason: strings.Join(activation.ProblemLines(), "; "),
+			})
+		default:
 			result.Activated = append(result.Activated, ActivatedObject{
 				Name: obj.Name,
 				Type: obj.Type,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -35,6 +34,8 @@ type ExecuteABAPResult struct {
 type ExecuteFailure struct {
 	// Kind and Severity are ABAP Unit's own words: "exception" / "critical" for
 	// a runtime error, "failedAssertion" for an assert the payload made itself.
+	// The two kinds declared below are ours, for the failures ABAP Unit never
+	// saw because the code never reached it.
 	Kind     string `json:"kind"`
 	Severity string `json:"severity,omitempty"`
 	// Title is SAP's summary, and for a runtime error it names the error:
@@ -54,6 +55,21 @@ type ExecuteFailure struct {
 // — so "the test failed" says nothing here, and this marker is the whole
 // difference between the failure we asked for and one we did not.
 const execResultMarker = "EXEC_RESULT:"
+
+// The two failure kinds that are not ABAP Unit's.
+//
+// Both mean the same thing to whoever submitted the code — none of it ran — and
+// they are kept apart because the next move differs: a syntax error is fixed in
+// the payload, while a run nobody can vouch for is a question about the system.
+const (
+	// ExecuteFailureSyntax is a payload that never ran because the program it
+	// was wrapped in did not compile. SAP's own message says why.
+	ExecuteFailureSyntax = "syntaxError"
+	// ExecuteFailureNotRun is a run that activated and then left no evidence of
+	// having happened: ABAP Unit reported no test class at all for a program
+	// whose entire purpose is to hold one.
+	ExecuteFailureNotRun = "notRun"
+)
 
 // payloadStartMarker is the line the generated wrapper puts immediately before
 // the caller's code, and it is what makes a line number in the wrapper
@@ -193,9 +209,20 @@ func (c *Client) ExecuteABAP(ctx context.Context, code string, opts *ExecuteABAP
 	}
 
 	// Step 4: Activate
-	_, err = c.Activate(ctx, objectURL, programName)
+	activation, err := c.Activate(ctx, objectURL, programName)
 	if err != nil {
 		result.Message = fmt.Sprintf("Failed to activate: %v", err)
+		return result, nil
+	}
+	// Code that does not compile is refused right here, inside a 200, and going
+	// on to Step 5 regardless is what let a syntax error report itself as a
+	// success: ABAP Unit answers an empty <runResult/> for a program that was
+	// never generated, and from there nothing can tell that emptiness apart
+	// from a run that simply had nothing to say. Stop while the reason is still
+	// in hand.
+	if failure := compileFailure(activation, programName, payloadOffset(source)); failure != nil {
+		result.Failure = failure
+		result.Message = fmt.Sprintf("The code did not compile: %s", failure.Title)
 		return result, nil
 	}
 
@@ -238,6 +265,21 @@ func (c *Client) ExecuteABAP(ctx context.Context, code string, opts *ExecuteABAP
 					}
 				}
 			}
+		}
+	}
+
+	// A run that happened leaves a test class behind whether or not the payload
+	// worked: the wrapper always ends in a deliberate assertion, so there is
+	// always something to report. No class at all means ABAP Unit ran nothing
+	// at all, and the one thing that silence must never be read as is a pass.
+	if len(testResult.Classes) == 0 {
+		result.Failure = &ExecuteFailure{
+			Kind:  ExecuteFailureNotRun,
+			Title: "ABAP Unit reported no test at all, so the code cannot be shown to have run",
+			Details: []string{
+				fmt.Sprintf("%s activated, and the test run then came back empty.", programName),
+				"That is not evidence the code succeeded; it is the absence of evidence that it ran.",
+			},
 		}
 	}
 
@@ -393,18 +435,71 @@ func payloadLine(alert UnitTestAlert, programName string, offset int) int {
 		if !strings.EqualFold(frame.Name, programName) {
 			continue
 		}
-		_, fragment, found := strings.Cut(frame.URI, "#start=")
-		if !found {
-			continue
-		}
-		number, _, _ := strings.Cut(fragment, ",")
-		line, err := strconv.Atoi(strings.TrimSpace(number))
-		if err != nil || line < offset {
+		line := uriFragmentLine(frame.URI)
+		if line < offset {
 			continue
 		}
 		return line - offset + 1
 	}
 	return 0
+}
+
+// compileFailure turns a refused activation into the failure the caller sees,
+// and returns nil when the program activated.
+//
+// The title is SAP's first error verbatim, because a paraphrase of a syntax
+// error is worth strictly less than the syntax error, and the rest are kept as
+// details: one bad statement routinely produces three messages, and the second
+// is often the one that explains the first.
+func compileFailure(activation *ActivationResult, programName string, offset int) *ExecuteFailure {
+	if activation == nil || activation.Success {
+		return nil
+	}
+
+	failure := &ExecuteFailure{Kind: ExecuteFailureSyntax, Severity: "error"}
+	messages := activation.ErrorMessages()
+	if len(messages) == 0 {
+		// Refused without naming a reason. Rare, and still a refusal — the
+		// program is inactive either way — so this reports the fact it has and
+		// says plainly that the reason is missing rather than inventing one.
+		failure.Title = "The program was refused by activation, which gave no reason"
+		failure.Details = activation.ProblemLines()
+		return failure
+	}
+
+	failure.Title = strings.TrimSpace(messages[0].ShortText)
+	failure.Line = callerLine(messages[0], programName, offset)
+	for _, m := range messages[1:] {
+		detail := strings.TrimSpace(m.ShortText)
+		if line := callerLine(m, programName, offset); line > 0 {
+			detail = fmt.Sprintf("line %d: %s", line, detail)
+		}
+		failure.Details = append(failure.Details, detail)
+	}
+	return failure
+}
+
+// callerLine translates the position in an activation message into a line of
+// what the caller wrote.
+//
+// Same arithmetic as payloadLine and the same refusal to guess: a message about
+// another object, or about the wrapper's own preamble, carries a line number
+// that means nothing to whoever wrote the payload, and offering it as "your
+// line 2" sends them to a line they never typed.
+func callerLine(m ActivationResultMessage, programName string, offset int) int {
+	if offset <= 0 || programName == "" {
+		return 0
+	}
+	// The href spells the program in lower case where the checklist spells it in
+	// upper, and neither casing is the authoritative one.
+	if !strings.Contains(strings.ToUpper(m.Href), strings.ToUpper(programName)) {
+		return 0
+	}
+	line := m.SourceLine()
+	if line < offset {
+		return 0
+	}
+	return line - offset + 1
 }
 
 // ExecuteABAPMultiple executes ABAP code and returns multiple results via chained assertions.
