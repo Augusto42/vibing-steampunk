@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"encoding/json"
 
@@ -102,9 +103,31 @@ Examples:
   vsp execute --file script.abap
   echo "WRITE sy-datum." | vsp execute --stdin
 
+Code that dies is reported as a failure and exits non-zero. Two different
+things have to be looked at for that, because a failing run leaves its
+evidence in one of two places:
+
+  in the response   ABAP Unit catches what the code raises — a zero divide,
+                    an uncaught exception — and says so in the test result.
+                    Nothing reaches ST22 in that case.
+  in ST22           what the code starts elsewhere is not caught: SUBMIT of a
+                    report that writes a list has no screen to write to in a
+                    background session, and dumps in SAPMSSY0 a moment later,
+                    long after this request was answered 200.
+
+The second is found by reading the runtime error feed before and after the
+run and reporting what appeared in between, which makes it circumstantial:
+--no-dump-check turns it off, --dump-wait changes how long to keep looking
+(2s by default, since the dump is written after the request was answered;
+--dump-wait 0 looks once and moves on).
+
 Note: If ExecuteABAP is blocked by safety settings, you'll see
 a clear message explaining what's needed.`,
-	RunE: runExecute,
+	// The failure report is printed in full before the error is returned, and
+	// a usage screen after it helps nobody.
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runExecute,
 }
 
 // --- graph command ---
@@ -306,6 +329,8 @@ func init() {
 	// Execute flags
 	executeCmd.Flags().String("file", "", "Read ABAP code from file")
 	executeCmd.Flags().Bool("stdin", false, "Read ABAP code from stdin")
+	executeCmd.Flags().Bool("no-dump-check", false, "Do not look in ST22 for a runtime error this run may have caused")
+	executeCmd.Flags().Duration("dump-wait", 2*time.Second, "How long to keep looking for that runtime error after the code returns")
 
 	// System subcommands
 	systemCmd.AddCommand(systemInfoCmd)
@@ -608,6 +633,21 @@ func runExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := context.Background()
+
+	// What ST22 already held before any of this ran. It has to be read first —
+	// afterwards there is no way to tell an old dump from a new one — and it is
+	// only ever advisory, so a system that will not answer for its runtime
+	// errors still gets to run the code.
+	var watch *adt.DumpWatch
+	if skip, _ := cmd.Flags().GetBool("no-dump-check"); !skip {
+		w, werr := client.WatchDumps(ctx, strings.ToUpper(strings.TrimSpace(params.User)))
+		if werr != nil {
+			fmt.Fprintf(os.Stderr, "! ST22 will not be checked for runtime errors: %v\n", werr)
+		} else {
+			watch = w
+		}
+	}
+
 	result, err := client.ExecuteABAP(ctx, code, nil)
 	if err != nil {
 		errStr := err.Error()
@@ -622,10 +662,111 @@ func runExecute(cmd *cobra.Command, args []string) error {
 			fmt.Println(line)
 		}
 	}
-	if result.Message != "" {
+	// ST22 is consulted before anything is said about the failure, because what
+	// is said depends on the answer: "ABAP Unit caught this and there is no
+	// dump" is a useful thing to know and a wrong thing to claim when a dump is
+	// sitting there.
+	var dumped []adt.Dump
+	st22Read := false
+	if watch != nil {
+		wait, _ := cmd.Flags().GetDuration("dump-wait")
+		fresh, derr := client.AwaitDumps(ctx, watch, wait)
+		if derr != nil {
+			fmt.Fprintf(os.Stderr, "! ST22 could not be read again: %v\n", derr)
+		} else {
+			st22Read = true
+		}
+		dumped = fresh
+	}
+
+	// The failure report says all of this and says it better, so the one-line
+	// summary would only be the same sentence twice.
+	if result.Message != "" && result.Failure == nil {
 		fmt.Fprintf(os.Stderr, "%s\n", result.Message)
 	}
+	if result.Failure != nil {
+		reportExecuteFailure(result.Failure, st22Read && len(dumped) == 0)
+	}
+	if watch != nil {
+		reportDumpsAfterRun(dumped, result.ProgramName, watch.User)
+	}
+
+	// The exit code is the part scripts read, so both kinds of failure have to
+	// reach it. The detail is on stderr already; this only has to be short and
+	// true.
+	switch {
+	case result.Failure != nil && len(dumped) > 0:
+		return fmt.Errorf("the code did not finish, and a runtime error appeared while it ran")
+	case result.Failure != nil:
+		return fmt.Errorf("the code did not finish")
+	case len(dumped) > 0:
+		return fmt.Errorf("a runtime error appeared while this ran")
+	}
 	return nil
+}
+
+// reportExecuteFailure prints what ABAP Unit caught. This is the certain half:
+// the failure was raised inside the code we submitted, and SAP said so in the
+// same response.
+//
+// st22Clear says the runtime error feed was read afterwards and had nothing
+// new in it, which is worth passing on — for most of these failures ABAP Unit
+// is the only witness and going to look in ST22 finds nothing.
+func reportExecuteFailure(failure *adt.ExecuteFailure, st22Clear bool) {
+	fmt.Fprintln(os.Stderr)
+	where := ""
+	if failure.Line > 0 {
+		where = fmt.Sprintf(" at line %d of the code you gave me", failure.Line)
+	}
+	fmt.Fprintf(os.Stderr, "%s%s\n", failure.Title, where)
+	for _, detail := range failure.Details {
+		fmt.Fprintf(os.Stderr, "  %s\n", detail)
+	}
+	if st22Clear {
+		// Worth saying, because the obvious next move — go and look in ST22 —
+		// finds nothing at all for this kind of failure: ABAP Unit caught the
+		// exception, so no work process ever terminated.
+		fmt.Fprintln(os.Stderr, "\nABAP Unit caught this and nothing new reached ST22, so there is no dump to look up.")
+	}
+}
+
+// reportDumpsAfterRun prints runtime errors that were not in ST22 before the
+// run and were after it.
+//
+// The wording is deliberately weaker than the one above. Nothing here proves
+// causation: the evidence is that a dump by this user appeared in the window
+// this ran in, which on a busy system is a coincidence waiting to happen. The
+// one exception is a dump that names the throwaway program we generated —
+// nobody else could have run that — and that one is stated as fact.
+func reportDumpsAfterRun(dumps []adt.Dump, programName, user string) {
+	if len(dumps) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr)
+	ours := false
+	for _, d := range dumps {
+		if strings.EqualFold(d.Program, programName) {
+			ours = true
+		}
+	}
+	if ours {
+		fmt.Fprintln(os.Stderr, "This code dumped:")
+	} else {
+		fmt.Fprintln(os.Stderr, "A runtime error appeared while this ran:")
+	}
+	for _, d := range dumps {
+		fmt.Fprintf(os.Stderr, "  %s  %s in %s (user %s)\n", stamp(d.At), d.ErrorType, d.Program, d.User)
+		if d.Message != "" {
+			fmt.Fprintf(os.Stderr, "      %s\n", d.Message)
+		}
+	}
+	if !ours {
+		who := "the same user"
+		if user == "" {
+			who = "some user"
+		}
+		fmt.Fprintf(os.Stderr, "\nThat is a dump by %s inside the window this ran in, which is an\nargument, not a proof — this code may only have started whatever died.\nSee it whole with: vsp dumps --explain latest\n", who)
+	}
 }
 
 func runGraph(cmd *cobra.Command, args []string) error {
