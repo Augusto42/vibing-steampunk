@@ -6,7 +6,11 @@ import (
 	"time"
 )
 
-func at(minute int) time.Time {
+// atMinute names a moment inside one hour. The watch tests define their own
+// `at` taking an RFC3339 string; two helpers with one name is what parallel
+// work produces, and the two are not interchangeable — this one is a minute
+// offset, that one is a whole timestamp.
+func atMinute(minute int) time.Time {
 	return time.Date(2026, 8, 22, 10, minute, 0, 0, time.UTC)
 }
 
@@ -15,7 +19,7 @@ func at(minute int) time.Time {
 // say so explicitly — which is the case worth being explicit about.
 func sig(id, errorType, program, include string, line int, component string, minute int) DumpSignature {
 	return DumpSignature{
-		Dump:       Dump{ID: id, ErrorType: errorType, Program: program, User: "TESTUSER", At: at(minute)},
+		Dump:       Dump{ID: id, ErrorType: errorType, Program: program, User: "TESTUSER", At: atMinute(minute)},
 		Include:    include,
 		Line:       line,
 		Component:  component,
@@ -72,7 +76,7 @@ func TestSameLineInADifferentIncludeIsNotTheSameBug(t *testing.T) {
 // only one of them is evidence.
 func TestAnUnreadDetailIsNotEvidenceOfADifferentLine(t *testing.T) {
 	subject := sig("a", "SYNTAX_ERROR", "ZCL_DEMO_ORDER===============CP", "ZCL_DEMO_ORDER===============CM001", 22, "", 10)
-	other := DumpSignature{Dump: Dump{ID: "b", ErrorType: "SYNTAX_ERROR", Program: "ZCL_DEMO_ORDER===============CP", At: at(5)}}
+	other := DumpSignature{Dump: Dump{ID: "b", ErrorType: "SYNTAX_ERROR", Program: "ZCL_DEMO_ORDER===============CP", At: atMinute(5)}}
 
 	matches := RankSimilarDumps(subject, []DumpSignature{other})
 	if len(matches) != 1 || matches[0].Rung != RungProgram {
@@ -192,7 +196,7 @@ func TestSummaryCountsEachMatchOnce(t *testing.T) {
 		t.Fatalf("rung 4 should hold one dump, got %+v", summary[2])
 	}
 	// The window is what answers "is this new": first and last across the rung.
-	if !summary[0].First.Equal(at(1)) || !summary[0].Last.Equal(at(20)) {
+	if !summary[0].First.Equal(atMinute(1)) || !summary[0].Last.Equal(atMinute(20)) {
 		t.Fatalf("rung 1 window is %s to %s", summary[0].First, summary[0].Last)
 	}
 	if len(summary[0].Users) != 1 || summary[0].Users[0] != "TESTUSER" {
@@ -216,13 +220,13 @@ func TestRungLabelsRefuseToPromote(t *testing.T) {
 // candidate that cannot move: a different runtime error is off the ladder
 // whatever its detail says.
 func TestDeepenOrderSpendsTheBudgetWhereItCanMoveARung(t *testing.T) {
-	subject := Dump{ID: "a", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: at(30)}
+	subject := Dump{ID: "a", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: atMinute(30)}
 	order := DeepenOrder(subject, []Dump{
-		{ID: "elsewhere", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_TWO", At: at(29)},
-		{ID: "unrelated", ErrorType: "SYNTAX_ERROR", Program: "ZDEMO_ONE", At: at(28)},
-		{ID: "a", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: at(30)},
-		{ID: "same-old", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: at(2)},
-		{ID: "same-new", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: at(27)},
+		{ID: "elsewhere", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_TWO", At: atMinute(29)},
+		{ID: "unrelated", ErrorType: "SYNTAX_ERROR", Program: "ZDEMO_ONE", At: atMinute(28)},
+		{ID: "a", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: atMinute(30)},
+		{ID: "same-old", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: atMinute(2)},
+		{ID: "same-new", ErrorType: "DELTA_NO_OBJECT", Program: "ZDEMO_ONE", At: atMinute(27)},
 	})
 
 	got := make([]string, 0, len(order))
