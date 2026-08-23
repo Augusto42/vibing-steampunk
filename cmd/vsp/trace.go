@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oisee/open-rfc-go/rfc"
@@ -136,6 +137,7 @@ session too, and vsp is usually the next thing to talk to the system.`,
 			}
 			fmt.Fprintf(os.Stderr, "armed for %s (%s, %s); waiting up to %ds\n", object, objType, procType, wait)
 
+			var fireErr callOutcome
 			if call {
 				// A separate connection, because a session cannot trace itself
 				// into existence: the request is consumed by the session that
@@ -145,11 +147,13 @@ session too, and vsp is usually the next thing to talk to the system.`,
 					fired, ferr := saprfc.Open(ctx, dest)
 					if ferr != nil {
 						fmt.Fprintln(os.Stderr, "! --call could not connect:", ferr)
+						fireErr.fail(ferr)
 						return
 					}
 					defer func() { _ = fired.Close(ctx) }()
 					if _, ferr = fired.Call(ctx, object, rfc.Params{}); ferr != nil {
 						fmt.Fprintln(os.Stderr, "! --call failed:", ferr)
+						fireErr.fail(ferr)
 					}
 				}()
 			}
@@ -175,13 +179,46 @@ session too, and vsp is usually the next thing to talk to the system.`,
 					if !keep {
 						_ = t.DeleteRequest(ctx, reqID)
 					}
-					return fmt.Errorf("nothing ran %s within %ds — the trace request is %s",
-						object, wait, disarmed(keep))
+					// "Nothing ran it" is true and misleading when the thing
+					// that did not run it was the --call we launched: the
+					// reader concludes the object is dead code and stops
+					// looking, having never been told the call errored.
+					return fmt.Errorf("nothing ran %s within %ds — the trace request is %s%s",
+						object, wait, disarmed(keep), fireErr.note())
 				}
 				time.Sleep(2 * time.Second)
 			}
 		})
 	},
+}
+
+// callOutcome carries what became of the --call goroutine back to the code that
+// decides what the wait meant.
+//
+// The goroutine fires the object on a second connection and cannot return an
+// error to anyone, so its failures went to stderr and nowhere else. The command
+// then ended by saying nothing ran the object — an empty result standing in for
+// a failure it had already seen.
+type callOutcome struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (c *callOutcome) fail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.err = err
+}
+
+// note is the clause to append to a "nothing happened" verdict, or nothing at
+// all when the call did go out.
+func (c *callOutcome) note() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		return ""
+	}
+	return " — and --call never reached it: " + c.err.Error()
 }
 
 func disarmed(keep bool) string {

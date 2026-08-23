@@ -3,6 +3,7 @@ package adt
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The sentence that stops a wrong conclusion. Without it a reader is told "no
@@ -69,5 +70,45 @@ func TestPluralsReadCorrectly(t *testing.T) {
 	already := UnsearchedNote([]Unsearched{{Object: "A", Reason: "x"}}, 3, "objects")
 	if strings.Contains(already, "objectss") {
 		t.Fatalf("got %q", already)
+	}
+}
+
+// An expired session does not answer 401 with a sentence: ICF returns a whole
+// HTML logon page under it. Carried verbatim into the note, that buries the
+// count the note exists to deliver — the same argument that caps the list at
+// five names. The Reason field keeps the failure whole for JSON callers.
+func TestALogonPageDoesNotBecomeTheCaveat(t *testing.T) {
+	page := "ADT API error: status 401: <html><head><title>Logon failed</title><style>body { background: #ffffff; }" +
+		strings.Repeat("x", 4000) + "</style></head><body>401 Not authorized</body></html>"
+	note := UnsearchedNote([]Unsearched{{Object: "ZCL_DEMO", Reason: page}}, 2, "object")
+
+	if !strings.Contains(note, "1 of 2") {
+		t.Fatalf("the count must survive the page:\n%s", note)
+	}
+	if len(note) > 400 {
+		t.Fatalf("the note is %d bytes; a caveat nobody can read stops nothing", len(note))
+	}
+	if !strings.Contains(note, "401") {
+		t.Fatalf("the useful head of the reason should survive:\n%s", note)
+	}
+	if strings.Count(note, "\n") > 2 {
+		t.Fatalf("a multi-line reason must not spill down the terminal:\n%s", note)
+	}
+}
+
+// A reason cut mid-character would print a replacement glyph; SAP messages
+// arrive in whatever code page the system felt like.
+func TestATruncatedReasonStaysValidText(t *testing.T) {
+	note := UnsearchedNote([]Unsearched{{Object: "A", Reason: strings.Repeat("ä", 500)}}, 2, "object")
+	if !utf8.ValidString(note) {
+		t.Fatal("the note must stay valid UTF-8 after truncation")
+	}
+}
+
+// A failure with nothing to say still has to look like a failure.
+func TestAnEmptyReasonStillReadsAsOne(t *testing.T) {
+	note := UnsearchedNote([]Unsearched{{Object: "ZCL_DEMO", Reason: "   "}}, 2, "object")
+	if !strings.Contains(note, "no reason given") {
+		t.Fatalf("got %q", note)
 	}
 }

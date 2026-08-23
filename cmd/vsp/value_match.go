@@ -51,10 +51,16 @@ func matchValueLevelFindings(
 
 	keyFieldsByTable := make(map[string][]ddKeyField, len(tables))
 	unpackedByTable := make(map[string][]map[string]string, len(tables))
+	// A table whose DD03L read failed and a table that has no key metadata both
+	// end up absent from keyFieldsByTable, and downstream they were counted
+	// together as "unknown target". One is a fact about the table; the other is
+	// a fact about the connection, and only the second means rerunning helps.
+	keyFieldErr := make(map[string]string, len(tables))
 	for _, t := range tables {
 		kf, err := fetchKeyFields(ctx, client, t, cache)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  [value-match warn] %v\n", err)
+			keyFieldErr[t] = err.Error()
 			continue
 		}
 		keyFieldsByTable[t] = kf
@@ -72,6 +78,7 @@ func matchValueLevelFindings(
 	var findings []graph.ValueLevelFinding
 	dropNonKey := 0
 	dropNoTable := 0
+	dropUnread := 0
 	for _, call := range calls {
 		// Direct-SELECT findings carry every literal WHERE predicate the
 		// extractor saw, including non-key fields. Filter them down to
@@ -84,9 +91,14 @@ func matchValueLevelFindings(
 		if call.Kind == "direct_select" {
 			kf, ok := keyFieldsByTable[call.Target]
 			if !ok || len(kf) == 0 {
-				// Unknown table or no key metadata → nothing we can
-				// validate. Skip silently but count for the summary.
-				dropNoTable++
+				// Nothing we can validate either way, but the two reasons
+				// are counted apart: a dropped call the audit could not
+				// look at is a hole in the audit, not a property of the code.
+				if _, failed := keyFieldErr[call.Target]; failed {
+					dropUnread++
+				} else {
+					dropNoTable++
+				}
 				continue
 			}
 			keySet := make(map[string]bool, len(kf))
@@ -141,12 +153,18 @@ func matchValueLevelFindings(
 		}
 
 		if _, ok := keyFieldsByTable[call.Target]; !ok {
-			// We never resolved the key metadata (table not in DD03L, or
-			// the query failed). Mark it missing with an explanatory note
-			// rather than silently dropping — the user needs to see that
-			// this target could not be matched at all.
+			// We never resolved the key metadata. Mark it missing with an
+			// explanatory note rather than silently dropping — the user needs
+			// to see that this target could not be matched at all. MISSING is
+			// an accusation against the transport, so the note has to say
+			// whether it was earned: a table with no key metadata is one
+			// answer, a DD03L read that failed is not an answer at all.
 			finding.Status = "MISSING"
-			finding.Note = "no DD03L key metadata available for target"
+			if reason, failed := keyFieldErr[call.Target]; failed {
+				finding.Note = "not checked: reading DD03L key fields failed: " + reason
+			} else {
+				finding.Note = "no DD03L key metadata available for target"
+			}
 			findings = append(findings, finding)
 			continue
 		}
@@ -178,9 +196,17 @@ func matchValueLevelFindings(
 		findings = append(findings, finding)
 	}
 
-	if dropNonKey > 0 || dropNoTable > 0 {
-		fmt.Fprintf(os.Stderr, "Value-level: dropped %d direct-SELECT calls (non-key WHERE: %d, unknown target: %d)\n",
-			dropNonKey+dropNoTable, dropNonKey, dropNoTable)
+	if dropNonKey > 0 || dropNoTable > 0 || dropUnread > 0 {
+		fmt.Fprintf(os.Stderr, "Value-level: dropped %d direct-SELECT calls (non-key WHERE: %d, unknown target: %d, key fields unreadable: %d)\n",
+			dropNonKey+dropNoTable+dropUnread, dropNonKey, dropNoTable, dropUnread)
+	}
+	if len(keyFieldErr) > 0 {
+		missed := make([]adt.Unsearched, 0, len(keyFieldErr))
+		for t, reason := range keyFieldErr {
+			missed = append(missed, adt.Unsearched{Object: t, Reason: reason})
+		}
+		sort.Slice(missed, func(i, j int) bool { return missed[i].Object < missed[j].Object })
+		fmt.Fprintln(os.Stderr, adt.UnsearchedNote(missed, len(tables), "table"))
 	}
 
 	// Stable output order: by (table, source object, via, row).

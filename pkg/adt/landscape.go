@@ -654,8 +654,21 @@ func ScanLandscapeSources(ctx context.Context) []LandscapeSource {
 		add(p, kind)
 	}
 
-	for _, vm := range ParallelsGuests(ctx) {
-		for _, winPath := range ParallelsLandscapeFiles(ctx, vm) {
+	// A discovery step that fails becomes a source that could not be read,
+	// rather than a guest that quietly is not there. `landscape scan` already
+	// has a column for exactly this, and its "No landscape found" line is what
+	// a silent drop turned into.
+	guests, err := ParallelsGuests(ctx)
+	if err != nil {
+		out = append(out, LandscapeSource{Kind: "parallels", Ref: "(guest discovery)", Err: err.Error()})
+	}
+	for _, vm := range guests {
+		paths, err := ParallelsLandscapeFiles(ctx, vm)
+		if err != nil {
+			out = append(out, LandscapeSource{Kind: "parallels", Ref: ParallelsRef(vm, ""), Err: err.Error()})
+			continue
+		}
+		for _, winPath := range paths {
 			add(ParallelsRef(vm, winPath), "parallels")
 		}
 	}
