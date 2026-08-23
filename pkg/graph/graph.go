@@ -14,14 +14,14 @@ type EdgeKind string
 
 const (
 	// Code dependency edges
-	EdgeCalls           EdgeKind = "CALLS"             // FM call, method call, SUBMIT, PERFORM
-	EdgeReferences      EdgeKind = "REFERENCES"        // TYPE REF TO, DATA TYPE, INTERFACES
-	EdgeLoads           EdgeKind = "LOADS"              // D010INC compile-time include load
-	EdgeContainsInclude EdgeKind = "CONTAINS_INCLUDE"   // Program structure (INCLUDE statement)
-	EdgeDependsOnCDS    EdgeKind = "DEPENDS_ON_CDS"     // CDS view dependency
+	EdgeCalls           EdgeKind = "CALLS"            // FM call, method call, SUBMIT, PERFORM
+	EdgeReferences      EdgeKind = "REFERENCES"       // TYPE REF TO, DATA TYPE, INTERFACES
+	EdgeLoads           EdgeKind = "LOADS"            // D010INC compile-time include load
+	EdgeContainsInclude EdgeKind = "CONTAINS_INCLUDE" // Program structure (INCLUDE statement)
+	EdgeDependsOnCDS    EdgeKind = "DEPENDS_ON_CDS"   // CDS view dependency
 
 	// Transport edges (MVP)
-	EdgeInTransport  EdgeKind = "IN_TRANSPORT"  // object → transport request (E071)
+	EdgeInTransport   EdgeKind = "IN_TRANSPORT"   // object → transport request (E071)
 	EdgeCoTransported EdgeKind = "CO_TRANSPORTED" // object ↔ object: shared TR or CR (weaker, derived)
 
 	// Config edges (MVP)
@@ -91,9 +91,10 @@ type Node struct {
 
 // Edge represents a dependency relationship between two nodes.
 // All edges point FROM the dependent TO the dependency:
-//   PROG:ZREPORT --CALLS--> FUGR:BAPI_USER (ZREPORT calls BAPI_USER)
-//   CLAS:ZCL_FOO --IN_TRANSPORT--> TR:A4HK900123 (ZCL_FOO is in transport)
-//   PROG:ZREPORT --READS_CONFIG--> TVARVC:ZKEKEKE (ZREPORT reads ZKEKEKE)
+//
+//	PROG:ZREPORT --CALLS--> FUGR:BAPI_USER (ZREPORT calls BAPI_USER)
+//	CLAS:ZCL_FOO --IN_TRANSPORT--> TR:A4HK900123 (ZCL_FOO is in transport)
+//	PROG:ZREPORT --READS_CONFIG--> TVARVC:ZKEKEKE (ZREPORT reads ZKEKEKE)
 type Edge struct {
 	From       string         `json:"from"`                  // Source node ID
 	To         string         `json:"to"`                    // Target node ID
@@ -149,7 +150,7 @@ func (e *Edge) GetMeta(key string) (any, bool) {
 // Graph is an in-memory dependency graph with adjacency indexes.
 type Graph struct {
 	mu    sync.RWMutex
-	nodes map[string]*Node  // ID → Node
+	nodes map[string]*Node // ID → Node
 	edges []*Edge
 
 	// Indexes for fast lookup
@@ -268,12 +269,12 @@ func (g *Graph) Stats() GraphStats {
 	defer g.mu.RUnlock()
 
 	s := GraphStats{
-		NodeCount:   len(g.nodes),
-		EdgeCount:   len(g.edges),
-		ByNodeType:  make(map[string]int),
-		ByEdgeKind:  make(map[EdgeKind]int),
-		BySource:    make(map[EdgeSource]int),
-		ByPackage:   make(map[string]int),
+		NodeCount:  len(g.nodes),
+		EdgeCount:  len(g.edges),
+		ByNodeType: make(map[string]int),
+		ByEdgeKind: make(map[EdgeKind]int),
+		BySource:   make(map[EdgeSource]int),
+		ByPackage:  make(map[string]int),
 	}
 	for _, n := range g.nodes {
 		s.ByNodeType[n.Type]++
@@ -290,12 +291,12 @@ func (g *Graph) Stats() GraphStats {
 
 // GraphStats holds summary statistics.
 type GraphStats struct {
-	NodeCount  int                  `json:"node_count"`
-	EdgeCount  int                  `json:"edge_count"`
-	ByNodeType map[string]int       `json:"by_node_type"`
-	ByEdgeKind map[EdgeKind]int     `json:"by_edge_kind"`
-	BySource   map[EdgeSource]int   `json:"by_source"`
-	ByPackage  map[string]int       `json:"by_package"`
+	NodeCount  int                `json:"node_count"`
+	EdgeCount  int                `json:"edge_count"`
+	ByNodeType map[string]int     `json:"by_node_type"`
+	ByEdgeKind map[EdgeKind]int   `json:"by_edge_kind"`
+	BySource   map[EdgeSource]int `json:"by_source"`
+	ByPackage  map[string]int     `json:"by_package"`
 }
 
 // --- Include → Object normalization ---
@@ -339,14 +340,18 @@ func NormalizeInclude(include string) (nodeID string, objType string, objName st
 		fugr := inc[4:]
 		return NodeID("FUGR", fugr), "FUGR", fugr
 	}
-	if len(inc) > 4 && inc[0] == 'L' {
-		// L<fugr>Uxx, L<fugr>Fxx, L<fugr>TOP, etc.
-		// Try to extract function group name
-		for _, sep := range []string{"U0", "F0", "U1", "F1", "TOP", "UXX", "I0"} {
-			if idx := strings.Index(inc[1:], sep); idx > 0 {
-				fugr := inc[1 : idx+1]
-				return NodeID("FUGR", fugr), "FUGR", fugr
-			}
+	// L<fugr><section>, where the section is always the last three characters:
+	// U01…U99 for function modules, F01…F99 for forms, TOP, UXX, I01, E01, O01.
+	//
+	// This used to search for one of {U0, F0, U1, F1, TOP, UXX, I0} anywhere in
+	// the name, which matches U01 and F15 and misses U27 — so a function group
+	// with more than a couple of dozen includes of one kind was reported as a
+	// *program* named after its own include. Nothing failed; the object simply
+	// came out as the wrong kind with the wrong name, which is worse.
+	if len(inc) > 4 && inc[0] == 'L' && looksLikePoolSection(inc[len(inc)-3:]) {
+		fugr := inc[1 : len(inc)-3]
+		if fugr != "" {
+			return NodeID("FUGR", fugr), "FUGR", fugr
 		}
 	}
 
@@ -361,4 +366,35 @@ func IsStandardObject(name string) bool {
 		return true
 	}
 	return upper[0] != 'Z' && upper[0] != 'Y'
+}
+
+// looksLikePoolSection reports whether three characters are a function-pool
+// section: U01…U99, F01…F99, I01, E01, O01, or the two named ones, TOP and UXX.
+//
+// The first attempt at this accepted a letter followed by any two letters or
+// digits, with a comment arguing that being strict would reject a section
+// nobody here had met. A test written five minutes later refused a program
+// called LEGACY_REPORT: its last three characters are ORT, which is a letter
+// and two more, so the program became a function group named EGACY_REP. The
+// looseness was not caution, it was a second way to get the wrong object.
+//
+// Digits it is. A section that turns out to exist and is neither shape will
+// simply not resolve, which is visible, rather than resolving to something
+// plausible and wrong.
+func looksLikePoolSection(section string) bool {
+	if section == "TOP" || section == "UXX" {
+		return true
+	}
+	if len(section) != 3 {
+		return false
+	}
+	if section[0] < 'A' || section[0] > 'Z' {
+		return false
+	}
+	for i := 1; i < 3; i++ {
+		if section[i] < '0' || section[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
