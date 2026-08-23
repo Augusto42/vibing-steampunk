@@ -199,6 +199,17 @@ const scoreCalledByStack = 60
 // A graph deep enough to reach everything makes "this is called somewhere below
 // the stack" true of most of the system, which would promote noise into a
 // structural-looking rung and quietly wreck the ranking.
+//
+// Known gap, found while building the impact query: GetCalleesOf goes to
+// /sap/bc/adt/cai/callgraph, and that resource answers 404 "No suitable
+// resource found" on 7.58 — checked directly, with a CSRF token, so it is the
+// resource that is absent and not the request. Every frame therefore takes the
+// `continue` below and scoreCalledByStack never fires. The rung is not wrong,
+// it is unfed. Reviving it means asking CROSS the other way round —
+// SELECT NAME, TYPE FROM CROSS WHERE INCLUDE = <frame include> — the same table
+// `vsp graph` already falls back to; that is a separate change and is not made
+// here. Until then this returns an empty map on any system without CAI, which
+// costs the ranking a rung and costs it nothing else.
 func (c *Client) calleesOfStack(ctx context.Context, stack []DumpFrame) map[string]string {
 	out := map[string]string{}
 	for _, frame := range stack {
@@ -224,17 +235,18 @@ func (c *Client) calleesOfStack(ctx context.Context, stack []DumpFrame) map[stri
 	return out
 }
 
-// programURI guesses the ADT URI of a program named in a dump stack. Class
-// pools arrive padded with '=' and are not addressable that way, so they are
-// unwrapped back to the class name.
+// programURI is the ADT URI of a program named in a dump stack.
+//
+// It unwrapped class pools and sent everything else to /programs/programs,
+// which is wrong for function groups: SAPLSBAL_DB is not addressable there, and
+// the 404 that comes back is indistinguishable from "this program calls
+// nothing". unitForFrame in dumpimpact.go does the whole mapping — class and
+// interface pools, function groups, function modules, programs — so this defers
+// to it rather than keeping a second, thinner copy of the same knowledge.
 func programURI(program string) string {
-	name := strings.TrimSpace(program)
-	if name == "" {
+	unit, ok := unitForFrame(DumpFrame{Program: program})
+	if !ok {
 		return ""
 	}
-	if i := strings.Index(name, "="); i > 0 {
-		class := name[:i]
-		return "/sap/bc/adt/oo/classes/" + strings.ToLower(class)
-	}
-	return "/sap/bc/adt/programs/programs/" + strings.ToLower(name)
+	return unit.URI
 }

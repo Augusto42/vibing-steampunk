@@ -154,13 +154,22 @@ func TestCalledFromTheStackOutranksTheClockButNotTheStack(t *testing.T) {
 }
 
 // Class pools arrive from a dump padded with '=' and are not addressable that
-// way; a program name is.
+// way; neither are function pools, and this test used to assert that they were.
+//
+// It asked for SAPLZDEMO_FG under /programs/programs and got it, which is a 404
+// on any system — and a 404 here is silent, because the caller treats a frame
+// whose graph cannot be read as a frame that contributes nothing. The
+// expectation was the bug. unitForFrame in dumpimpact.go does the real mapping
+// and programURI now defers to it.
 func TestProgramURIUnwrapsAClassPool(t *testing.T) {
 	if got := programURI("ZCL_DEMO_ORDER===============CP"); got != "/sap/bc/adt/oo/classes/zcl_demo_order" {
 		t.Fatalf("class pool should resolve to the class, got %q", got)
 	}
-	if got := programURI("SAPLZDEMO_FG"); got != "/sap/bc/adt/programs/programs/saplzdemo_fg" {
-		t.Fatalf("program should resolve to a program, got %q", got)
+	if got := programURI("SAPLZDEMO_FG"); got != "/sap/bc/adt/functions/groups/zdemo_fg" {
+		t.Fatalf("a function pool should resolve to its group, got %q", got)
+	}
+	if got := programURI("ZDEMO_REPORT"); got != "/sap/bc/adt/programs/programs/zdemo_report" {
+		t.Fatalf("a report should resolve to a program, got %q", got)
 	}
 	if got := programURI("  "); got != "" {
 		t.Fatalf("nothing in, nothing out, got %q", got)

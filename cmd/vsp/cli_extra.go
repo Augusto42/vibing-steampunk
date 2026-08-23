@@ -121,7 +121,12 @@ Subcommands:
 Direct usage (call graph):
   vsp graph CLAS ZCL_MY_CLASS
   vsp graph CLAS ZCL_MY_CLASS --direction callers
-  vsp graph CLAS ZCL_MY_CLASS --direction callees --depth 2`,
+  vsp graph FUNC Z_MY_FM --direction callers
+  vsp graph CLAS ZCL_MY_CLASS --direction callees --depth 2
+
+--direction callers reads the where-used list SE84 uses, so it reports the
+package and the object type rather than a bare list of include names. The
+--depth flag does not apply to it: that list is one hop by nature.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runGraph,
 }
@@ -662,6 +667,22 @@ func runGraph(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
+	// FUNC used to fall into the default and be asked for as a class, which is
+	// a 404 that then looks like a call graph the system declined to give. A
+	// module is addressed under its group, and only TFDIR knows which group
+	// that is.
+	if objType == "FUNC" {
+		res, qerr := client.RunQuery(ctx,
+			fmt.Sprintf("SELECT PNAME FROM TFDIR WHERE FUNCNAME = '%s'", name), 1)
+		if qerr != nil || res == nil || len(res.Rows) == 0 {
+			return fmt.Errorf("function module %s is not in TFDIR, so its group is unknown", name)
+		}
+		pool := strings.TrimSpace(fmt.Sprintf("%v", res.Rows[0]["PNAME"]))
+		group := strings.TrimPrefix(pool, "SAPL")
+		objURI = "/sap/bc/adt/functions/groups/" + url.PathEscape(strings.ToLower(group)) +
+			"/fmodules/" + encodedName
+	}
+
 	// For transactions: resolve TCODE → program name first
 	if objType == "TRAN" || objType == "TCODE" {
 		result, err := client.RunQuery(ctx,
@@ -682,6 +703,19 @@ func runGraph(cmd *cobra.Command, args []string) error {
 
 	switch direction {
 	case "callers":
+		// The where-used list behind SE84 goes first, because the call-graph
+		// resource GetCallersOf uses answers 404 on 7.58 and every request to
+		// it is a wasted round trip on the way to the table fallback. This one
+		// answers, and it answers with the package and the object type instead
+		// of a bare list of include names.
+		// An answer of zero is an answer and is not retried. Falling through on
+		// an empty list would send two more requests to say the same thing,
+		// under a banner reading "ADT call graph not available" — which would
+		// describe a query that had in fact succeeded.
+		if callers, err := whereUsedCallers(ctx, client, objURI); err == nil {
+			printWhereUsedCallers(callers)
+			return nil
+		}
 		node, err := client.GetCallersOf(ctx, objURI, depth)
 		if err != nil {
 			adtFailed = true
@@ -843,6 +877,31 @@ func crossToADTType(crossType string) string {
 	default:
 		return crossType
 	}
+}
+
+// whereUsedCallers asks the SE84 where-used list who calls an object.
+func whereUsedCallers(ctx context.Context, client *adt.Client, objURI string) ([]adt.ExposedCaller, error) {
+	return client.WhereUsed(ctx, objURI)
+}
+
+func printWhereUsedCallers(callers []adt.ExposedCaller) {
+	if len(callers) == 0 {
+		// Checked live: a name that does not exist gets the same 200 and the
+		// same empty list as a real object nobody calls. The list cannot tell
+		// them apart, so neither should the sentence printed about it.
+		fmt.Println("The where-used list answered and it is empty: nobody calls this — or the name does not exist, which reads identically here.")
+		return
+	}
+	rows := make([][]string, 0, len(callers))
+	for _, c := range callers {
+		kind := "code"
+		if c.IsTest {
+			kind = "test"
+		}
+		rows = append(rows, []string{c.Name, c.Type, c.Package, kind, c.Component})
+	}
+	fmt.Print(formatTable([]string{"Object", "Type", "Package", "Kind", "References in"}, rows))
+	fmt.Fprintf(os.Stderr, "\n%d callers, from the where-used list.\n", len(callers))
 }
 
 func printGraphNode(node *adt.CallGraphNode, indent int) {
