@@ -251,13 +251,26 @@ See [ExecuteABAP Implementation Report](reports/2025-12-05-004-execute-abap-impl
 
 | Tool | Description | Mode |
 |------|-------------|------|
-| `GetDumps` | List runtime errors with filters (user, exception type, program, date range) | Focused |
-| `GetDump` | Get full details of a specific dump including stack trace | Focused |
+| `ListDumps` | List runtime errors with filters (error type, program, user, date range) | Focused |
+| `GetDump` | One dump in detail: header, termination point, application component, call stack | Focused |
 
 **Use Cases:**
 - Monitor system health by checking recent dumps
 - Debug production issues by examining dump details
-- Track error patterns by exception type
+- Track error patterns by error type
+
+**The rest of the post-mortem lives on the universal tool** (hyperfocused mode),
+because it is a set of questions about a dump rather than more tools:
+
+```
+SAP(action="analyze", params={"type": "group_dumps"})       what keeps failing, not what failed once
+SAP(action="analyze", params={"type": "explain_dump"})      the stack, plus the application log ranked by argument
+SAP(action="analyze", params={"type": "similar_dumps"})     is this new, and how often
+SAP(action="analyze", params={"type": "dump_impact"})       who else reaches the code that failed
+SAP(action="analyze", params={"type": "application_log"})   SLG1 headers by program, user, log object
+```
+
+The same ground the CLI covers with `vsp dumps` and `vsp applog`.
 
 ---
 

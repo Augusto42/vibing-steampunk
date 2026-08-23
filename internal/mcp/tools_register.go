@@ -507,24 +507,22 @@ func (s *Server) registerDiagnosticsTools(shouldRegister func(string) bool) {
 	// --- Runtime Errors / Short Dumps (RABAX) ---
 	if shouldRegister("ListDumps") {
 		s.mcpServer.AddTool(mcp.NewTool("ListDumps",
-			mcp.WithDescription("List runtime errors (short dumps) from the SAP system. Filter by user, exception type, program, date range."),
+			mcp.WithDescription("List runtime errors (short dumps) from the SAP system, newest first. Filter by error type, program, user, date range. "+
+				"Grouping, correlation with the application log, similarity and blast radius are reachable through SAP(action=\"analyze\") in hyperfocused mode."),
 			mcp.WithString("user",
 				mcp.Description("Filter by username"),
 			),
-			mcp.WithString("exception_type",
-				mcp.Description("Filter by exception type (e.g., CX_SY_ZERODIVIDE)"),
+			mcp.WithString("error_type",
+				mcp.Description("Filter by runtime error, e.g. CALL_FUNCTION_NOT_REMOTE or CX_SY_ZERODIVIDE (alias: exception_type)"),
 			),
 			mcp.WithString("program",
-				mcp.Description("Filter by program name"),
+				mcp.Description("Filter by terminated program"),
 			),
-			mcp.WithString("package",
-				mcp.Description("Filter by package"),
+			mcp.WithString("since",
+				mcp.Description("Earliest date, YYYY-MM-DD or YYYYMMDD (alias: date_from)"),
 			),
-			mcp.WithString("date_from",
-				mcp.Description("Start date (YYYYMMDD format)"),
-			),
-			mcp.WithString("date_to",
-				mcp.Description("End date (YYYYMMDD format)"),
+			mcp.WithString("until",
+				mcp.Description("Latest date, YYYY-MM-DD or YYYYMMDD (alias: date_to)"),
 			),
 			mcp.WithNumber("max_results",
 				mcp.Description("Maximum number of results (default: 100)"),
@@ -534,10 +532,11 @@ func (s *Server) registerDiagnosticsTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("GetDump") {
 		s.mcpServer.AddTool(mcp.NewTool("GetDump",
-			mcp.WithDescription("Get full details of a specific runtime error (short dump) including stack trace."),
+			mcp.WithDescription("Get one runtime error in detail: header, termination point, application component and call stack. "+
+				"A release that serves the dump feed without the detail resource says so in notes rather than failing."),
 			mcp.WithString("dump_id",
 				mcp.Required(),
-				mcp.Description("Dump ID from ListDumps result"),
+				mcp.Description("Dump ID from ListDumps, part of one, or \"latest\""),
 			),
 		), s.handleGetDump)
 	}
