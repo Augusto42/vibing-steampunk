@@ -149,6 +149,7 @@ happen again.
 
 ```bash
 vsp -s a4h dumps --group                          # what keeps failing, not what failed once
+vsp -s a4h dumps --similar latest                 # what else looks like this one, and how closely
 vsp -s a4h dumps --explain latest --tolerance 10m # one dump, its stack, and the log around it
 vsp -s a4h applog --program ZCL_ORDER_POST        # who logged what, and from where
 ```
@@ -156,6 +157,29 @@ vsp -s a4h applog --program ZCL_ORDER_POST        # who logged what, and from wh
 `--group` collapses dumps by runtime error and terminated program, which is
 structural. Grouping by "the same afternoon" would make a busy hour look like
 one incident.
+
+`--similar` answers "is this new, and how often does it happen" on a ladder,
+and says which rung each match is on:
+
+| rung | claim |
+|---|---|
+| 1 | same error, same program, same line — the same bug |
+| 2 | same error, same program — the same bug or its siblings |
+| 3 | same error, same application component — a neighbourhood |
+| 4 | same error — a class of failure |
+
+Rungs 2 and 4 come free with the listing. Rungs 1 and 3 need the failing line
+and the application component, which are in the dump detail and nowhere else,
+so they cost one fetch per candidate — bounded by `--deep`, and skipped
+entirely on a release that has the feed but not the detail resource. A rung is
+an argument, not a verdict: rung 4 is the same class of failure and is not the
+same bug, and the output says so on every row rather than in a footnote.
+
+Two things the ladder refuses to do. Three different function groups on a live
+system all terminate at `SAPMSSY1` line 36, because that is where the RFC entry
+point is — so the line alone is never rung 1 without the program. And custom
+code is usually assigned to no application component, which is reported as no
+neighbourhood rather than as one shared neighbourhood of everything unassigned.
 
 `--explain` is the interesting one. Correlating a dump with the application log
 is a time join, and a time join is where a tool starts lying — two things in the
@@ -768,6 +792,7 @@ vsp -s a4h graph where-used-config ZKEKEKE --format mermaid > config.mmd
 # Runtime errors and the application log
 vsp -s a4h dumps --since 2026-08-01                # newest first
 vsp -s a4h dumps --group                           # what keeps failing
+vsp -s a4h dumps --similar latest                  # the same bug, its siblings, its neighbourhood
 vsp -s a4h dumps --explain latest --tolerance 10m  # stack + ranked log around it
 vsp -s a4h applog --program ZCL_ORDER_POST --top 20
 vsp -s a4h applog --user TESTUSER --since 2026-08-01
