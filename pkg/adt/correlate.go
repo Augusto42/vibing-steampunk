@@ -69,6 +69,17 @@ func (c *Client) CorrelateDump(ctx context.Context, dump Dump, tolerance time.Du
 	// One level down from each frame. This is the rung below the stack: what
 	// those frames called has returned already, so it is not on the path at the
 	// moment of failure, but it is where a bad value is usually prepared.
+	//
+	// It does not fire today, and the honest thing is to say so here rather
+	// than let it look implemented. GetCalleesOf asks
+	// /sap/bc/adt/cai/callgraph, which is advertised on none of 7.50, 7.57 or
+	// 7.58 and answers 404 — so every frame "contributes nothing" and the rung
+	// is silently always empty. That silence was mine: I wrote the swallow as
+	// graceful degradation for a resource that turns out never to be there.
+	//
+	// The rung is kept because the ranking is right and only the source of
+	// callees is missing; where-used over CROSS would supply it. Until then
+	// CalleesUnavailable reports it instead of pretending.
 	callees := c.calleesOfStack(ctx, stack)
 	return c.correlateWith(ctx, dump, stack, callees, tolerance, limit)
 }
@@ -199,6 +210,14 @@ const scoreCalledByStack = 60
 // A graph deep enough to reach everything makes "this is called somewhere below
 // the stack" true of most of the system, which would promote noise into a
 // structural-looking rung and quietly wreck the ranking.
+// CalleesUnavailable reports whether this system offers no way to ask what a
+// program calls, which makes the graph rung of the ranking dead. A caller that
+// prints the ladder should say so rather than show a rung that cannot fire.
+func (c *Client) CalleesUnavailable(ctx context.Context) bool {
+	_, err := c.GetCalleesOf(ctx, "/sap/bc/adt/programs/programs/sapmssy1", 1)
+	return err != nil
+}
+
 func (c *Client) calleesOfStack(ctx context.Context, stack []DumpFrame) map[string]string {
 	out := map[string]string{}
 	for _, frame := range stack {

@@ -166,12 +166,18 @@ program that wrote it*. So time is the filter and the program is the reason:
 |---|---|
 | strongest | written by the program that dumped |
 | | written by a program on the dump's call stack — on the path by construction |
-| | written by something a stack frame calls — where a bad value gets prepared |
+| | written by something a stack frame calls — where a bad value gets prepared (see below) |
 | | same user, shortly before |
 | weakest | same user after the dump — error handling, not cause |
 
 Every row states its own argument, because the argument is what lets a person
 overrule the ranking. A match is a candidate; "the cause" is not ours to say.
+
+One rung does not fire yet, and the tool says so rather than leaving a gap that
+looks like an answer: asking what a program calls needs
+`/sap/bc/adt/cai/callgraph`, which is advertised on none of 7.50, 7.57 or 7.58
+and answers 404. The ranking is right and only the source of callees is
+missing; where-used over CROSS would supply it.
 
 All of it over plain ADT — no RFC, no gateway, no Z code. SAP's own way into the
 application log is the `BAL_*` function group, which cannot be called remotely

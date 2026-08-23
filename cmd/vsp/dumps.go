@@ -166,6 +166,9 @@ func explainDump(ctx context.Context, client *adt.Client, cmd *cobra.Command, du
 		fmt.Printf("      %s\n", m.Why)
 	}
 	fmt.Fprintln(os.Stderr, "\nRanked by the argument for each, not by nearness. A match is a candidate, not a cause.")
+	if client.CalleesUnavailable(ctx) {
+		fmt.Fprintln(os.Stderr, "One rung is missing: this system offers no call graph, so \"written by something a stack frame calls\" was never asked.")
+	}
 	return nil
 }
 
