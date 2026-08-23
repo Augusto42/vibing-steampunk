@@ -141,6 +141,31 @@ ends with a stack read, every catch was thrown away. It serves the same document
 from the dispatcher instead. The shape is discovered once per session and
 remembered.
 
+### AMDP debugging over plain ADT — the breakpoint fires
+
+An AMDP method runs inside HANA, not inside ABAP, so debugging one means
+bridging two debuggers. ADT does that itself, and nothing has to be installed:
+
+```bash
+vsp adt debug -s a4h -c "astart; abp ZCL_MY_AMDP 41; aresume 12; astop"
+# and, while it waits, run the method from anywhere
+```
+
+SAP answers `ON_BREAK` with the position inside the SQLScript. This project
+spent months concluding the opposite, through a Z service and a WebSocket
+protocol built to reach what the system was already offering.
+
+The trap is that answers arrive as a **queue** with acknowledgements at its
+head. Resume once, see `SYNC_BREAKPOINTS`, and you conclude the breakpoint never
+fired — while the debuggee is, at that moment, blocked on it. `aresume` waits
+past them, and reports SAP's verdict on the way (`state="VALID"`), because a
+refused breakpoint and a method that never ran look identical otherwise.
+
+The whole choreography stays on one held session: the ADT resource keeps its
+handles in ABAP session memory, so a second connection finds nothing.
+
+Reachable from an agent too: `SAP(action="debug", target="AMDP_ADT_START")`.
+
 ### Post-mortem: from a dump to what was logged around it
 
 A debugger helps when you can reproduce the failure. Usually nobody can:
