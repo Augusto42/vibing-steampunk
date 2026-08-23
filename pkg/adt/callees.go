@@ -101,6 +101,24 @@ func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, []Uns
 		failures = append(failures, fmt.Errorf("WBCROSSGT: %w", wbErr))
 		gaps = append(gaps, Unsearched{Object: "WBCROSSGT", Reason: wbErr.Error()})
 	} else if wb != nil {
+		// A name too long for WBCROSSGT's NAME column is stored there as a
+		// hash. Decode before the rows are read as names, and drop the ones
+		// that could not be decoded rather than reporting forty hex characters
+		// as the thing this object references — the gap says so instead.
+		if lost := c.ResolveLongNames(ctx, wb.Rows); len(lost) > 0 {
+			gaps = append(gaps, lost...)
+			failed := make(map[string]bool, len(lost))
+			for _, l := range lost {
+				failed[l.Object] = true
+			}
+			kept := wb.Rows[:0]
+			for _, row := range wb.Rows {
+				if !failed[strings.ToUpper(rowString(row, "NAME"))] {
+					kept = append(kept, row)
+				}
+			}
+			wb.Rows = kept
+		}
 		out = append(out, wbCrossCallees(wb.Rows, target)...)
 	}
 
