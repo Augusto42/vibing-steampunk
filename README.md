@@ -155,6 +155,24 @@ SAP answers `ON_BREAK` with the position inside the SQLScript. This project
 spent months concluding the opposite, through a Z service and a WebSocket
 protocol built to reach what the system was already offering.
 
+**With values.** `alocals` lists everything in scope — scope, type, and for a
+table its handle and row count — and costs no request at all, because the stop
+event already carries it. `avar LV_I` reads what a variable holds:
+
+```
+output   ET_RESULT   table[0] handle 3000001
+input    IV_COUNT    INTEGER
+local    LV_I        INTEGER
+→ LV_I    INTEGER    1
+```
+
+Reading a variable is asynchronous and does not advertise it: the resource
+answers 200 with an empty body and puts a request id in `Location`, which reads
+exactly like a variable that is out of scope. The value arrives through the same
+queue as everything else. Table *contents* are the one thing still missing — the
+address is right and HANA refuses to build its data provider from it; see
+`AMDPTableRows` for where it stands.
+
 The trap is that answers arrive as a **queue** with acknowledgements at its
 head. Resume once, see `SYNC_BREAKPOINTS`, and you conclude the breakpoint never
 fired — while the debuggee is, at that moment, blocked on it. `aresume` waits
