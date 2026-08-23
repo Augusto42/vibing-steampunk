@@ -12,15 +12,15 @@ import (
 
 // DeployResult contains the result of a file deployment operation.
 type DeployResult struct {
-	ObjectURL     string   `json:"objectUrl"`
-	ObjectName    string   `json:"objectName"`
-	ObjectType    string   `json:"objectType"`
-	FilePath      string   `json:"filePath"`
-	Success       bool     `json:"success"`
-	Created       bool     `json:"created"` // true if created, false if updated
-	SyntaxErrors  []string `json:"syntaxErrors,omitempty"`
-	Errors        []string `json:"errors,omitempty"`
-	Message       string   `json:"message,omitempty"`
+	ObjectURL    string   `json:"objectUrl"`
+	ObjectName   string   `json:"objectName"`
+	ObjectType   string   `json:"objectType"`
+	FilePath     string   `json:"filePath"`
+	Success      bool     `json:"success"`
+	Created      bool     `json:"created"` // true if created, false if updated
+	SyntaxErrors []string `json:"syntaxErrors,omitempty"`
+	Errors       []string `json:"errors,omitempty"`
+	Message      string   `json:"message,omitempty"`
 }
 
 // CreateFromFile creates a new ABAP object from a file and activates it.
@@ -31,7 +31,8 @@ type DeployResult struct {
 // and content. Supported file extensions: .clas.abap, .prog.abap, .intf.abap
 //
 // Example:
-//   result, err := client.CreateFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
+//
+//	result, err := client.CreateFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
 func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, transport string) (*DeployResult, error) {
 	// Safety check
 	if err := c.checkSafety(OpCreate, "CreateFromFile"); err != nil {
@@ -117,7 +118,6 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 		}
 	}()
 
-
 	if len(syntaxErrors) > 0 {
 		// Convert syntax errors to strings
 		errorMsgs := make([]string, len(syntaxErrors))
@@ -169,7 +169,7 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 	}
 
 	// 9. Activate
-	_, err = c.Activate(ctx, objectURL, info.ObjectName)
+	activation, err := c.Activate(ctx, objectURL, info.ObjectName)
 	if err != nil {
 		return &DeployResult{
 			FilePath:   filePath,
@@ -179,6 +179,22 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 			Success:    false,
 			Errors:     []string{fmt.Sprintf("activation failed: %v", err)},
 			Message:    fmt.Sprintf("Source written but activation failed: %v", err),
+		}, nil
+	}
+	// A refusal is not an err: SAP answers 200 and puts the reason in the
+	// checklist. Reading only err reported "Successfully created and activated"
+	// over an object left sitting inactive — the syntax check above catches most
+	// of it, but only the source it was given, and activation is the step that
+	// has the last word.
+	if !activation.Success {
+		return &DeployResult{
+			FilePath:     filePath,
+			ObjectURL:    objectURL,
+			ObjectName:   info.ObjectName,
+			ObjectType:   string(info.ObjectType),
+			Success:      false,
+			SyntaxErrors: activation.ProblemLines(),
+			Message:      fmt.Sprintf("Source written but %s %s did not activate", info.ObjectType, info.ObjectName),
 		}, nil
 	}
 
@@ -198,7 +214,8 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 // Workflow: Parse → Lock → SyntaxCheck → Write → Unlock → Activate
 //
 // Example:
-//   result, err := client.UpdateFromFile(ctx, "/path/to/zcl_test.clas.abap", "")
+//
+//	result, err := client.UpdateFromFile(ctx, "/path/to/zcl_test.clas.abap", "")
 func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string) (*DeployResult, error) {
 	// Safety check
 	if err := c.checkSafety(OpUpdate, "UpdateFromFile"); err != nil {
@@ -345,7 +362,7 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	}
 
 	// 8. Activate
-	_, err = c.Activate(ctx, objectURL, info.ObjectName)
+	activation, err := c.Activate(ctx, objectURL, info.ObjectName)
 	if err != nil {
 		return &DeployResult{
 			FilePath:   filePath,
@@ -355,6 +372,21 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 			Success:    false,
 			Errors:     []string{fmt.Sprintf("activation failed: %v", err)},
 			Message:    fmt.Sprintf("Source written but activation failed: %v", err),
+		}, nil
+	}
+	// Same trap as in CreateFromFile: the refusal arrives inside a 200, and an
+	// update that leaves the object inactive has overwritten working source with
+	// source that does not compile. That is the last moment anyone would want it
+	// reported as a success.
+	if !activation.Success {
+		return &DeployResult{
+			FilePath:     filePath,
+			ObjectURL:    objectURL,
+			ObjectName:   info.ObjectName,
+			ObjectType:   string(info.ObjectType),
+			Success:      false,
+			SyntaxErrors: activation.ProblemLines(),
+			Message:      fmt.Sprintf("Source written but %s %s did not activate", info.ObjectType, info.ObjectName),
 		}, nil
 	}
 
@@ -386,8 +418,9 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 // For class includes, the parent class must already exist.
 //
 // Example:
-//   result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
-//   result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.testclasses.abap", "$TMP", "")
+//
+//	result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
+//	result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.testclasses.abap", "$TMP", "")
 func (c *Client) DeployFromFile(ctx context.Context, filePath, packageName, transport string) (*DeployResult, error) {
 	// 1. Parse file
 	info, err := ParseABAPFile(filePath)

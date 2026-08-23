@@ -712,6 +712,13 @@ func runExecute(cmd *cobra.Command, args []string) error {
 	// reach it. The detail is on stderr already; this only has to be short and
 	// true.
 	switch {
+	case result.Failure != nil && result.Failure.Kind == adt.ExecuteFailureSyntax:
+		// Said apart from "did not finish", because it did not start. That
+		// distinction is the whole of this fix, and the exit line is where a
+		// script reads it.
+		return fmt.Errorf("the code did not compile, so none of it ran")
+	case result.Failure != nil && result.Failure.Kind == adt.ExecuteFailureNotRun:
+		return fmt.Errorf("the code cannot be shown to have run")
 	case result.Failure != nil && len(dumped) > 0:
 		return fmt.Errorf("the code did not finish, and a runtime error appeared while it ran")
 	case result.Failure != nil:
@@ -731,19 +738,34 @@ func runExecute(cmd *cobra.Command, args []string) error {
 // is the only witness and going to look in ST22 finds nothing.
 func reportExecuteFailure(failure *adt.ExecuteFailure, st22Clear bool) {
 	fmt.Fprintln(os.Stderr)
+	title := failure.Title
 	where := ""
 	if failure.Line > 0 {
+		// A syntax message from SAP is a finished sentence and ends in a full
+		// stop, which reads as a typo once a clause is bolted onto it.
+		title = strings.TrimRight(title, ". ")
 		where = fmt.Sprintf(" at line %d of the code you gave me", failure.Line)
 	}
-	fmt.Fprintf(os.Stderr, "%s%s\n", failure.Title, where)
+	fmt.Fprintf(os.Stderr, "%s%s\n", title, where)
 	for _, detail := range failure.Details {
 		fmt.Fprintf(os.Stderr, "  %s\n", detail)
 	}
-	if st22Clear {
-		// Worth saying, because the obvious next move — go and look in ST22 —
-		// finds nothing at all for this kind of failure: ABAP Unit caught the
-		// exception, so no work process ever terminated.
-		fmt.Fprintln(os.Stderr, "\nABAP Unit caught this and nothing new reached ST22, so there is no dump to look up.")
+	switch failure.Kind {
+	case adt.ExecuteFailureSyntax:
+		// The sentence below would be a lie here — ABAP Unit caught nothing,
+		// because ABAP Unit was never reached. SAP refused the program at
+		// activation, so not one statement of the payload was executed, and
+		// saying so is what stops the reader hunting for a runtime cause.
+		fmt.Fprintln(os.Stderr, "\nSAP refused to activate the generated program, so none of this code ran.")
+	case adt.ExecuteFailureNotRun:
+		fmt.Fprintln(os.Stderr, "\nThe program activated but no test was reported, so this is not a result — it is a gap.")
+	default:
+		if st22Clear {
+			// Worth saying, because the obvious next move — go and look in ST22
+			// — finds nothing at all for this kind of failure: ABAP Unit caught
+			// the exception, so no work process ever terminated.
+			fmt.Fprintln(os.Stderr, "\nABAP Unit caught this and nothing new reached ST22, so there is no dump to look up.")
+		}
 	}
 }
 

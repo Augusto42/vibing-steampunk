@@ -175,6 +175,19 @@ func (s *Server) handleExecuteABAP(ctx context.Context, request mcp.CallToolRequ
 	fmt.Fprintf(&sb, "Cleaned Up: %t\n", result.CleanedUp)
 	fmt.Fprintf(&sb, "Message: %s\n", result.Message)
 
+	// The one-line message names the failure; this is where it is spelled out.
+	// A model reading "Success: false" and nothing else has to guess whether the
+	// code was wrong or the system was, and it will guess.
+	if result.Failure != nil {
+		fmt.Fprintf(&sb, "\nFailure (%s): %s\n", result.Failure.Kind, result.Failure.Title)
+		if result.Failure.Line > 0 {
+			fmt.Fprintf(&sb, "  at line %d of the code you sent\n", result.Failure.Line)
+		}
+		for _, detail := range result.Failure.Details {
+			fmt.Fprintf(&sb, "  %s\n", detail)
+		}
+	}
+
 	if len(result.Output) > 0 {
 		sb.WriteString("\nOutput:\n")
 		for i, output := range result.Output {

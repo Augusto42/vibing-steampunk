@@ -1265,8 +1265,15 @@ func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error
 	c.UnlockObject(ctx, tableURL, lock.LockHandle)
 
 	// Step 3: Activate
-	if _, err := c.Activate(ctx, tableURL, opts.Name); err != nil {
+	activation, err := c.Activate(ctx, tableURL, opts.Name)
+	if err != nil {
 		return fmt.Errorf("activating table: %w", err)
+	}
+	// The refusal is a 200 with the reason in the body, and a table that did not
+	// activate does not exist as far as anything that reads it is concerned —
+	// returning nil here promised a table that was never there.
+	if !activation.Success {
+		return fmt.Errorf("table %s was created but did not activate: %s", opts.Name, strings.Join(activation.ProblemLines(), "; "))
 	}
 
 	return nil
