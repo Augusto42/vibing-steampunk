@@ -893,10 +893,16 @@ func runGraph(cmd *cobra.Command, args []string) error {
 // by include and a second hop means a fresh pair of queries per child, for an
 // answer that gets less useful the wider it grows.
 func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objType string) error {
-	callees, err := client.Callees(ctx, objURI)
+	callees, gaps, err := client.Callees(ctx, objURI)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n\nFalling back to a plain table scan.\n\n", err)
 		return graphFromCross(ctx, client, name, objType, "callees")
+	}
+	if note := adt.UnsearchedNote(gaps, 2, "cross-reference table"); note != "" {
+		// Printed before the rows, not after: a reader who sees a plausible
+		// table first has already drawn the conclusion by the time a footnote
+		// tells them it was partial.
+		fmt.Printf("  %s\n\n", note)
 	}
 	if len(callees) == 0 {
 		// Empty here is often true. The tables record global types, classes,

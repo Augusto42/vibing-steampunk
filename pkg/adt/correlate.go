@@ -257,7 +257,11 @@ func (c *Client) calleesOfStack(ctx context.Context, stack []DumpFrame) map[stri
 			continue
 		}
 		asked[uri] = true
-		callees, err := c.Callees(ctx, uri)
+		// The gaps are deliberately not carried out of here. This rung is
+		// evidence-matching, and the comment above says why a missing row
+		// cannot cost correctness: a caller that never ran only fails to
+		// match a log entry. A gap loses evidence, it cannot invent any.
+		callees, _, err := c.Callees(ctx, uri)
 		if err != nil {
 			// A program whose references cannot be read simply contributes
 			// nothing; CalleesUnavailable is what says whether that is true of

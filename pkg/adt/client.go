@@ -1367,6 +1367,10 @@ type CallGraphNode struct {
 	Line        int             `json:"line,omitempty"`
 	Column      int             `json:"column,omitempty"`
 	Children    []CallGraphNode `json:"children,omitempty"`
+	// Unsearched names what could not be read while building this node. A
+	// child list is only as complete as the sources behind it, and an empty
+	// or short one means nothing until you know whether a source was missing.
+	Unsearched []Unsearched `json:"unsearched,omitempty"`
 }
 
 // CallGraphOptions configures call graph retrieval.
