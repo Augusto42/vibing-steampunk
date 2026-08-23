@@ -328,3 +328,43 @@ func TestACallThatNeverWentOutChangesTheVerdict(t *testing.T) {
 		t.Fatalf("the reason is carried verbatim: %q", note)
 	}
 }
+
+// A transport that holds nothing was reported SELF-CONSISTENT — "it carries
+// everything it depends on", which is trivially true of nothing and reads as
+// reassurance. A transport number that does not exist answered with it.
+func TestAnEmptyTransportGetsItsOwnVerdict(t *testing.T) {
+	empty := &graph.TransportBoundaryReport{
+		Scope:       "TR-EXAMPLE",
+		ObjectCount: 0,
+		Summary:     graph.TransportBoundarySummary{SelfConsistent: true},
+	}
+	if got := transportBoundaryStatus(empty); got != "EMPTY" {
+		t.Fatalf("nothing was analysed; the verdict should say so, got %q", got)
+	}
+	if note := transportBoundaryNote(empty); note == "" {
+		t.Fatal("EMPTY without an explanation reads as a tool that failed silently")
+	}
+}
+
+// The two real verdicts are untouched, and a clean report stays quiet — or the
+// note becomes wallpaper and stops being read.
+func TestRealVerdictsAreUnchangedAndQuiet(t *testing.T) {
+	consistent := &graph.TransportBoundaryReport{
+		ObjectCount: 12,
+		Summary:     graph.TransportBoundarySummary{SelfConsistent: true},
+	}
+	if got := transportBoundaryStatus(consistent); got != "SELF-CONSISTENT" {
+		t.Fatalf("got %q", got)
+	}
+	if note := transportBoundaryNote(consistent); note != "" {
+		t.Fatalf("a complete report should carry no note, got %q", note)
+	}
+
+	incomplete := &graph.TransportBoundaryReport{
+		ObjectCount: 12,
+		Summary:     graph.TransportBoundarySummary{SelfConsistent: false, Missing: 3},
+	}
+	if got := transportBoundaryStatus(incomplete); got != "INCOMPLETE" {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -1098,13 +1098,44 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 	return graph.AnalyzeTransportBoundaries(g, scope), nil
 }
 
-func printTRBoundariesText(report *graph.TransportBoundaryReport, details bool) {
-	status := "SELF-CONSISTENT"
-	if !report.Summary.SelfConsistent {
-		status = "INCOMPLETE"
+// transportBoundaryStatus is the verdict, including the one the two-way
+// version could not express.
+//
+// SELF-CONSISTENT means "this transport carries everything it depends on",
+// and it was reported for a transport holding no objects at all — which is
+// trivially true and says nothing. A transport number that does not exist
+// answered with it, and a reader looking for reassurance found some.
+//
+// So a report over nothing gets its own word. It is not a failure — the query
+// worked, the transport is simply empty or absent — but it is not a pass
+// either, and those are different things.
+func transportBoundaryStatus(report *graph.TransportBoundaryReport) string {
+	if report.ObjectCount == 0 {
+		return "EMPTY"
 	}
+	if !report.Summary.SelfConsistent {
+		return "INCOMPLETE"
+	}
+	return "SELF-CONSISTENT"
+}
+
+// transportBoundaryNote explains an EMPTY verdict, which otherwise reads as a
+// tool that failed silently.
+func transportBoundaryNote(report *graph.TransportBoundaryReport) string {
+	if report.ObjectCount != 0 {
+		return ""
+	}
+	return "This transport holds no objects — it is empty, or the number does not exist. " +
+		"Nothing was analysed, so neither verdict applies."
+}
+
+func printTRBoundariesText(report *graph.TransportBoundaryReport, details bool) {
+	status := transportBoundaryStatus(report)
 	fmt.Printf("Transport Boundaries: %s\n", report.Scope)
 	fmt.Printf("Status: %s\n", status)
+	if note := transportBoundaryNote(report); note != "" {
+		fmt.Printf("%s\n", note)
+	}
 	fmt.Printf("Objects: %d | Deps: %d (in-scope: %d [same-pkg: %d, cross-pkg: %d], missing: %d, standard: %d, dynamic: %d)\n\n",
 		report.ObjectCount, report.Summary.TotalDeps,
 		report.Summary.InScope, report.Summary.InScopeSamePkg, report.Summary.InScopeCrossPkg,
@@ -1197,11 +1228,15 @@ func outputTRBoundaries(cmd *cobra.Command, report *graph.TransportBoundaryRepor
 }
 
 func printTRBoundariesHTML(report *graph.TransportBoundaryReport, details bool) {
-	status := "SELF-CONSISTENT"
+	status := transportBoundaryStatus(report)
 	statusClass := "PASS"
-	if !report.Summary.SelfConsistent {
-		status = "INCOMPLETE"
+	switch status {
+	case "INCOMPLETE":
 		statusClass = "FAIL"
+	case "EMPTY":
+		// Not a failure and not a pass; styling it as either would put a
+		// colour on a verdict that was never reached.
+		statusClass = "UNKNOWN"
 	}
 
 	fmt.Printf(`<!DOCTYPE html>
@@ -1347,12 +1382,12 @@ func sanitizeScopeFilename(scope string) string {
 // Package section under --details. Emoji-free on purpose so grep and
 // automated log parsers stay happy.
 func printTRBoundariesMarkdown(report *graph.TransportBoundaryReport, details bool) {
-	status := "SELF-CONSISTENT"
-	if !report.Summary.SelfConsistent {
-		status = "INCOMPLETE"
-	}
+	status := transportBoundaryStatus(report)
 	fmt.Printf("# Transport Boundaries: %s\n\n", report.Scope)
 	fmt.Printf("**Status:** %s\n\n", status)
+	if note := transportBoundaryNote(report); note != "" {
+		fmt.Printf("%s\n\n", note)
+	}
 
 	fmt.Printf("## Summary\n\n")
 	fmt.Println("| Metric | Value |")
