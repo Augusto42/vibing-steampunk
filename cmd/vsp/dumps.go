@@ -191,7 +191,12 @@ func explainDump(ctx context.Context, client *adt.Client, cmd *cobra.Command, du
 	}
 	fmt.Fprintln(os.Stderr, "\nRanked by the argument for each, not by nearness. A match is a candidate, not a cause.")
 	if client.CalleesUnavailable(ctx) {
-		fmt.Fprintln(os.Stderr, "One rung is missing: this system offers no call graph, so \"written by something a stack frame calls\" was never asked.")
+		// The rung itself works now — it reads the cross-reference tables.
+		// What can still be missing is permission to read them, from this
+		// server's own --block-free-sql or from the user's authorisations, and
+		// that is worth saying because the ranking looks complete without it.
+		fmt.Fprintln(os.Stderr, "One rung is missing: the cross-reference tables cannot be read here "+
+			"(free SQL blocked, or no authorisation for CROSS), so \"written by something a stack frame calls\" was never asked.")
 	}
 	return nil
 }

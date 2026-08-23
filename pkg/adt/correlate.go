@@ -70,16 +70,18 @@ func (c *Client) CorrelateDump(ctx context.Context, dump Dump, tolerance time.Du
 	// those frames called has returned already, so it is not on the path at the
 	// moment of failure, but it is where a bad value is usually prepared.
 	//
-	// It does not fire today, and the honest thing is to say so here rather
-	// than let it look implemented. GetCalleesOf asks
-	// /sap/bc/adt/cai/callgraph, which is advertised on none of 7.50, 7.57 or
-	// 7.58 and answers 404 — so every frame "contributes nothing" and the rung
-	// is silently always empty. That silence was mine: I wrote the swallow as
+	// This rung was dead for as long as it existed, and it is worth recording
+	// why rather than deleting the history: it asked GetCalleesOf, which asked
+	// /sap/bc/adt/cai/callgraph, a resource advertised on none of 7.50, 7.57 or
+	// 7.58 that answers 404. Every frame "contributed nothing" and the rung was
+	// silently always empty. That silence was mine — I wrote the swallow as
 	// graceful degradation for a resource that turns out never to be there.
 	//
-	// The rung is kept because the ranking is right and only the source of
-	// callees is missing; where-used over CROSS would supply it. Until then
-	// CalleesUnavailable reports it instead of pretending.
+	// It fires now. calleesOfStack reads the CROSS and WBCROSSGT
+	// cross-reference tables, which is what the note here said would revive it,
+	// and CalleesUnavailable now probes those tables rather than the resource
+	// that never existed — so a system where free SQL is blocked still says so
+	// instead of pretending.
 	callees := c.calleesOfStack(ctx, stack)
 	return c.correlateWith(ctx, dump, stack, callees, tolerance, limit)
 }
@@ -206,8 +208,15 @@ const scoreCalledByStack = 60
 // CalleesUnavailable reports whether this system offers no way to ask what a
 // program calls, which makes the graph rung of the ranking dead. A caller that
 // prints the ladder should say so rather than show a rung that cannot fire.
+//
+// The probe is a one-row read of CROSS rather than a call on a real object,
+// because the two ways this can be unavailable are both properties of the
+// query and not of the object: free SQL blocked by this server's own safety
+// settings, or a user without read authorisation on the cross-reference
+// tables. Either way one row is enough to tell, and an object that happens to
+// call nothing does not look like a broken system.
 func (c *Client) CalleesUnavailable(ctx context.Context) bool {
-	_, err := c.GetCalleesOf(ctx, "/sap/bc/adt/programs/programs/sapmssy1", 1)
+	_, err := c.RunQuery(ctx, "SELECT INCLUDE FROM CROSS", 1)
 	return err != nil
 }
 
@@ -219,31 +228,47 @@ func (c *Client) CalleesUnavailable(ctx context.Context) bool {
 // the stack" true of most of the system, which would promote noise into a
 // structural-looking rung and quietly wreck the ranking.
 //
-// Known gap, found while building the impact query: GetCalleesOf goes to
-// /sap/bc/adt/cai/callgraph, and that resource answers 404 "No suitable
-// resource found" on 7.58 — checked directly, with a CSRF token, so it is the
-// resource that is absent and not the request. Every frame therefore takes the
-// `continue` below and scoreCalledByStack never fires. The rung is not wrong,
-// it is unfed. Reviving it means asking CROSS the other way round —
-// SELECT NAME, TYPE FROM CROSS WHERE INCLUDE = <frame include> — the same table
-// `vsp graph` already falls back to; that is a separate change and is not made
-// here. Until then this returns an empty map on any system without CAI, which
-// costs the ranking a rung and costs it nothing else.
-
+// The source is Callees, over the CROSS and WBCROSSGT cross-reference tables.
+// That is what the note here used to say would revive this rung, and it is now
+// what feeds it. Only rows that are an invocation are taken: a class this frame
+// merely names as a type never ran, so nothing it ever wrote can be evidence of
+// anything, and letting types in would put most of DDIC on the rung.
+//
+// A frame widens to its object. The tables are keyed by include, so a METHOD
+// frame is answered with everything its class reaches rather than everything
+// that one method reaches — except for a FUNCTION frame, where the module has
+// an include of its own and the answer stays narrow. The widening costs
+// precision on the rung and cannot cost correctness: a caller that never ran
+// only fails to match a log entry.
 func (c *Client) calleesOfStack(ctx context.Context, stack []DumpFrame) map[string]string {
 	out := map[string]string{}
+	asked := map[string]bool{}
 	for _, frame := range stack {
-		uri := programURI(frame.Program)
-		if uri == "" {
+		// The whole frame, not just its program: a FUNCTION frame names its
+		// module, and the module's own include is a far narrower answer than
+		// its group's.
+		var uri string
+		if unit, ok := unitForFrame(frame); ok {
+			uri = unit.URI
+		}
+		if uri == "" || asked[uri] {
+			// The same class holds several frames of a normal stack, and its
+			// callee list does not change between them.
 			continue
 		}
-		node, err := c.GetCalleesOf(ctx, uri, 1)
-		if err != nil || node == nil {
-			// A program whose graph cannot be read simply contributes nothing.
+		asked[uri] = true
+		callees, err := c.Callees(ctx, uri)
+		if err != nil {
+			// A program whose references cannot be read simply contributes
+			// nothing; CalleesUnavailable is what says whether that is true of
+			// the whole system.
 			continue
 		}
-		for _, child := range node.Children {
-			name := trimUpper(child.Name)
+		for _, callee := range callees {
+			if !callee.Calls {
+				continue
+			}
+			name := trimUpper(callee.Name)
 			if name == "" {
 				continue
 			}

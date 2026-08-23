@@ -225,9 +225,11 @@ func (e *LuaEngine) luaGetCallGraph(L *lua.LState) int {
 	direction := getOptString(L, 2, "callees")
 	maxDepth := getOptInt(L, 3, 5)
 
-	graph, err := e.client.GetCallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
+	// maxDepth is still accepted so scripts keep parsing, and it is still
+	// ignored: both sources behind CallGraph are one hop. See callees.go.
+	_ = maxDepth
+	graph, err := e.client.CallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
 		Direction:  direction,
-		MaxDepth:   maxDepth,
 		MaxResults: 500,
 	})
 	if err != nil {
@@ -244,7 +246,11 @@ func (e *LuaEngine) luaGetCallersOf(L *lua.LState) int {
 	objectURI := getString(L, 1)
 	maxDepth := getOptInt(L, 2, 5)
 
-	graph, err := e.client.GetCallersOf(e.ctx, objectURI, maxDepth)
+	_ = maxDepth
+	graph, err := e.client.CallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
+		Direction:  "callers",
+		MaxResults: 500,
+	})
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -259,7 +265,11 @@ func (e *LuaEngine) luaGetCalleesOf(L *lua.LState) int {
 	objectURI := getString(L, 1)
 	maxDepth := getOptInt(L, 2, 5)
 
-	graph, err := e.client.GetCalleesOf(e.ctx, objectURI, maxDepth)
+	_ = maxDepth
+	graph, err := e.client.CallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
+		Direction:  "callees",
+		MaxResults: 500,
+	})
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))

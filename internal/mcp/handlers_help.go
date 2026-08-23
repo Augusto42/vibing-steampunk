@@ -195,10 +195,13 @@ never been observed to fire):
 Syntax check:
   SAP(action="analyze", params={"type": "syntax_check", "object_url": "/sap/bc/adt/oo/classes/zcl_test", "content": "..."})
 
-Call graph:
+Call graph (one hop; object_type + object_name work instead of object_uri):
   SAP(action="analyze", params={"type": "call_graph", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
-  SAP(action="analyze", params={"type": "callers", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
-  SAP(action="analyze", params={"type": "callees", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
+  SAP(action="analyze", params={"type": "callers", "object_type": "CLAS", "object_name": "ZCL_TEST"})
+    who references it — the where-used list behind SE84
+  SAP(action="analyze", params={"type": "callees", "object_type": "CLAS", "object_name": "ZCL_TEST"})
+    what it references — the CROSS and WBCROSSGT tables, filled at activation,
+    so these are recorded references and not observed calls; needs free SQL
   SAP(action="analyze", params={"type": "analyze_call_graph", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
   SAP(action="analyze", params={"type": "compare_call_graphs", "object_uri": "...", "trace_data": "[...]"})
   SAP(action="analyze", params={"type": "trace_execution", "object_uri": "..."})
@@ -344,7 +347,7 @@ File operations:
 3. Syntax check:                 SAP(action="analyze", params={"type": "syntax_check", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})
 
 === DEPENDENCY ANALYSIS ===
-1. Call graph (down):            SAP(action="analyze", params={"type": "callees", "object_uri": "..."})
+1. What this uses (down):        SAP(action="analyze", params={"type": "callees", "object_uri": "..."})
 2. Where-used (up):              SAP(action="analyze", params={"type": "callers", "object_uri": "..."})
 3. CDS dependencies:             SAP(action="read", target="CDS_DEPS ZDDL_VIEW")
 4. CDS impact (consumers):      SAP(action="analyze", params={"type": "cds_impact", "cds_view": "ZDDL_VIEW"})

@@ -76,11 +76,11 @@ These tools replace 11 granular read/write operations with intelligent parameter
 
 | Tool | Description | Mode |
 |------|-------------|------|
-| `GetCallGraph` | Get call hierarchy (callers/callees) for methods/functions | Focused |
+| `GetCallGraph` | Who uses this object and what it uses, one hop, from the where-used list and the cross-reference tables | Focused |
 | `GetObjectStructure` | Get object explorer tree structure | Focused |
-| `GetCallersOf` | Get who calls this object (static call graph - up traversal) | Expert |
-| `GetCalleesOf` | Get what this object calls (static call graph - down traversal) | Expert |
-| `AnalyzeCallGraph` | Get statistics about call graph (nodes, edges, depth, types) | Expert |
+| `GetCallersOf` | Who references this object, from the where-used list behind SE84 | Expert |
+| `GetCalleesOf` | What this object's code reaches, from the CROSS and WBCROSSGT tables (references recorded at activation, not observed calls; needs free SQL) | Expert |
+| `AnalyzeCallGraph` | Counts over one object's references: how many, of what kind, in which direction | Expert |
 | `CompareCallGraphs` | Compare static vs actual execution for test coverage analysis | Expert |
 | `TraceExecution` | **COMPOSITE RCA TOOL**: Static graph + trace + comparison for root cause analysis | Expert |
 
