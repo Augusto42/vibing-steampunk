@@ -968,14 +968,30 @@ func graphFromCross(ctx context.Context, client *adt.Client, name, objType, dire
 		}
 	}
 
-	// Execute all queries and merge
+	// Execute all queries and merge.
+	//
+	// The rows are collected before anything is printed, so a query that failed
+	// can be reported ahead of them. This used to skip failures silently, and
+	// this is the *fallback* path — reached when the good reader has already
+	// failed — so a second silent failure here left the object looking as if it
+	// referenced nothing at all.
 	seen := map[string]bool{}
+	var found []string
+	var gaps []adt.Unsearched
 	for _, sql := range queries {
 		result, err := client.RunQuery(ctx, sql, 200)
-		if err != nil {
-			continue // skip failed queries silently
-		}
-		if result == nil {
+		if err != nil || result == nil {
+			table := "cross-reference table"
+			for _, t := range []string{"WBCROSSGT", "CROSS"} {
+				if strings.Contains(sql, " FROM "+t+" ") {
+					table = t
+				}
+			}
+			reason := "the query returned nothing at all"
+			if err != nil {
+				reason = err.Error()
+			}
+			gaps = append(gaps, adt.Unsearched{Object: table, Reason: reason})
 			continue
 		}
 		for _, row := range result.Rows {
@@ -994,9 +1010,16 @@ func graphFromCross(ctx context.Context, client *adt.Client, name, objType, dire
 			}
 			if key != "" && key != name && !seen[key] {
 				seen[key] = true
-				fmt.Printf("  %s\n", key)
+				found = append(found, key)
 			}
 		}
+	}
+
+	if note := adt.UnsearchedNote(gaps, len(queries), "query"); note != "" {
+		fmt.Printf("  %s\n\n", note)
+	}
+	for _, key := range found {
+		fmt.Printf("  %s\n", key)
 	}
 
 	if len(seen) == 0 {
