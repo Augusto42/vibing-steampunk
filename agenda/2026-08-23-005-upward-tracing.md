@@ -30,7 +30,31 @@ Checked rather than assumed, because two of these are misleading:
 | `WBCROSSGT.INCLUDE` | Where the reference sits. For a class this is a *section* — `…===CI` for the definition — or a method include, `…===CM001`. |
 | `CROSS.PROG` | Present, and empty in every row sampled. Not a shortcut to the owner. |
 
-## The wall came down
+## Correction: the wall was never there
+
+Everything below about decoding a method include is true and was not
+needed. **ADT's where-used already returns the method**, as child rows,
+and this codebase already read them: `ExposedCaller.Component`, with the
+comment "the method or routine holding the reference". Live, it is the
+"References in" column — `PUSH_AUTO`, `CREATE_OBJECTSET`,
+`GOTO_SOURCE_CODE`.
+
+The code that reads it landed at 01:16. The analysis below, concluding
+that the method was "not available from anything ADT exposes", was
+written at 19:37 the same day, in the same repository, eighteen hours
+later.
+
+Every attempt listed below asked the same question — how to get from an
+include to a method — and none asked whether the resource already being
+called answered it. That is today's defect class one floor up: not
+"broken", but "nobody checked whether it already works".
+
+`DecodeMethodIncludes` stays. It is correct, it is tested, and it answers
+a question upward tracing does not have to ask — a dump stack frame gives
+an include and no method, so it earns its place there. It is simply not
+the missing piece this note called it.
+
+## What the wall looked like
 
 `TMDIR` — `(CLASSNAME, METHODINDX, METHODNAME)` — and the `CM` suffix is
 that index in hexadecimal. `adt.DecodeMethodIncludes` does it, verified
