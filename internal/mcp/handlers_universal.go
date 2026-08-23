@@ -87,6 +87,10 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeFileIOAction,
 		s.routeDebuggerAction,
 		s.routeDebuggerLegacyAction,
+		// The ADT-native route is tried first: it needs nothing installed on
+		// the server and its breakpoints fire, which the WebSocket route's
+		// never did.
+		s.routeAMDPADTAction,
 		s.routeAMDPAction,
 		s.routeUI5Action,
 		s.routeTransportAction,

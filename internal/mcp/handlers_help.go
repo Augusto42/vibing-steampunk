@@ -170,7 +170,17 @@ Report execution:
   SAP(action="debug", target="GET_TEXT_ELEMENTS", params={"program": "ZREPORT"})
   SAP(action="debug", target="SET_TEXT_ELEMENTS", params={"program": "ZREPORT", "selection_texts": "{\"P_USER\": \"Username\"}"})
 
-AMDP debugging:
+AMDP debugging over ADT (nothing installed on the server; breakpoints fire):
+  SAP(action="debug", target="AMDP_ADT_START")
+  SAP(action="debug", target="AMDP_ADT_BREAKPOINT", params={"class": "ZCL_X", "line": 41})
+  SAP(action="debug", target="AMDP_ADT_AWAIT")   # run the AMDP method from elsewhere first
+  SAP(action="debug", target="AMDP_ADT_STOP")
+  Answers arrive as a queue with acknowledgements at its head, so AWAIT keeps
+  asking past them. It also reports whether SAP calls the breakpoint VALID —
+  a refused breakpoint and a method that never ran look identical otherwise.
+
+AMDP debugging over the ZADT_VSP WebSocket (older route; its breakpoints have
+never been observed to fire):
   SAP(action="debug", target="AMDP_START", params={"cascade_mode": "FULL"})
   SAP(action="debug", target="AMDP_RESUME")
   SAP(action="debug", target="AMDP_STEP", params={"step_type": "stepInto"})
@@ -443,7 +453,7 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 		sb.WriteString("Supported create targets: OBJECT, DEVC, TABL, CLONE, PROGRAM, CLASS_WITH_TESTS, CLAS_TEST_INCLUDE\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"create\") for examples.")
 	case "debug":
-		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_*\n")
+		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_ADT_*, AMDP_*\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"debug\") for examples.")
 	case "system":
 		sb.WriteString("Supported system targets: INFO, COMPONENTS, CONNECTION, FEATURES\n")
