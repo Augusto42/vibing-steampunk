@@ -334,3 +334,150 @@ func amdpBreakpointState(body []byte) (state, reason string) {
 func (d *Debugger) AMDPBreakpointState() (state, reason string) {
 	return d.amdpLastBreakpointState, d.amdpLastBreakpointError
 }
+
+// AMDPStep moves the stopped debuggee one step.
+//
+// Only two kinds exist on this resource — "over" and "continue" — which is
+// less than the ABAP debugger offers and is worth saying rather than
+// discovering: SQLScript has no "into" because there is nothing below the
+// statement to step into.
+func (d *Debugger) AMDPStep(ctx context.Context, debuggeeID, kind string) (*ADTResponse, error) {
+	if d.amdpMain == "" {
+		return nil, fmt.Errorf("no AMDP debug session on this connection; start one first")
+	}
+	if strings.TrimSpace(debuggeeID) == "" {
+		return nil, fmt.Errorf("no debuggee: nothing has stopped yet")
+	}
+	switch kind {
+	case "over", "continue":
+	default:
+		return nil, fmt.Errorf("AMDP steps are over or continue; %q is neither", kind)
+	}
+
+	uri := fmt.Sprintf("/sap/bc/adt/amdp/debugger/main/%s/debuggees/%s?step=%s",
+		url.PathEscape(d.amdpMain), url.PathEscape(debuggeeID), kind)
+	res, err := d.ADT(ctx, "POST", uri, []ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return res, adtError("amdp step "+kind, res)
+	}
+	return res, nil
+}
+
+// AMDPVariable reads one variable of the stopped SQLScript.
+func (d *Debugger) AMDPVariable(ctx context.Context, debuggeeID, name string) (*ADTResponse, error) {
+	if d.amdpMain == "" {
+		return nil, fmt.Errorf("no AMDP debug session on this connection; start one first")
+	}
+	if strings.TrimSpace(debuggeeID) == "" {
+		return nil, fmt.Errorf("no debuggee: nothing has stopped yet")
+	}
+	uri := fmt.Sprintf("/sap/bc/adt/amdp/debugger/main/%s/debuggees/%s/variables/%s",
+		url.PathEscape(d.amdpMain), url.PathEscape(debuggeeID), url.PathEscape(name))
+	res, err := d.ADT(ctx, "GET", uri, []ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return res, adtError("amdp variable "+name, res)
+	}
+	return res, nil
+}
+
+// AMDPPosition is where a stopped debuggee is.
+type AMDPPosition struct {
+	DebuggeeID string
+	Procedure  string
+	URI        string
+	Line       int
+}
+
+// AMDPStopPosition reads the position out of an ON_BREAK answer.
+func AMDPStopPosition(body []byte) *AMDPPosition {
+	var doc struct {
+		Responses []struct {
+			Kind     string `xml:"kind,attr"`
+			Debuggee string `xml:"debuggeeId,attr"`
+			Value    struct {
+				Position struct {
+					Procedure string `xml:"procedureName,attr"`
+					URI       string `xml:"uri,attr"`
+				} `xml:"abapPosition"`
+			} `xml:"value"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+	for _, r := range doc.Responses {
+		if r.Value.Position.Procedure == "" && r.Debuggee == "" {
+			continue
+		}
+		pos := &AMDPPosition{
+			DebuggeeID: r.Debuggee,
+			Procedure:  r.Value.Position.Procedure,
+			URI:        r.Value.Position.URI,
+		}
+		// The line rides in the URI fragment, the way every ADT position does.
+		if i := strings.LastIndex(pos.URI, "#start="); i >= 0 {
+			fmt.Sscanf(pos.URI[i+len("#start="):], "%d", &pos.Line)
+		}
+		return pos
+	}
+	return nil
+}
+
+// AMDPStepAndWait steps and returns where the debuggee stopped next.
+//
+// The step itself answers with nothing: it is a command, and the new position
+// arrives through the same response queue as everything else. A caller that
+// steps and reads the step's own answer sees an empty body and concludes the
+// step did nothing — the same trap the breakpoint set, one level down. So the
+// wait belongs here rather than in every caller.
+func (d *Debugger) AMDPStepAndWait(ctx context.Context, debuggeeID, kind string, maxEvents int) (*AMDPPosition, error) {
+	if _, err := d.AMDPStep(ctx, debuggeeID, kind); err != nil {
+		return nil, err
+	}
+	res, err := d.AMDPAwaitStop(ctx, maxEvents)
+	if err != nil {
+		return nil, err
+	}
+	pos := AMDPStopPosition(res.Body)
+	if pos == nil {
+		return nil, fmt.Errorf("the debuggee answered the step without saying where it stopped")
+	}
+	return pos, nil
+}
+
+// AMDPTrace walks the stopped debuggee and reports each line it stops on.
+//
+// This is the AMDP counterpart of the ABAP recorder: a statement-level trace of
+// SQLScript running inside HANA, taken over plain ADT with nothing installed.
+// It ends when the program runs out, when the budget is spent, or when a step
+// stops saying where it went.
+func (d *Debugger) AMDPTrace(ctx context.Context, debuggeeID string, maxSteps int, emit func(AMDPPosition) error) (int, error) {
+	if maxSteps <= 0 {
+		maxSteps = 100
+	}
+	stops := 0
+	for i := 0; i < maxSteps; i++ {
+		pos, err := d.AMDPStepAndWait(ctx, debuggeeID, "over", 6)
+		if err != nil {
+			// A trace that ends early is still a trace; the caller is told how
+			// far it got rather than losing the stops already collected.
+			return stops, err
+		}
+		if pos.DebuggeeID != "" {
+			debuggeeID = pos.DebuggeeID
+		}
+		stops++
+		if emit != nil {
+			if err := emit(*pos); err != nil {
+				return stops, err
+			}
+		}
+	}
+	return stops, nil
+}

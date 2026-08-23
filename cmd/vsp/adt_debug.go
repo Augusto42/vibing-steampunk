@@ -52,6 +52,9 @@ function group — those are function modules and need an RFC channel:
   astart [USER]      start an AMDP debug session (ADT's own, no Z code)
   abp <CLASS> <LINE>   AMDP breakpoint, after astart
   aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
+  astep [over|continue] step the stopped AMDP debuggee
+  atrace [MAX]       walk the stopped AMDP program, one JSON object per line
+  avar <NAME>        read a variable of the stopped SQLScript
   astop              end the AMDP session
   erec [MAX]         record from here: one JSON object per stop
   evalues            record real values instead of «type:length» placeholders

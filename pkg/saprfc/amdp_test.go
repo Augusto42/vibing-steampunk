@@ -1,6 +1,7 @@
 package saprfc
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -129,5 +130,98 @@ func TestUnparseableAnswerIsNotAStop(t *testing.T) {
 	kind, debuggee := AMDPEventKindOf([]byte("not xml at all"))
 	if kind != "" || debuggee != "" {
 		t.Fatalf("got %q/%q", kind, debuggee)
+	}
+}
+
+const amdpBreakWithPosition = `<amdpdbg:mainResponseList xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger">` +
+	`<amdpdbg:mainResponse amdpdbg:kind="ON_BREAK" amdpdbg:debuggeeId="host:30203:300215">` +
+	`<amdpdbg:value><amdpdbg:abapPosition amdpdbg:procedureName="ZCL_DEMO=&gt;CALCULATE" ` +
+	`adtcore:uri="/sap/bc/adt/oo/classes/zcl_demo/source/main#start=42"/>` +
+	`</amdpdbg:value></amdpdbg:mainResponse></amdpdbg:mainResponseList>`
+
+// The line rides in the URI fragment, the way every ADT position does, rather
+// than in an attribute of its own.
+func TestStopPositionReadsTheLineOutOfTheFragment(t *testing.T) {
+	pos := AMDPStopPosition([]byte(amdpBreakWithPosition))
+	if pos == nil {
+		t.Fatal("a break carries a position")
+	}
+	if pos.Line != 42 {
+		t.Fatalf("line is %d", pos.Line)
+	}
+	if pos.Procedure != "ZCL_DEMO=>CALCULATE" {
+		t.Fatalf("procedure is %q", pos.Procedure)
+	}
+	if pos.DebuggeeID == "" {
+		t.Fatal("the stop names the debuggee, and every resource below the session needs it")
+	}
+}
+
+// An acknowledgement is not a stop and carries no position, so nothing should
+// be invented for it.
+func TestAnAcknowledgementHasNoPosition(t *testing.T) {
+	if pos := AMDPStopPosition([]byte(amdpAckDocument)); pos != nil {
+		t.Fatalf("an acknowledgement has nowhere to be, got %+v", pos)
+	}
+}
+
+func TestStopPositionSurvivesRubbish(t *testing.T) {
+	if pos := AMDPStopPosition([]byte("not xml")); pos != nil {
+		t.Fatalf("got %+v", pos)
+	}
+	// A position with no fragment is still a position; the line is simply
+	// unknown, and reporting zero is better than discarding the procedure.
+	body := []byte(`<amdpdbg:mainResponseList xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger">` +
+		`<amdpdbg:mainResponse amdpdbg:kind="ON_BREAK" amdpdbg:debuggeeId="d">` +
+		`<amdpdbg:value><amdpdbg:abapPosition amdpdbg:procedureName="ZCL_DEMO=&gt;X"/>` +
+		`</amdpdbg:value></amdpdbg:mainResponse></amdpdbg:mainResponseList>`)
+	pos := AMDPStopPosition(body)
+	if pos == nil || pos.Procedure != "ZCL_DEMO=>X" {
+		t.Fatalf("the procedure should survive a missing fragment, got %+v", pos)
+	}
+	if pos.Line != 0 {
+		t.Fatalf("an unknown line is zero, not a guess; got %d", pos.Line)
+	}
+}
+
+// Only two kinds exist. SQLScript has no "into" because there is nothing below
+// the statement to step into, and a caller that asks for one should be told so
+// rather than have it silently become something else.
+func TestOnlyTwoStepKindsExist(t *testing.T) {
+	dbg := NewADTDebugger(&scriptedTransport{}, "TESTUSER")
+	dbg.amdpMain = "main-1"
+	_, err := dbg.AMDPStep(context.Background(), "d", "into")
+	if err == nil {
+		t.Fatal("stepInto is not an AMDP step; it must be refused")
+	}
+	if !strings.Contains(err.Error(), "over or continue") {
+		t.Fatalf("the refusal should name what is allowed, got: %v", err)
+	}
+}
+
+// Every AMDP resource below the session is addressed by debuggee, and the id
+// arrives only with a stop. Stepping before anything stopped is a mistake worth
+// naming rather than a request worth sending.
+func TestSteppingBeforeAnythingStoppedIsRefused(t *testing.T) {
+	dbg := NewADTDebugger(&scriptedTransport{}, "TESTUSER")
+	dbg.amdpMain = "main-1"
+	if _, err := dbg.AMDPStep(context.Background(), "", "over"); err == nil {
+		t.Fatal("there is no debuggee yet; stepping should fail")
+	}
+	if _, err := dbg.AMDPVariable(context.Background(), "", "LV_I"); err == nil {
+		t.Fatal("there is no debuggee yet; reading a variable should fail")
+	}
+}
+
+func TestAMDPCallsNeedASession(t *testing.T) {
+	dbg := NewADTDebugger(&scriptedTransport{}, "TESTUSER")
+	for _, call := range []func() error{
+		func() error { _, err := dbg.AMDPStep(context.Background(), "d", "over"); return err },
+		func() error { _, err := dbg.AMDPVariable(context.Background(), "d", "X"); return err },
+		func() error { _, err := dbg.AMDPResume(context.Background()); return err },
+	} {
+		if err := call(); err == nil || !strings.Contains(err.Error(), "start one first") {
+			t.Fatalf("without a session the call should say so, got: %v", err)
+		}
 	}
 }

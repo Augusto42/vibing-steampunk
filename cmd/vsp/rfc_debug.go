@@ -65,6 +65,9 @@ semicolon-separated script and exits. Commands:
   astart [USER]      start an AMDP debug session (ADT's own, no Z code)
   abp <CLASS> <LINE>   AMDP breakpoint, after astart
   aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
+  astep [over|continue] step the stopped AMDP debuggee
+  atrace [MAX]       walk the stopped AMDP program, one JSON object per line
+  avar <NAME>        read a variable of the stopped SQLScript
   astop              end the AMDP session
   erec [MAX]         record from here: one JSON object per stop, stepping over
                      calls until the unit is left (default 200 stops)
@@ -119,6 +122,11 @@ semicolon-separated script and exits. Commands:
 
 // adtTerminalID identifies this client to ADT's listener registry. ADT wants a
 // 32-character id; it only has to be stable and distinct, not meaningful.
+// amdpDebuggee is the stopped AMDP program this session is talking to. It
+// arrives with the stop and every resource below the session is addressed by
+// it, so it is remembered rather than asked for again.
+var amdpDebuggee string
+
 const adtTerminalID = "56535000000000000000000000006462"
 
 // rfcDebugUser is whose debuggees the ADT flow listens for; the REPL sets it
@@ -479,10 +487,56 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		return nil
 	case "aresume":
 		res, aerr := dbg.AMDPAwaitStop(ctx, num(1))
+		if res != nil {
+			if pos := saprfc.AMDPStopPosition(res.Body); pos != nil {
+				// Kept so astep and avar have something to address: every
+				// resource below the session is per debuggee, and the id
+				// arrives only with the stop.
+				amdpDebuggee = pos.DebuggeeID
+				fmt.Fprintf(os.Stderr, "stopped at %s:%d\n", pos.Procedure, pos.Line)
+			}
+		}
 		if state, reason := dbg.AMDPBreakpointState(); state != "" {
 			fmt.Fprintf(os.Stderr, "SAP calls the breakpoint %s%s\n", state,
 				map[bool]string{true: "", false: " — " + reason}[reason == ""])
 		}
+		if aerr != nil {
+			return aerr
+		}
+		fmt.Println(string(res.Body))
+		return nil
+	case "astep":
+		kind := arg(1)
+		if kind == "" {
+			kind = "over"
+		}
+		pos, aerr := dbg.AMDPStepAndWait(ctx, amdpDebuggee, kind, 6)
+		if aerr != nil {
+			return aerr
+		}
+		if pos.DebuggeeID != "" {
+			amdpDebuggee = pos.DebuggeeID
+		}
+		fmt.Fprintf(os.Stderr, "%s:%d\n", pos.Procedure, pos.Line)
+		return nil
+	case "atrace":
+		n, aerr := dbg.AMDPTrace(ctx, amdpDebuggee, num(1), func(p saprfc.AMDPPosition) error {
+			b, merr := json.Marshal(map[string]any{
+				"procedure": p.Procedure, "line": p.Line, "uri": p.URI,
+			})
+			if merr != nil {
+				return merr
+			}
+			fmt.Println(string(b))
+			return nil
+		})
+		fmt.Fprintf(os.Stderr, "%d stops traced\n", n)
+		return aerr
+	case "avar":
+		if arg(1) == "" {
+			return fmt.Errorf("usage: avar <NAME> — a variable of the stopped SQLScript")
+		}
+		res, aerr := dbg.AMDPVariable(ctx, amdpDebuggee, arg(1))
 		if aerr != nil {
 			return aerr
 		}
