@@ -56,6 +56,11 @@ type Debugger struct {
 	// the answer arrives on the way to waiting for a stop and would otherwise
 	// be skipped past unseen.
 	amdpLastBreakpointState, amdpLastBreakpointError string
+	// AMDPOnAck is called for each acknowledgement drained on the way to a
+	// stop. Reading the state only after the wait returns tells you nothing
+	// when the wait is cut short — which is the case where you most need to
+	// know whether the breakpoint was ever armed.
+	AMDPOnAck func(kind, state, reason string)
 	// What the most recent table expansion actually read.
 	lastTableSample *TableSample
 	// The hierarchy roots that hold a stopped frame's variables here, learned

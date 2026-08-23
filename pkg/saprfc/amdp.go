@@ -253,6 +253,9 @@ func (d *Debugger) AMDPAwaitStop(ctx context.Context, maxEvents int) (*ADTRespon
 				d.amdpLastBreakpointError = reason
 			}
 		}
+		if d.AMDPOnAck != nil {
+			d.AMDPOnAck(kind, d.amdpLastBreakpointState, d.amdpLastBreakpointError)
+		}
 	}
 	return nil, fmt.Errorf("nothing stopped within %d answers; the debuggee may not have run", maxEvents)
 }

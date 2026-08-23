@@ -457,6 +457,19 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		if who == "" {
 			who = rfcDebugUser
 		}
+		// Report each acknowledgement as it is drained rather than after the
+		// wait: "VALID" is SAP saying it understood the breakpoint position,
+		// and it is the signal a caller should wait for before running the
+		// thing it wants to catch. Reported only once the wait is over, it is
+		// missing precisely when the wait had to be killed.
+		dbg.AMDPOnAck = func(kind, state, reason string) {
+			if state == "" {
+				fmt.Fprintf(os.Stderr, "· %s\n", kind)
+				return
+			}
+			fmt.Fprintf(os.Stderr, "· %s — SAP calls the breakpoint %s%s\n", kind, state,
+				map[bool]string{true: "", false: " — " + reason}[reason == ""])
+		}
 		session, aerr := dbg.AMDPStart(ctx, who, true)
 		if aerr != nil {
 			return aerr
@@ -521,6 +534,14 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		return nil
 	case "atrace":
 		n, aerr := dbg.AMDPTrace(ctx, amdpDebuggee, num(1), func(p saprfc.AMDPPosition) error {
+			if p.DebuggeeID != "" {
+				// A trace carries the debuggee forward exactly as astep does.
+				// Without this, an avar after an atrace addresses the id the
+				// first stop had, and a stale id is not an error here: the
+				// resource answers 200 with nothing, which reads as "no such
+				// variable" rather than "you asked the wrong debuggee".
+				amdpDebuggee = p.DebuggeeID
+			}
 			b, merr := json.Marshal(map[string]any{
 				"procedure": p.Procedure, "line": p.Line, "uri": p.URI,
 			})
