@@ -134,6 +134,16 @@ func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, []Uns
 		out = append(out, crossCallees(cross.Rows, target)...)
 	}
 
+	// An empty answer has one more reading, and it is one this can settle
+	// rather than list. WBCROSSGTI is the same index for objects that have
+	// unactivated changes — "Index Global Types for Inactive Objects Where-Used
+	// List" in SAP's own words — and per object the two are disjoint: a class
+	// with only an active version has its rows in WBCROSSGT and none here, and
+	// a program with unactivated changes has the reverse. So an object that
+	// looks like it references nothing may simply have its references filed
+	// against a version this reader does not look at, and saying which is worth
+	// one query — asked only when the answer is empty, which is the only time
+	// it changes anything.
 	// A query that failed and a query that returned nothing look identical
 	// once the rows are merged, and they mean opposite things. Only an empty
 	// answer that no failure could explain is reported as an empty answer.
@@ -144,6 +154,36 @@ func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, []Uns
 	}
 
 	return mergeCallees(out), gaps, nil
+}
+
+// InactiveReferenceCount answers the one question an empty callee list cannot
+// answer about itself.
+//
+// WBCROSSGTI is the same index for objects carrying unactivated changes — SAP
+// calls it "Index Global Types for Inactive Objects Where-Used List" — and per
+// object the two are disjoint: a class with only an active version has its rows
+// in WBCROSSGT and none here; a program edited and not activated has the
+// reverse. So "no rows" has a reading that used to be listed as a possibility
+// and can instead be decided.
+//
+// It is only worth asking when the list is empty, which is why it is a separate
+// call rather than a second query on every lookup. Its own failure returns
+// zero: a probe that cannot run leaves the empty answer exactly as ambiguous as
+// it already was, and a caveat about a caveat helps nobody.
+func (c *Client) InactiveReferenceCount(ctx context.Context, objectURI string) int {
+	target, err := calleeTargetFromURI(objectURI)
+	if err != nil {
+		return 0
+	}
+	predicate, err := c.includePredicate(ctx, target)
+	if err != nil {
+		return 0
+	}
+	res, err := c.RunQuery(ctx, "SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGTI WHERE "+predicate, calleeRowLimit)
+	if err != nil || res == nil {
+		return 0
+	}
+	return len(res.Rows)
 }
 
 // calleeRowLimit caps each table query. A class with more references than this

@@ -905,6 +905,14 @@ func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objTy
 		fmt.Printf("  %s\n\n", note)
 	}
 	if len(callees) == 0 {
+		if n := client.InactiveReferenceCount(ctx, objURI); n > 0 {
+			// One of the three readings below, decided rather than listed.
+			fmt.Printf("  No row for this object's includes — but %d are recorded "+
+				"against an inactive version of it, in the index SAP keeps for "+
+				"objects with unactivated changes. So this object does reference "+
+				"things; the version that was activated here does not.\n", n)
+			return nil
+		}
 		// Empty here is often true. The tables record global types, classes,
 		// methods and external calls; a class doing only local work has no
 		// row, and neither has a routine that calls nothing outside its own

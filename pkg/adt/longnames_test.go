@@ -114,3 +114,58 @@ func TestANameThatMerelyLooksLikeAHashIsLeftAlone(t *testing.T) {
 		t.Errorf("%q is the shape WBCROSSGT stores", demoHash)
 	}
 }
+
+// An empty callee list has three readings, and one of them is decidable:
+// WBCROSSGTI is the same index for objects carrying unactivated changes, and
+// per object the two are disjoint. "It may never have been activated here" was
+// listed as a possibility for as long as nobody asked the second table.
+
+func inactiveServer(t *testing.T, inactiveRows bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-csrf-token", "test-token")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), " FROM WBCROSSGTI ") && inactiveRows {
+			w.Write([]byte(tableXML(
+				col("INCLUDE", "ZDEMO_REPORT", "ZDEMO_REPORT"),
+				col("OTYPE", "TY", "DA"),
+				col("NAME", "ZCL_DEMO_HELPER", "ABAP_TRUE"),
+			)))
+			return
+		}
+		w.Write([]byte(tableXML()))
+	}))
+}
+
+func TestAnEmptyAnswerSaysWhenTheReferencesAreFiledAgainstAnInactiveVersion(t *testing.T) {
+	srv := inactiveServer(t, true)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "user", "pass")
+	uri := "/sap/bc/adt/programs/programs/zdemo_report"
+
+	callees, gaps, err := client.Callees(context.Background(), uri)
+	if err != nil {
+		t.Fatalf("an empty answer is an answer: %v", err)
+	}
+	if len(callees) != 0 || len(gaps) != 0 {
+		t.Fatalf("both active tables are empty and neither failed, got %d callees and %d gaps", len(callees), len(gaps))
+	}
+	if n := client.InactiveReferenceCount(context.Background(), uri); n != 2 {
+		t.Errorf("the inactive index holds the rows that explain the empty list, got %d", n)
+	}
+}
+
+func TestAnEmptyAnswerWithNothingInactiveStaysHonestlyEmpty(t *testing.T) {
+	srv := inactiveServer(t, false)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "user", "pass")
+	if n := client.InactiveReferenceCount(context.Background(), "/sap/bc/adt/programs/programs/zdemo_report"); n != 0 {
+		t.Errorf("nothing is filed anywhere, so there is nothing to explain, got %d", n)
+	}
+}

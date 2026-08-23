@@ -195,6 +195,15 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 		answer["callees"] = callees
 		if len(callees) == 0 {
 			answer["note"] = emptyCalleesNote
+			if n := s.adtClient.InactiveReferenceCount(ctx, objectURI); n > 0 {
+				// The empty note lists three readings; this decides between
+				// them, so it replaces rather than accompanies it.
+				answer["note"] = fmt.Sprintf("No row for this object's includes, but %d are "+
+					"recorded against an inactive version of it, in the index SAP keeps for "+
+					"objects with unactivated changes. This object does reference things; the "+
+					"version activated on this system does not.", n)
+				answer["inactive_references"] = n
+			}
 		} else {
 			answer["caveat"] = calleeCaveat
 		}
