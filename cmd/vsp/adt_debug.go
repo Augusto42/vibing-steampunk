@@ -49,6 +49,10 @@ function group — those are function modules and need an RFC channel:
   echildren <ID>     expand a structure, a table or a synthetic root
   eset <NAME> <VALUE>  overwrite a variable in the stopped frame
   eframe <N|STACK-URI> move the cursor to another frame, by number or URI
+  astart [USER]      start an AMDP debug session (ADT's own, no Z code)
+  abp <CLASS> <LINE>   AMDP breakpoint, after astart
+  aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
+  astop              end the AMDP session
   erec [MAX]         record from here: one JSON object per stop
   evalues            record real values instead of «type:length» placeholders
   eraw               print the next e-command as the XML SAP sent

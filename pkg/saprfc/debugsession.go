@@ -48,6 +48,14 @@ type Debugger struct {
 	bpRejects []adt.Breakpoint
 	// Whether breakpoints in SAP's own code are allowed to fire at all.
 	systemDebugging bool
+	// The AMDP debug session started on this connection, if any. It cannot
+	// outlive the connection: the ADT resource keeps its handles in class-data,
+	// which is ABAP session memory.
+	amdpMain string
+	// What SAP last said about the AMDP breakpoints it was given. Kept because
+	// the answer arrives on the way to waiting for a stop and would otherwise
+	// be skipped past unseen.
+	amdpLastBreakpointState, amdpLastBreakpointError string
 	// What the most recent table expansion actually read.
 	lastTableSample *TableSample
 	// The hierarchy roots that hold a stopped frame's variables here, learned

@@ -1,0 +1,336 @@
+package saprfc
+
+import (
+	"context"
+	"encoding/xml"
+	"fmt"
+	"net/url"
+	"strings"
+)
+
+// AMDP — ABAP Managed Database Procedures — run inside HANA rather than inside
+// ABAP, so debugging one means bridging two debuggers. ADT does that itself:
+// /sap/bc/adt/amdp/debugger/* is a complete API, described in the discovery
+// document, and none of it needs code installed on the server.
+//
+// That is worth stating because this project spent a long time believing
+// otherwise, and built a Z service and a WebSocket protocol to reach what the
+// system was already offering. See
+// reports/2026-08-23-001-amdp-debugger-is-native-adt.md.
+//
+// Everything here has to happen on one held session. The ADT resource keeps its
+// state in class-data — the debugger handle, the control handle, the main id —
+// which is ABAP session memory, so a second connection finds an empty one. The
+// same constraint as the ABAP debugger, for the same reason.
+
+// AMDPSession is a started AMDP debug session.
+type AMDPSession struct {
+	// MainID identifies the session to every other AMDP resource. It arrives in
+	// the Location header of the start response, not in its body — the body
+	// carries the HANA session id, which is a different thing and was mistaken
+	// for this one until the handler was read.
+	MainID string
+	// HANASessionID is the database side of the bridge, as host:port:session.
+	// Nothing here needs it; it is reported because its presence is the
+	// evidence that the ABAP-to-HANA binding was actually established.
+	HANASessionID string
+}
+
+// AMDPStart begins an AMDP debug session for a user.
+//
+// stopExisting kills a session that user already has. Without it a second start
+// fails, and a session left behind by a crashed client would block every
+// attempt until it timed out.
+func (d *Debugger) AMDPStart(ctx context.Context, user string, stopExisting bool) (*AMDPSession, error) {
+	q := url.Values{}
+	q.Set("requestUser", strings.ToUpper(strings.TrimSpace(user)))
+	if stopExisting {
+		q.Set("stopExisting", "true")
+	}
+
+	res, err := d.ADT(ctx, "POST", "/sap/bc/adt/amdp/debugger/main?"+q.Encode(),
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return nil, adtError("amdp start", res)
+	}
+
+	session := &AMDPSession{
+		MainID:        mainIDFromLocation(res.Header("location")),
+		HANASessionID: amdpStartParameter(res.Body, "HANA_SESSION_ID"),
+	}
+	if session.MainID == "" {
+		return nil, fmt.Errorf("the AMDP debugger started without naming its session; expected it in the Location header")
+	}
+	d.amdpMain = session.MainID
+	return session, nil
+}
+
+// mainIDFromLocation reads the id out of the Location header the start response
+// carries: /sap/bc/adt/amdp/debugger/main/{mainId}.
+func mainIDFromLocation(location string) string {
+	const marker = "/main/"
+	i := strings.LastIndex(location, marker)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(location[i+len(marker):])
+}
+
+// amdpStartParameter pulls one named value out of the start response.
+func amdpStartParameter(body []byte, key string) string {
+	var doc struct {
+		Parameters []struct {
+			Key   string `xml:"key,attr"`
+			Value string `xml:"value,attr"`
+		} `xml:"parameter"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return ""
+	}
+	for _, p := range doc.Parameters {
+		if strings.EqualFold(p.Key, key) {
+			return p.Value
+		}
+	}
+	return ""
+}
+
+// AMDPBreakpoint is one breakpoint in an AMDP method.
+type AMDPBreakpoint struct {
+	// ClientID is ours to choose; SAP echoes it back so a client can recognise
+	// its own breakpoints.
+	ClientID string
+	// URI is an ordinary adtcore object reference with a line fragment, the
+	// same shape used everywhere else in ADT:
+	// /sap/bc/adt/oo/classes/zcl_x/source/main#start=41
+	URI string
+	// Name and Type describe the object the URI points at.
+	Name, Type string
+}
+
+// AMDP sync modes. The resource class defines exactly two and rejects anything
+// else with INVALID SYNCMODE — in the exception's subType, while its message
+// stays a useless "An exception was raised".
+const (
+	AMDPSyncFull    = "FULL"
+	AMDPSyncProgram = "PROGRAM"
+)
+
+const amdpBreakpointMediaType = "application/vnd.sap.adt.amdp.dbg.bpsync.v1+xml"
+
+// AMDPSyncBreakpoints replaces the session's breakpoints with this set.
+func (d *Debugger) AMDPSyncBreakpoints(ctx context.Context, mode string, bps []AMDPBreakpoint) error {
+	if d.amdpMain == "" {
+		return fmt.Errorf("no AMDP debug session on this connection; start one first")
+	}
+	if mode == "" {
+		mode = AMDPSyncFull
+	}
+
+	body := amdpBreakpointDocument(mode, bps)
+	res, err := d.ADT(ctx, "POST",
+		"/sap/bc/adt/amdp/debugger/main/"+url.PathEscape(d.amdpMain)+"/breakpoints",
+		[]ADTHeader{
+			{Name: "Accept", Value: acceptAnything},
+			{Name: "Content-Type", Value: amdpBreakpointMediaType},
+		}, body)
+	if err != nil {
+		return err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return adtError("amdp breakpoints", res)
+	}
+	return nil
+}
+
+// amdpBreakpointDocument builds the sync request.
+//
+// The shape is not guessed. CL_AMDP_DBG_ADT_RES_BPS names its transformation,
+// amdp_dbg_adt_sync_bp_req, and transformations are readable over ADT at
+// /sap/bc/adt/xslt/transformations/{name}/source/main — the template states
+// every element and attribute. Reading it took one request; guessing at it took
+// several rounds and got the namespace wrong, because the position is a plain
+// adtcore reference rather than anything AMDP-specific.
+func amdpBreakpointDocument(mode string, bps []AMDPBreakpoint) []byte {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` +
+		`<amdpdbg:breakpointsSyncRequest xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger"` +
+		` xmlns:adtcore="http://www.sap.com/adt/core" amdpdbg:syncMode="` + mode + `">` +
+		`<amdpdbg:breakpoints>`)
+	for _, bp := range bps {
+		b.WriteString(`<amdpdbg:breakpoint amdpdbg:clientId="` + xmlAttr(bp.ClientID) + `"`)
+		if bp.URI != "" {
+			b.WriteString(` adtcore:uri="` + xmlAttr(bp.URI) + `"`)
+		}
+		if bp.Name != "" {
+			b.WriteString(` adtcore:name="` + xmlAttr(bp.Name) + `"`)
+		}
+		if bp.Type != "" {
+			b.WriteString(` adtcore:type="` + xmlAttr(bp.Type) + `"`)
+		}
+		b.WriteString(`/>`)
+	}
+	b.WriteString(`</amdpdbg:breakpoints></amdpdbg:breakpointsSyncRequest>`)
+	return []byte(b.String())
+}
+
+// xmlAttr escapes a value for an XML attribute. Object names come from a dump,
+// a stack or an argument rather than from us.
+func xmlAttr(s string) string {
+	r := strings.NewReplacer(`&`, "&amp;", `<`, "&lt;", `>`, "&gt;", `"`, "&quot;")
+	return r.Replace(s)
+}
+
+// AMDPEventKind names what one resume answer is about.
+const (
+	// AMDPEventSyncBreakpoints acknowledges a breakpoint sync. It is queued
+	// like everything else, so the first resume after setting breakpoints
+	// answers with this and not with a stop — which reads exactly like "the
+	// breakpoint did not fire", and is the trap this API sets. Keep asking.
+	AMDPEventSyncBreakpoints = "SYNC_BREAKPOINTS"
+	// AMDPEventToggleBreakpoints is SAP reporting what it made of the
+	// breakpoints — each with a state and, when it refused one, a reason. It is
+	// the most useful answer in the whole API and still not a stop: a
+	// breakpoint reported VALID has been accepted, not reached.
+	AMDPEventToggleBreakpoints = "ON_TOGGLE_BREAKPOINTS"
+)
+
+// amdpAcknowledgements are answers about the session rather than about a
+// stopped program. Treating either as a stop is how a client concludes that a
+// breakpoint never fired while the debuggee is blocked on it.
+var amdpAcknowledgements = map[string]bool{
+	AMDPEventSyncBreakpoints:   true,
+	AMDPEventToggleBreakpoints: true,
+}
+
+// AMDPEventKindOf reports what an answer was about, and which debuggee it
+// concerns. An empty debuggee id means the event is about the session rather
+// than about a stopped program.
+func AMDPEventKindOf(body []byte) (kind, debuggee string) {
+	var doc struct {
+		Responses []struct {
+			Kind     string `xml:"kind,attr"`
+			Debuggee string `xml:"debuggeeId,attr"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil || len(doc.Responses) == 0 {
+		return "", ""
+	}
+	last := doc.Responses[len(doc.Responses)-1]
+	return last.Kind, last.Debuggee
+}
+
+// AMDPAwaitStop keeps resuming until something actually stops, or until the
+// budget of answers runs out.
+//
+// The single resume below is not enough on its own: the responses arrive as a
+// queue, and the acknowledgement of the breakpoint sync sits at its head. A
+// client that resumes once, sees SYNC_BREAKPOINTS and stops looking concludes
+// the breakpoint never fired — while the debuggee is, at that moment, blocked
+// on it. That is worth spelling out, because it is the shape of the conclusion
+// this project drew for months.
+func (d *Debugger) AMDPAwaitStop(ctx context.Context, maxEvents int) (*ADTResponse, error) {
+	if maxEvents <= 0 {
+		maxEvents = 10
+	}
+	for i := 0; i < maxEvents; i++ {
+		res, err := d.AMDPResume(ctx)
+		if err != nil {
+			return res, err
+		}
+		kind, debuggee := AMDPEventKindOf(res.Body)
+		if debuggee != "" || (kind != "" && !amdpAcknowledgements[kind]) {
+			return res, nil
+		}
+		if kind == AMDPEventToggleBreakpoints {
+			// Worth showing even though the wait continues: it is where SAP
+			// says whether the position was understood.
+			if state, reason := amdpBreakpointState(res.Body); state != "" {
+				d.amdpLastBreakpointState = state
+				d.amdpLastBreakpointError = reason
+			}
+		}
+	}
+	return nil, fmt.Errorf("nothing stopped within %d answers; the debuggee may not have run", maxEvents)
+}
+
+// AMDPResume asks for the next answer from the session's queue.
+//
+// It is not a listener: the handler raises when its response is initial, so
+// this is only meaningful once something is running under the debugger. And it
+// checks the id — unlike the breakpoint resource, which uses its own and will
+// happily answer 200 for a main id that does not exist.
+func (d *Debugger) AMDPResume(ctx context.Context) (*ADTResponse, error) {
+	if d.amdpMain == "" {
+		return nil, fmt.Errorf("no AMDP debug session on this connection; start one first")
+	}
+	res, err := d.ADT(ctx, "GET", "/sap/bc/adt/amdp/debugger/main/"+url.PathEscape(d.amdpMain),
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status != 200 {
+		return res, adtError("amdp resume", res)
+	}
+	return res, nil
+}
+
+// AMDPTerminate ends the session. hardStop does not wait for the debuggee.
+func (d *Debugger) AMDPTerminate(ctx context.Context, hardStop bool) error {
+	if d.amdpMain == "" {
+		return nil
+	}
+	uri := "/sap/bc/adt/amdp/debugger/main/" + url.PathEscape(d.amdpMain)
+	if hardStop {
+		uri += "?hardStop=true"
+	}
+	res, err := d.ADT(ctx, "DELETE", uri, []ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+	d.amdpMain = ""
+	if err != nil {
+		return err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return adtError("amdp terminate", res)
+	}
+	return nil
+}
+
+// amdpBreakpointState reads what SAP made of the first breakpoint it reported.
+func amdpBreakpointState(body []byte) (state, reason string) {
+	var doc struct {
+		Responses []struct {
+			Value struct {
+				Toggle struct {
+					// The list is wrapped: onToggleBreakpoints > breakpoints >
+					// breakpoint. Skipping the plural level silently finds
+					// nothing, which reads as "SAP said nothing about the
+					// breakpoint" rather than as a parser bug.
+					Breakpoints []struct {
+						State  string `xml:"state,attr"`
+						ErrMsg string `xml:"errorMessage,attr"`
+					} `xml:"breakpoints>breakpoint"`
+				} `xml:"onToggleBreakpoints"`
+			} `xml:"value"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return "", ""
+	}
+	for _, r := range doc.Responses {
+		for _, bp := range r.Value.Toggle.Breakpoints {
+			if bp.State != "" {
+				return bp.State, bp.ErrMsg
+			}
+		}
+	}
+	return "", ""
+}
+
+// AMDPBreakpointState reports what SAP last said about the breakpoints it was
+// given: VALID, or a state with a reason attached.
+func (d *Debugger) AMDPBreakpointState() (state, reason string) {
+	return d.amdpLastBreakpointState, d.amdpLastBreakpointError
+}

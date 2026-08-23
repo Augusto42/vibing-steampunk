@@ -98,26 +98,50 @@ session:
    "bpsync" is `IF_AMDP_DBG_CONTROL->sync_breakpoints` behind a
    resource, so the ADT path and the Z path reach the same ABAP.
 
-## What was NOT verified
+## It works
 
-**No breakpoint has been made to fire.** What stops it now is tooling
-rather than knowledge: the mainId is only known after the start call, and
-`vsp adt debug -c` runs a fixed script with no way to carry a value from
-one command to the next. Every attempt used an id from an earlier start,
-which `GET` rightly rejected.
+An AMDP breakpoint fires. Verified on a live 7.58 system, over plain
+HTTPS, with nothing installed on the server:
 
-Two more things follow from the source and are worth knowing before the
-next attempt:
+```
+vsp adt debug -s a4h --user <you> -c "astart; abp ZCL_VSP_00_AMDP_TEST 41; aresume 12; astop"
+# and, while it waits, from anywhere:
+vsp execute -s a4h 'zcl_vsp_00_amdp_test=>calculate_squares( ... ).'
+```
 
-- `resume()` raises when its response is initial, so `GET /main/{mainId}`
-  is meaningless until something is actually running under the debugger.
-  It is not a listener that waits for work to appear.
-- `im_max_dbg_contexts = 1` is hard-coded in the start call, so one
-  debug context per session and no more.
+SAP answers `kind="ON_BREAK"` with a debuggee id and the position:
+`procedureName="ZCL_VSP_00_AMDP_TEST=>CALCULATE_SQUARES"`,
+`adtcore:uri=".../source/main#start=41"`. The debugger is stopped inside
+the SQLScript.
 
-The next step is therefore development, not probing: give
-`vsp adt debug` AMDP commands that start a session, keep the mainId, sync
-breakpoints and resume — all on the one session it already holds.
+### The trap that made this look impossible
+
+Answers arrive as a **queue**, and acknowledgements sit at its head. The
+first resume after setting breakpoints returns `SYNC_BREAKPOINTS`; the
+next returns `ON_TOGGLE_BREAKPOINTS`, which carries SAP's verdict on each
+breakpoint — `state="VALID"`, and a reason when it refuses one. Neither
+is a stop.
+
+A client that resumes once, sees an acknowledgement and stops looking
+concludes the breakpoint never fired — while the debuggee is, at that
+moment, blocked on it. That is the shape of the conclusion this project
+held for months, and it was reached again here before the queue was
+understood: the first attempt returned `SYNC_BREAKPOINTS` and looked like
+a failure, and the *evidence* that it had worked was that the triggering
+session hung on a timeout.
+
+`AMDPAwaitStop` waits past acknowledgements and keeps the verdict rather
+than skipping it unseen, because "SAP calls the breakpoint VALID" is the
+most useful thing the API says before it stops.
+
+## What is still not done
+
+Stepping, variables and the debuggee resources are mapped but unused —
+`step=over`, `step=continue`, `variables/{varname}`, `lookup`, and table
+variables through `/sap/bc/adt/datapreview/amdpdebugger`. Reading a
+variable inside a stopped SQLScript is the next thing worth having.
+
+Nothing is exposed through MCP yet, so an agent cannot do any of this.
 
 ## The document, in full
 

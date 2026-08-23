@@ -62,6 +62,10 @@ semicolon-separated script and exits. Commands:
                      overwrite a variable in the stopped frame — the next
                      statement computes with the new value
   eframe <STACK-URI> move the cursor to another frame, to read its variables
+  astart [USER]      start an AMDP debug session (ADT's own, no Z code)
+  abp <CLASS> <LINE>   AMDP breakpoint, after astart
+  aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
+  astop              end the AMDP session
   erec [MAX]         record from here: one JSON object per stop, stepping over
                      calls until the unit is left (default 200 stops)
   evalues            record real values instead of «type:length» placeholders
@@ -436,6 +440,59 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			fmt.Fprintf(os.Stderr, "%d of %d rows: %s\n",
 				len(sample.Rows), sample.Lines, saprfc.FormatRowRanges(sample.Rows))
 		}
+		return nil
+	case "astart":
+		// AMDP debugging over ADT's own resources. Everything about it has to
+		// stay on this one connection: the server keeps the session in
+		// class-data, so a second connection finds nothing.
+		who := arg(1)
+		if who == "" {
+			who = rfcDebugUser
+		}
+		session, aerr := dbg.AMDPStart(ctx, who, true)
+		if aerr != nil {
+			return aerr
+		}
+		fmt.Fprintf(os.Stderr, "AMDP debug session %s\n", session.MainID)
+		if session.HANASessionID != "" {
+			// Printed because its presence is the evidence that the bridge to
+			// the database side was actually established.
+			fmt.Fprintf(os.Stderr, "bridged to HANA session %s\n", session.HANASessionID)
+		}
+		return nil
+	case "abp":
+		if len(fields) < 3 {
+			return fmt.Errorf("usage: abp <CLASS> <LINE> — an AMDP breakpoint, after astart")
+		}
+		name := strings.ToUpper(arg(1))
+		bp := saprfc.AMDPBreakpoint{
+			ClientID: "vsp-1",
+			URI: fmt.Sprintf("/sap/bc/adt/oo/classes/%s/source/main#start=%d",
+				strings.ToLower(name), num(2)),
+			Name: name,
+			Type: "CLAS/OC",
+		}
+		if berr := dbg.AMDPSyncBreakpoints(ctx, saprfc.AMDPSyncFull, []saprfc.AMDPBreakpoint{bp}); berr != nil {
+			return berr
+		}
+		fmt.Fprintf(os.Stderr, "AMDP breakpoint at %s:%d\n", name, num(2))
+		return nil
+	case "aresume":
+		res, aerr := dbg.AMDPAwaitStop(ctx, num(1))
+		if state, reason := dbg.AMDPBreakpointState(); state != "" {
+			fmt.Fprintf(os.Stderr, "SAP calls the breakpoint %s%s\n", state,
+				map[bool]string{true: "", false: " — " + reason}[reason == ""])
+		}
+		if aerr != nil {
+			return aerr
+		}
+		fmt.Println(string(res.Body))
+		return nil
+	case "astop":
+		if aerr := dbg.AMDPTerminate(ctx, true); aerr != nil {
+			return aerr
+		}
+		fmt.Fprintln(os.Stderr, "AMDP debug session ended")
 		return nil
 	case "adt":
 		if len(fields) < 3 {
