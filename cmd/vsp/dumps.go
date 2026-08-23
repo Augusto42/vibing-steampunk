@@ -25,6 +25,7 @@ fields, so listing and grouping need no HTML parsing and no Z code.
   vsp dumps --program SAPLSBAL_DB
   vsp dumps --explain latest --tolerance 5m    # and what the application log said around it
   vsp dumps --similar latest                   # what else looks like this one, and how closely
+  vsp dumps --impact latest                    # who else calls the code that failed
 
 --explain ranks log entries by the argument for them, not by the clock. An
 entry written by the program that dumped is connected structurally; one that is
@@ -42,7 +43,12 @@ Rungs 2 and 4 come out of the feed and cost nothing. Rungs 1 and 3 need the
 failing line and the application component, which live only in the dump detail
 — one fetch per candidate, bounded by --deep. Custom code is usually assigned
 to no application component at all, so rung 3 mostly speaks about SAP standard
-code; when a dump has no component, the rung is dropped rather than faked.`,
+code; when a dump has no component, the rung is dropped rather than faked.
+
+--impact asks the opposite direction and is not evidence of anything. A caller
+that took part in this failure is already on the stack --explain prints; the
+callers listed here did not run, which is precisely why they are worth knowing
+about. It is the blast radius: who else reaches the broken code, and would.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		params, err := resolveSystemParams(cmd)
@@ -78,6 +84,14 @@ code; when a dump has no component, the rung is dropped rather than faked.`,
 		}
 
 		asJSON, _ := cmd.Flags().GetBool("json")
+
+		if impact, _ := cmd.Flags().GetString("impact"); impact != "" {
+			dump, found := adt.FindDump(dumps, impact)
+			if !found {
+				return fmt.Errorf("no dump in this range has an id containing %q; pass 'latest' or part of an id from the listing", impact)
+			}
+			return impactOfDump(ctx, client, cmd, dump, asJSON)
+		}
 
 		if explain, _ := cmd.Flags().GetString("explain"); explain != "" {
 			return explainDump(ctx, client, cmd, dumps, explain, asJSON)
@@ -332,6 +346,94 @@ func phraseUsers(users []string) string {
 	}
 }
 
+// impactOfDump answers the question --explain does not: not what caused this
+// failure, but who else runs into it.
+//
+// The two are separate flags on purpose. --explain ranks candidates for a
+// cause, and every row it prints is arguable; this prints static facts about
+// the repository, and none of them are. Merging the two lists would let the
+// confidence of the second leak into how the first is read.
+func impactOfDump(ctx context.Context, client *adt.Client, cmd *cobra.Command, dump adt.Dump, asJSON bool) error {
+	frames, _ := cmd.Flags().GetInt("impact-frames")
+	top, _ := cmd.Flags().GetInt("impact-top")
+
+	result, err := client.DumpImpact(ctx, dump, adt.DumpImpactOptions{MaxUnits: frames, Limit: top})
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return emitJSON(result)
+	}
+
+	fmt.Printf("%s  %s\n", stamp(dump.At), dump.ErrorType)
+	fmt.Printf("  program %s, user %s\n", dump.Program, dump.User)
+	if dump.Message != "" {
+		fmt.Printf("  %s\n", dump.Message)
+	}
+	fmt.Println()
+
+	if result.StackUnavailable {
+		fmt.Fprintln(os.Stderr, "the call stack could not be read, so only the dump's own program was asked about")
+		fmt.Fprintln(os.Stderr)
+	}
+
+	fmt.Println("Asked of:")
+	for _, u := range result.Units {
+		if u.Err != "" {
+			fmt.Printf("  %-4s %-34s no where-used list: %s\n", u.Type, u.Object, u.Err)
+			continue
+		}
+		if u.Note != "" {
+			fmt.Printf("  %-4s %-34s not asked - %s\n", u.Type, u.Object, u.Note)
+			continue
+		}
+		where := ""
+		if u.Frame != nil {
+			where = fmt.Sprintf("   frame %d, line %d", u.Frame.Position, u.Frame.Line)
+		}
+		fmt.Printf("  %-4s %-34s %4d direct callers%s\n", u.Type, u.Object, u.Total, where)
+	}
+	fmt.Println()
+
+	switch {
+	case !result.Answerable():
+		// An empty answer and an unaskable question look the same in the
+		// numbers and mean opposite things.
+		fmt.Println("No unit of this dump has a where-used list that can answer. This is not a finding of zero callers.")
+	case len(result.Exposed) == 0:
+		fmt.Println("Nothing else calls this code. It is reachable only by the path the dump took.")
+	default:
+		fmt.Printf("Exposed - reaches the failing code by another path (%d):\n\n", len(result.Exposed))
+		for _, e := range result.Exposed {
+			marker := " "
+			if e.IsTest {
+				marker = "t"
+			}
+			fmt.Printf("  %s %-34s %-9s %-20s via %s\n", marker, e.Name, e.Type, e.Package, e.Via)
+			if e.Component != "" {
+				fmt.Printf("      in %s\n", e.Component)
+			}
+		}
+	}
+
+	if len(result.OnPath) > 0 {
+		fmt.Println()
+		fmt.Printf("On the dump's own stack, so not additional exposure (%d): %s\n",
+			len(result.OnPath), strings.Join(callerNamesOf(result.OnPath), ", "))
+	}
+
+	fmt.Fprintln(os.Stderr, "\nWho can reach the bug, not who caused it. Object level: the where-used list resolves a method to its class, so a caller here reaches the class and not necessarily the failing method.")
+	return nil
+}
+
+func callerNamesOf(callers []adt.ExposedCaller) []string {
+	names := make([]string, 0, len(callers))
+	for _, c := range callers {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
 func stamp(t time.Time) string {
 	if t.IsZero() {
 		return "-"
@@ -349,6 +451,9 @@ func init() {
 	dumpsCmd.Flags().String("explain", "", "Show one dump ('latest' or part of an id) with the log around it")
 	dumpsCmd.Flags().String("similar", "", "Rank what else looks like one dump ('latest' or part of an id)")
 	dumpsCmd.Flags().Int("deep", 25, "For --similar, how many candidate dumps to read in detail; 0 stays on the feed")
+	dumpsCmd.Flags().String("impact", "", "Show who else calls the code that failed in one dump ('latest' or part of an id)")
+	dumpsCmd.Flags().Int("impact-frames", 3, "How many units to walk outward from the failing statement for --impact")
+	dumpsCmd.Flags().Int("impact-top", 25, "Maximum callers to list per unit for --impact")
 	dumpsCmd.Flags().Duration("tolerance", 5*time.Minute, "Window on each side of the dump for --explain")
 	dumpsCmd.Flags().Bool("json", false, "Emit JSON")
 	rootCmd.AddCommand(dumpsCmd)
