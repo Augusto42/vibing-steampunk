@@ -21,6 +21,17 @@ import (
 //
 //	A caller that cannot tell "nothing found" from "the question failed"
 //	must not return an empty result as if it were an answer.
+//
+// And the narrower rule, learned by breaking it: **Unsearched means "could not
+// look".** It does not mean "looked, and here is a caveat about what I found".
+//
+// The first version of the inactive-reference note used this type to say that
+// a second cross-reference table held 29 rows — and printed "1 of 2 tables
+// could not be searched" directly above the sentence proving it had been. A
+// fact dressed in this type produces exactly the class of untruth the type
+// exists to prevent, and it slips through tests that check the number rather
+// than how it reads. If you know something, say it in its own words; this is
+// for what you could not find out.
 
 // Unsearched is one thing a sweep could not look at, and why.
 type Unsearched struct {
