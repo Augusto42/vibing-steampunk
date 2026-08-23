@@ -127,6 +127,11 @@ semicolon-separated script and exits. Commands:
 // it, so it is remembered rather than asked for again.
 var amdpDebuggee string
 
+// amdpSession is kept because the data preview resource that serves
+// table-valued variables lives outside the debugger and needs the whole
+// address, including the HANA session id that only the start call hands out.
+var amdpSession *saprfc.AMDPSession
+
 const adtTerminalID = "56535000000000000000000000006462"
 
 // rfcDebugUser is whose debuggees the ADT flow listens for; the REPL sets it
@@ -474,6 +479,7 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		if aerr != nil {
 			return aerr
 		}
+		amdpSession = session
 		fmt.Fprintf(os.Stderr, "AMDP debug session %s\n", session.MainID)
 		if session.HANASessionID != "" {
 			// Printed because its presence is the evidence that the bridge to
@@ -571,6 +577,20 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		for _, v := range values {
 			fmt.Println(saprfc.FormatAMDPScalar(v))
 		}
+		return nil
+	case "atable":
+		if arg(1) == "" {
+			return fmt.Errorf("usage: atable <NAME> [ROWS] — a table-valued variable of the stopped SQLScript")
+		}
+		res, aerr := dbg.AMDPTableRows(ctx, amdpSession, amdpDebuggee, arg(1), num(2))
+		if aerr != nil {
+			// Say that this is a known gap rather than letting it read as a
+			// fault in the caller's request: the address is right and the
+			// server refuses to build its data provider from it.
+			fmt.Fprintln(os.Stderr, "reading a table variable does not work yet — see AMDPTableRows for where it stands")
+			return aerr
+		}
+		fmt.Println(string(res.Body))
 		return nil
 	case "astop":
 		if aerr := dbg.AMDPTerminate(ctx, true); aerr != nil {

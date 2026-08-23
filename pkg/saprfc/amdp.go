@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -625,4 +626,71 @@ func FormatAMDPScalar(s AMDPScalar) string {
 		line += fmt.Sprintf("  … %d of %d characters", s.Length, s.OriginalLength)
 	}
 	return line
+}
+
+// AMDPTableRows reads a table-valued variable of the stopped SQLScript.
+//
+// **This does not work yet.** It is committed because what is established is
+// worth more than the guessing it replaces, and because the remaining question
+// is narrow and named.
+//
+// Tables do not come back through the debugger at all: they go through data
+// preview, at /sap/bc/adt/datapreview/amdpdebugger, a separate resource that
+// knows nothing about our session and therefore needs the whole address.
+//
+// Established by reading rather than probing:
+//
+//   - The handler is CL_ADT_DP_DBG_AMDP_RES, registered for that path in
+//     CL_ADT_DATAPREVIEW_RES_APP. The class next door,
+//     CL_ADT_AMDP_DATAPREVIEW_RES, serves /datapreview/amdp — a different
+//     relation that takes uri and maxRows, and reading it first sent me the
+//     wrong way for a while.
+//   - The parameter names below are the constants of
+//     if_adt_dp_dbg_amdp_res_co, not a reading of the discovery template, so
+//     they are right.
+//   - It is a GET. A POST answers "Content type missing", because the
+//     transport sets no content type without a body.
+//
+// What fails is the values. The server answers 400 with
+//
+//	Debugger operation "INIT" failed with error code "3" ("internal error")
+//
+// and initialize_data_provider builds the provider from debuggerId and
+// sessionId alone — so one of those two is not what it wants. Note the shapes:
+// the debuggee id is the HANA session id plus two more segments
+// (host:port:session:context:n), so "session" may mean something narrower or
+// wider than the id the start call returns.
+//
+// The next step is the factory, lif_provider_factory, which lives in the
+// class's own local includes and needs reading separately. Do that rather than
+// trying more combinations of the three ids; four times today the handler
+// answered in one request what probing did not answer in several.
+func (d *Debugger) AMDPTableRows(ctx context.Context, session *AMDPSession, debuggeeID, name string, rows int) (*ADTResponse, error) {
+	if session == nil || session.MainID == "" {
+		return nil, fmt.Errorf("no AMDP debug session on this connection; start one first")
+	}
+	if strings.TrimSpace(debuggeeID) == "" {
+		return nil, fmt.Errorf("no debuggee: nothing has stopped yet")
+	}
+	if rows <= 0 {
+		rows = 50
+	}
+
+	q := url.Values{}
+	q.Set("sessionId", session.HANASessionID)
+	q.Set("debuggerId", session.MainID)
+	q.Set("debuggeeId", debuggeeID)
+	q.Set("variableName", strings.ToUpper(strings.TrimSpace(name)))
+	q.Set("rowNumber", strconv.Itoa(rows))
+	q.Set("colNumber", "100")
+
+	res, err := d.ADT(ctx, "GET", "/sap/bc/adt/datapreview/amdpdebugger?"+q.Encode(),
+		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if res.Status < 200 || res.Status >= 300 {
+		return res, adtError("amdp table "+name, res)
+	}
+	return res, nil
 }
