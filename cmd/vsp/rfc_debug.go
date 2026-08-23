@@ -467,6 +467,16 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		}
 		fmt.Fprintf(os.Stderr, "%d %s · %d bytes · %s\n",
 			res.Status, res.ReasonPhrase, len(res.Body), res.Header("content-type"))
+		// Some ADT resources answer with the thing you need in a header and
+		// nothing in the body — starting an AMDP debug session returns its id
+		// only in Location, and a probe that prints just the body looks like it
+		// got an answer while missing the answer. Print the headers that carry
+		// an identifier or point somewhere.
+		for _, name := range []string{"location", "content-location", "etag"} {
+			if value := res.Header(name); value != "" {
+				fmt.Fprintf(os.Stderr, "%s: %s\n", name, value)
+			}
+		}
 		fmt.Println(string(res.Body))
 		return nil
 	case "detach":

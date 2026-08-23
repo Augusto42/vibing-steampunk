@@ -56,11 +56,35 @@ session:
    That is the bridge the earlier investigation listed as a possible
    missing piece ("HANA debugger not connected"). ADT establishes it.
 
-2. **`HANA_SESSION_ID` is the `mainId`,** and the session outlives the
-   HTTP connection that created it. Proved by asking a *second*
-   connection for `/main/{that id}/breakpoints`: it answered **405
-   Method Not Allowed**, not 404. A wrong id would not have found a
-   resource to refuse a method on.
+2. **`HANA_SESSION_ID` is *not* the `mainId`, and the session does not
+   outlive its connection.** An earlier version of this report said both,
+   and both were wrong. The reasoning that produced them is worth keeping
+   as a warning:
+
+   - The start response carries `HANA_SESSION_ID`, so I took it for the
+     id. `CL_AMDP_DBG_ADT_RES_MAIN` sets `me->main_id =
+     …-start-debugger_id` and `me->session_id = …-db_dbg_session_id`.
+     Two different fields; the body returns the second. The first comes
+     back in the **`Location` header** —
+     `response->set_location( |/sap/bc/adt/amdp/debugger/main/{ me->main_id }| )`
+     — which the `adt` passthrough was not printing. A probe that shows
+     only the body looks like it got an answer while missing the answer.
+     Fixed: the passthrough now prints Location, Content-Location and
+     ETag.
+   - Asking a *second* connection for `/main/{that id}/breakpoints`
+     answered 405 rather than 404, which I read as "the id was
+     recognised". It was not: 405 comes from routing, before any session
+     state is consulted. Worse, the breakpoint POST then answered **200
+     for a `mainId` of `DUMMY`** — that handler never checks the id, it
+     uses its own. Two successes in a row, neither meaning what it
+     appeared to.
+
+   The session state is `class-data` on the resource class —
+   `debugger_main`, `debugger_control`, `main_id`, `session_id` — which
+   is ABAP session memory. So the whole AMDP choreography has to run on
+   one held stateful session, exactly like the ABAP debugger. `GET
+   /main/{mainId}` does check: `if l_main_id <> me->main_id or
+   me->debugger_main is not bound. raise…`
 
 3. **The breakpoint document's shape**, which the server dictates one
    step at a time if you let it:
@@ -76,16 +100,57 @@ session:
 
 ## What was NOT verified
 
-**No breakpoint has been made to fire through this API.** The
-individual breakpoint element inside `breakpoints` is still unknown —
-an empty list is accepted structurally and then raises on the ABAP side.
-Finding its shape is more of the same conversation with the server, and
-it is the next step.
+**No breakpoint has been made to fire.** What stops it now is tooling
+rather than knowledge: the mainId is only known after the start call, and
+`vsp adt debug -c` runs a fixed script with no way to carry a value from
+one command to the next. Every attempt used an id from an earlier start,
+which `GET` rightly rejected.
 
-So the honest statement today is: *the AMDP debugger is reachable
-natively, and the session and the HANA binding work.* Whether
-breakpoints fire through it is open — as it was before, but now for a
-much smaller and better-defined reason.
+Two more things follow from the source and are worth knowing before the
+next attempt:
+
+- `resume()` raises when its response is initial, so `GET /main/{mainId}`
+  is meaningless until something is actually running under the debugger.
+  It is not a listener that waits for work to appear.
+- `im_max_dbg_contexts = 1` is hard-coded in the start call, so one
+  debug context per session and no more.
+
+The next step is therefore development, not probing: give
+`vsp adt debug` AMDP commands that start a session, keep the mainId, sync
+breakpoints and resume — all on the one session it already holds.
+
+## The document, in full
+
+```xml
+<amdpdbg:breakpointsSyncRequest
+    xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger"
+    xmlns:adtcore="http://www.sap.com/adt/core"
+    amdpdbg:syncMode="FULL">          <!-- FULL or PROGRAM, upper case -->
+  <amdpdbg:breakpoints>
+    <amdpdbg:breakpoint
+        amdpdbg:clientId="vsp-1"
+        adtcore:uri="/sap/bc/adt/oo/classes/zcl_x/source/main#start=41"
+        adtcore:name="ZCL_X" adtcore:type="CLAS/OC"/>
+  </amdpdbg:breakpoints>
+</amdpdbg:breakpointsSyncRequest>
+```
+
+Media type `application/vnd.sap.adt.amdp.dbg.bpsync.v1+xml`. The position
+is a plain `adtcore` object reference — the same shape used everywhere
+else in ADT — which is why guessing `amdpdbg:uri` got nowhere.
+
+This was not guessed either. `CL_AMDP_DBG_ADT_RES_BPS` names its
+transformation, `amdp_dbg_adt_sync_bp_req`, and transformations are
+readable over ADT at
+`/sap/bc/adt/xslt/transformations/{name}/source/main`. The template
+states every element and attribute. Two lines of that class also settle
+the sync mode: `c_syncmode_program value 'PROGRAM'`, `c_syncmode_full
+value 'FULL'` — and nothing else is accepted, which the server reports as
+`INVALID SYNCMODE` in the exception's `subType`, while its `message`
+stays a useless "An exception was raised".
+
+**Read the handler.** Three rounds of guessing cost more than one read of
+the class that parses the document.
 
 ## Releases
 
