@@ -1600,13 +1600,18 @@ func runSlim(cmd *cobra.Command, args []string) error {
 				classNames = append(classNames, obj.Name)
 			}
 		}
+		var uninspected []adt.Unsearched
 		if len(classNames) > 0 {
 			fmt.Fprintf(os.Stderr, "Fetching class structures (%d classes)...\n", len(classNames))
 			for i, cls := range classNames {
 				fmt.Fprintf(os.Stderr, "\r  [%d/%d] %-40s", i+1, len(classNames), cls)
 				structure, err := client.GetClassObjectStructure(ctx, cls)
 				if err != nil {
-					continue // skip classes we can't inspect
+					// A class whose structure will not load keeps its entry and
+					// gets no methods, which is indistinguishable from a class
+					// that has none — and this report is about what is unused.
+					uninspected = append(uninspected, adt.Unsearched{Object: "CLAS " + cls, Reason: err.Error()})
+					continue
 				}
 				methods := structure.GetMethods()
 				var methodNames []string
@@ -1624,6 +1629,9 @@ func runSlim(cmd *cobra.Command, args []string) error {
 				}
 			}
 			fmt.Fprintf(os.Stderr, "\r\n")
+		}
+		if note := adt.UnsearchedNote(uninspected, len(classNames), "class"); note != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", note)
 		}
 	}
 
@@ -1840,9 +1848,18 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	// Step 2: Fetch source for each caller
 	fmt.Fprintf(os.Stderr, "Fetching source for %d callers...\n", len(callerNames))
 	var callers []graph.CallerSource
+	var unread []adt.Unsearched
 	for _, c := range callerNames {
 		source, err := client.GetSource(ctx, c.objType, c.name, nil)
 		if err != nil || source == "" {
+			// It still called the target; only the snippet is missing. Dropping
+			// it silently makes the example list look like the whole of the
+			// usage rather than the part that could be shown.
+			reason := "the source came back empty"
+			if err != nil {
+				reason = err.Error()
+			}
+			unread = append(unread, adt.Unsearched{Object: c.objType + " " + c.name, Reason: reason})
 			continue
 		}
 		isTest := graph.IsTestCaller(c.name, "")
@@ -1854,6 +1871,10 @@ func runExamples(cmd *cobra.Command, args []string) error {
 			IsTest:  isTest,
 			Source:  source,
 		})
+	}
+
+	if note := adt.UnsearchedNote(unread, len(callerNames), "caller"); note != "" {
+		fmt.Fprintf(os.Stderr, "%s\n", note)
 	}
 
 	// Step 3: Extract examples

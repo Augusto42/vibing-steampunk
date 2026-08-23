@@ -269,7 +269,7 @@ func (s *Server) resolvePackages(ctx context.Context, g *graph.Graph) []adt.Unse
 		}
 	}
 	if len(unresolved) > 0 {
-		resolveFMviaTFDIR(ctx, s.adtClient, unresolved, nodesByName)
+		missed = append(missed, resolveFMviaTFDIR(ctx, s.adtClient, unresolved, nodesByName)...)
 	}
 	return missed
 }
@@ -321,7 +321,8 @@ func resolveTADIR(ctx context.Context, client *adt.Client, names []string, nodes
 // resolveFMviaTFDIR resolves function modules that aren't in TADIR as R3TR objects.
 // Strategy: TFDIR.FUNCNAME → TFDIR.PNAME (e.g., "SAPLZFUGR") → extract FUGR name
 // → TADIR lookup for the FUGR to get DEVCLASS.
-func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) {
+func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) []adt.Unsearched {
+	var unresolved []adt.Unsearched
 	fugrSet := make(map[string]bool)
 	fmToFugr := make(map[string]string)
 
@@ -339,6 +340,13 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 		query := fmt.Sprintf("SELECT FUNCNAME, PNAME FROM TFDIR WHERE FUNCNAME IN (%s)", strings.Join(quoted, ","))
 		result, err := client.RunQuery(ctx, query, len(batch)*2)
 		if err != nil || result == nil {
+			// A module whose group cannot be looked up keeps its node and
+			// loses its containment. It then sits in the graph belonging to
+			// nothing, which a boundary check reads as a crossing that is not
+			// there — or misses one that is.
+			for _, n := range batch {
+				unresolved = append(unresolved, adt.Unsearched{Object: "FUNC " + n, Reason: errText(err)})
+			}
 			continue
 		}
 		for _, row := range result.Rows {
@@ -358,7 +366,7 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 	}
 
 	if len(fugrSet) == 0 {
-		return
+		return unresolved
 	}
 
 	// TADIR lookup for the function groups
@@ -369,7 +377,13 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 	fugrQuery := fmt.Sprintf("SELECT obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND object = 'FUGR' AND obj_name IN (%s)", strings.Join(fugrQuoted, ","))
 	fugrResult, err := client.RunQuery(ctx, fugrQuery, len(fugrSet)*2)
 	if err != nil || fugrResult == nil {
-		return
+		// The groups were found and their packages were not. Every module
+		// behind them keeps a group and loses a package, which is the same
+		// unlabelled node reached by a different route.
+		for fg := range fugrSet {
+			unresolved = append(unresolved, adt.Unsearched{Object: "FUGR " + fg, Reason: errText(err)})
+		}
+		return unresolved
 	}
 
 	fugrPkg := make(map[string]string) // FUGR name → DEVCLASS
@@ -390,6 +404,7 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 			}
 		}
 	}
+	return unresolved
 }
 
 // handleGraphStats returns statistics about the current in-memory graph.
