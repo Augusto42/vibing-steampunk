@@ -237,9 +237,27 @@ Transport analysis:
 Execute ABAP:
   SAP(action="analyze", params={"type": "execute_abap", "code": "WRITE 'Hello'."})
 
-Runtime errors:
-  SAP(action="analyze", params={"type": "list_dumps"})
-  SAP(action="analyze", params={"type": "get_dump", "dump_id": "..."})
+Runtime errors (ST22) — a listing, and a post-mortem around one dump:
+  SAP(action="analyze", params={"type": "list_dumps", "since": "2026-08-01", "program": "ZDEMO_POST"})
+  SAP(action="analyze", params={"type": "group_dumps", "since": "2026-08-01"})
+      what keeps failing, not what failed once: count, first seen, last seen, users
+  SAP(action="analyze", params={"type": "get_dump", "dump_id": "latest"})
+      header, termination point and call stack of one dump
+  SAP(action="analyze", params={"type": "explain_dump", "dump_id": "latest", "tolerance": "5m"})
+      the stack, plus application log entries ranked by the argument for each — a log written by
+      the program that died is structural; one merely nearby in time is a coincidence
+  SAP(action="analyze", params={"type": "similar_dumps", "dump_id": "latest", "deep": 10})
+      is this new, and how often: rung 1 same line, 2 same program, 3 same component, 4 same error
+  SAP(action="analyze", params={"type": "dump_impact", "dump_id": "latest"})
+      who else reaches the code that failed — blast radius, not blame
+  dump_id takes "latest", any part of an id from list_dumps, or a whole id.
+  filters shared by all six: program, error_type, user, since, until (YYYY-MM-DD), max_results
+
+Application log (SLG1 headers, read with free SQL — no RFC, no gateway, no Z code):
+  SAP(action="analyze", params={"type": "application_log", "program": "ZDEMO_POST", "max_results": 20})
+  SAP(action="analyze", params={"type": "application_log", "user": "TESTUSER", "since": "2026-08-01"})
+  SAP(action="analyze", params={"type": "application_log", "object": "ZDEMO_LOG", "subobject": "POST"})
+      headers only: message bodies live in a cluster table ADT will not read
 
 Profiler traces:
   SAP(action="analyze", params={"type": "list_traces"})
@@ -352,7 +370,8 @@ Actions:
   query    - Query table contents or run SQL
   grep     - Search patterns in source code
   test     - Run unit tests, ATC checks
-  analyze  - Syntax check, call graph, code intelligence, profiler, dumps, boundary analysis
+  analyze  - Syntax check, call graph, code intelligence, profiler, dumps and the log around
+             them, application log, boundary analysis
   debug    - Breakpoints, stepping, variables, RFC calls, report execution
   system   - System info, transports, git, install tools, file operations
   help     - This help. Use SAP(action="help", target="<action>") for details.

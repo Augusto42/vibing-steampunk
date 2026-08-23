@@ -402,12 +402,15 @@ func (e *LuaEngine) luaInjectCheckpoint(L *lua.LState) int {
 
 // --- Diagnostics ---
 
+// luaGetDumps lists runtime errors. The table keys are unchanged from the
+// version that read the old feed parser, so existing scripts keep working —
+// but program, exception, user and time were empty in every row that parser
+// produced, and are now filled, because the categories the feed labels are read
+// by label instead of by position.
 func (e *LuaEngine) luaGetDumps(L *lua.LState) int {
 	maxResults := getOptInt(L, 1, 20)
 
-	dumps, err := e.client.GetDumps(e.ctx, &adt.DumpQueryOptions{
-		MaxResults: maxResults,
-	})
+	dumps, err := e.client.Dumps(e.ctx, adt.DumpFilter{Limit: maxResults})
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -419,10 +422,10 @@ func (e *LuaEngine) luaGetDumps(L *lua.LState) int {
 		row := L.NewTable()
 		L.SetField(row, "id", lua.LString(dump.ID))
 		L.SetField(row, "program", lua.LString(dump.Program))
-		L.SetField(row, "exception", lua.LString(dump.ExceptionType))
+		L.SetField(row, "exception", lua.LString(dump.ErrorType))
 		L.SetField(row, "user", lua.LString(dump.User))
-		L.SetField(row, "time", lua.LString(dump.Timestamp))
-		L.SetField(row, "title", lua.LString(dump.Title))
+		L.SetField(row, "time", lua.LString(dumpStamp(dump.At)))
+		L.SetField(row, "title", lua.LString(dump.Message))
 		tbl.RawSetInt(i+1, row)
 	}
 
@@ -430,10 +433,25 @@ func (e *LuaEngine) luaGetDumps(L *lua.LState) int {
 	return 1
 }
 
+// dumpStamp renders a dump timestamp for Lua, which has no time type. A zero
+// time prints as empty rather than as year one, because a script concatenating
+// it should show a gap, not a date nobody wrote.
+func dumpStamp(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.Format(time.RFC3339)
+}
+
+// luaGetDump reads one dump in detail. The old version returned the dump's
+// HTML page with only its <title> extracted and an always-empty stack; this
+// parses the formatted rendering, so the stack a script asks for is really
+// there. The keys are the same ones, with "type" added to each frame — the
+// frame kind (METHOD, FUNCTION, FORM) that "event" was always empty for.
 func (e *LuaEngine) luaGetDump(L *lua.LState) int {
 	dumpID := getString(L, 1)
 
-	dump, err := e.client.GetDump(e.ctx, dumpID)
+	dump, err := e.client.DumpDetail(e.ctx, dumpID)
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -443,21 +461,29 @@ func (e *LuaEngine) luaGetDump(L *lua.LState) int {
 	tbl := L.NewTable()
 	L.SetField(tbl, "id", lua.LString(dump.ID))
 	L.SetField(tbl, "program", lua.LString(dump.Program))
-	L.SetField(tbl, "exception", lua.LString(dump.ExceptionType))
-	L.SetField(tbl, "title", lua.LString(dump.Title))
-	L.SetField(tbl, "user", lua.LString(dump.User))
+	L.SetField(tbl, "exception", lua.LString(dump.Exception))
+	L.SetField(tbl, "title", lua.LString(dump.ErrorType))
+	L.SetField(tbl, "include", lua.LString(dump.Include))
+	L.SetField(tbl, "procedure", lua.LString(dump.Procedure))
+	L.SetField(tbl, "component", lua.LString(dump.Component))
 	L.SetField(tbl, "line", lua.LNumber(dump.Line))
-	L.SetField(tbl, "time", lua.LString(dump.Timestamp))
+	// The detail resource names no user and no timestamp — the listing does.
+	// Both keys were always empty here anyway, and they stay present rather
+	// than disappearing, because a script concatenating a nil field crashes
+	// where one concatenating an empty string simply shows a gap.
+	L.SetField(tbl, "user", lua.LString(""))
+	L.SetField(tbl, "time", lua.LString(""))
 
-	// Stack trace
-	if len(dump.StackTrace) > 0 {
+	if len(dump.Stack) > 0 {
 		stack := L.NewTable()
-		for i, frame := range dump.StackTrace {
+		for i, frame := range dump.Stack {
 			row := L.NewTable()
 			L.SetField(row, "program", lua.LString(frame.Program))
 			L.SetField(row, "include", lua.LString(frame.Include))
 			L.SetField(row, "line", lua.LNumber(frame.Line))
-			L.SetField(row, "event", lua.LString(frame.Event))
+			L.SetField(row, "type", lua.LString(frame.Type))
+			L.SetField(row, "event", lua.LString(frame.Type))
+			L.SetField(row, "name", lua.LString(frame.Name))
 			stack.RawSetInt(i+1, row)
 		}
 		L.SetField(tbl, "stack", stack)
