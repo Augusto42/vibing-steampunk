@@ -65,6 +65,15 @@ const (
 type PortScanResult struct {
 	Host     string        `json:"host"`
 	Findings []PortFinding `json:"findings"`
+	// Unsearched is what stopped the sweep from being a sweep.
+	//
+	// Per port, a dial that is refused or times out is the answer and is
+	// deliberately not recorded — noting three hundred closed ports would bury
+	// the one that answered. But a name that does not resolve is not an answer
+	// about any port: every probe then fails identically and the scan reports
+	// an empty result, which reads as "nothing is listening on that host" when
+	// what happened is that nobody ever knocked.
+	Unsearched []Unsearched `json:"unsearched,omitempty"`
 }
 
 // Best returns the port to configure, if the scan found one.
@@ -175,6 +184,18 @@ func ScanForADT(ctx context.Context, host string, ports []int, client string, in
 		return result
 	}
 
+	// Resolved once for the whole sweep rather than implicitly per port: the
+	// answer is identical for every one of them, and asking here is what
+	// separates a host that refuses connections from a host that does not
+	// exist. A literal address resolves to itself, so this costs nothing there.
+	if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
+		result.Unsearched = append(result.Unsearched, Unsearched{
+			Object: host,
+			Reason: "the name does not resolve: " + err.Error(),
+		})
+		return result
+	}
+
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, scanConcurrency)
@@ -192,6 +213,15 @@ func ScanForADT(ctx context.Context, host string, ports []int, client string, in
 		}(port)
 	}
 	wg.Wait()
+
+	// A cancelled or expired context makes every probe return nothing, which is
+	// indistinguishable from every port being closed unless it is said.
+	if err := ctx.Err(); err != nil {
+		result.Unsearched = append(result.Unsearched, Unsearched{
+			Object: fmt.Sprintf("%s (%d ports)", host, len(ports)),
+			Reason: "the scan was cut short: " + err.Error(),
+		})
+	}
 
 	// Most useful first, and stable, so two runs read the same.
 	rank := map[PortKind]int{PortADT: 0, PortSAPNoADT: 1, PortTLSMismatch: 2, PortHTTP: 3, PortOpen: 4}

@@ -79,17 +79,20 @@ The workload has to come from elsewhere: a session cannot catch itself.`,
 				}
 				fmt.Fprintf(os.Stderr, "anchored at %s:%d; waiting up to %ds for it to run\n", object, line, wait)
 
+				var fireErr callOutcome
 				if call {
 					go func() {
 						time.Sleep(2 * time.Second)
 						fired, ferr := saprfc.Open(ctx, dest)
 						if ferr != nil {
 							fmt.Fprintln(os.Stderr, "! --call could not connect:", ferr)
+							fireErr.fail(ferr)
 							return
 						}
 						defer func() { _ = fired.Close(ctx) }()
 						if _, ferr = fired.Call(ctx, object, rfc.Params{}); ferr != nil {
 							fmt.Fprintln(os.Stderr, "! --call:", ferr)
+							fireErr.fail(ferr)
 						}
 					}()
 				}
@@ -99,6 +102,13 @@ The workload has to come from elsewhere: a session cannot catch itself.`,
 					return err
 				}
 				if caught == nil {
+					// Exit zero and "nobody ran it" is the recording saying it
+					// found nothing to record. When our own --call is what
+					// failed, that is not a finding, and a script reading the
+					// exit code has no way to tell the two apart.
+					if note := fireErr.note(); note != "" {
+						return fmt.Errorf("no execution was caught%s", note)
+					}
 					fmt.Fprintln(os.Stderr, "nobody ran it")
 					return nil
 				}

@@ -59,14 +59,20 @@ func prlctlPath() (string, bool) {
 // ParallelsGuests lists the running Parallels VMs. Only running ones are
 // listed: reading a file needs Parallels Tools in a booted guest, and offering
 // a stopped VM as a source would just fail later.
-func ParallelsGuests(ctx context.Context) []string {
+//
+// No Parallels on this machine is not a failure — it is the ordinary case, and
+// it returns no guests and no error. prlctl being there and refusing to answer
+// is a failure, and it has to be one: otherwise a Mac whose Parallels is not
+// running is told there is no landscape anywhere, when the file that matters is
+// inside the guest that could not be listed.
+func ParallelsGuests(ctx context.Context) ([]string, error) {
 	bin, ok := prlctlPath()
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	out, err := exec.CommandContext(ctx, bin, "list", "--output", "name", "--no-header").Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("listing Parallels guests: %w", err)
 	}
 	var vms []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -74,16 +80,16 @@ func ParallelsGuests(ctx context.Context) []string {
 			vms = append(vms, name)
 		}
 	}
-	return vms
+	return vms, nil
 }
 
 // ParallelsLandscapeFiles asks a guest where SAP GUI wrote its landscape.
 // Every user profile is checked, because the account running the guest is not
 // necessarily the one that configured SAP Logon.
-func ParallelsLandscapeFiles(ctx context.Context, vm string) []string {
+func ParallelsLandscapeFiles(ctx context.Context, vm string) ([]string, error) {
 	bin, ok := prlctlPath()
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	// One command rather than a listing plus a probe per profile: the guest
 	// round-trip is the expensive part.
@@ -92,7 +98,10 @@ func ParallelsLandscapeFiles(ctx context.Context, vm string) []string {
 
 	out, err := exec.CommandContext(ctx, bin, "exec", vm, "cmd", "/c", script).Output()
 	if err != nil {
-		return nil
+		// A running guest that cannot be asked is not a guest with no
+		// landscape. Dropping it left the scan listing every other source and
+		// nothing at all about this one.
+		return nil, fmt.Errorf("asking %q where SAP GUI keeps its landscape: %w (is Parallels Tools installed?)", vm, err)
 	}
 	var found []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -100,7 +109,7 @@ func ParallelsLandscapeFiles(ctx context.Context, vm string) []string {
 			found = append(found, p)
 		}
 	}
-	return found
+	return found, nil
 }
 
 // ReadParallelsFile reads a file out of a running guest.

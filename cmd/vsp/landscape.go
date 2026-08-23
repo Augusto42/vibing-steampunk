@@ -106,7 +106,13 @@ because a landscape can hold a hundred systems and few of them are yours.`,
 }
 
 // loadLandscape reads the landscape file and any includes it names.
-func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
+//
+// The second return is the sources it could not read or could not parse. They
+// have always been noted on stderr, which is right, but the callers went on to
+// print "No systems matched" — and the source that failed is very often the
+// shared company landscape, which is where the system being looked for lives.
+// An empty list is only an answer when the whole landscape was read.
+func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, []adt.Unsearched, error) {
 	explicit, _ := cmd.Flags().GetString("file")
 	follow, _ := cmd.Flags().GetBool("include")
 
@@ -114,20 +120,26 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 
 	ctx := cmd.Context()
 	var paths []string
+	var missed []adt.Unsearched
 	switch {
 	case explicit != "":
 		paths = []string{explicit}
 	case all:
 		for _, src := range adt.ScanLandscapeSources(ctx) {
-			if src.Err == "" {
-				paths = append(paths, src.Ref)
+			if src.Err != "" {
+				// --all means "everything this machine can reach", and a source
+				// dropped here never reaches the walk below, so nothing later
+				// knows it existed.
+				missed = append(missed, adt.Unsearched{Object: src.Ref, Reason: src.Err})
+				continue
 			}
+			paths = append(paths, src.Ref)
 		}
 	default:
 		paths = adt.FindLandscapeFiles(ctx, "")
 	}
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("no landscape file found — pass --file, try --all, or set SAPLOGON_LSXML_FILE")
+		return nil, nil, fmt.Errorf("no landscape file found — pass --file, try --all, or set SAPLOGON_LSXML_FILE")
 	}
 
 	// A landscape file names includes, and an included file may name more, so
@@ -156,6 +168,7 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 	// read unnecessary rather than merely redundant.
 	seenContent := map[[32]byte]bool{}
 	var systems []adt.LandscapeSystem
+	read := 0
 
 	for len(queue) > 0 {
 		src := queue[0]
@@ -171,6 +184,7 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 			// the shared landscape sits on a company share that is not always
 			// mounted, and the local file alone is still worth having.
 			fmt.Fprintf(os.Stderr, "note: %v\n", err)
+			missed = append(missed, adt.Unsearched{Object: src.name, Reason: err.Error()})
 			continue
 		}
 		if digest := sha256.Sum256(blob); seenContent[digest] {
@@ -181,9 +195,14 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 
 		lf, err := adt.ParseLandscapeBytes(blob, src.name)
 		if err != nil {
+			// Local parsing, not a remote call — but the file still holds
+			// systems that are now missing from the list, and a UNC read that
+			// returns a logon page instead of XML lands here too.
 			fmt.Fprintf(os.Stderr, "note: %v\n", err)
+			missed = append(missed, adt.Unsearched{Object: src.name, Reason: err.Error()})
 			continue
 		}
+		read++
 		systems = append(systems, lf.Systems(src.name)...)
 
 		if !follow {
@@ -208,7 +227,10 @@ func loadLandscape(cmd *cobra.Command) ([]adt.LandscapeSystem, error) {
 			})
 		}
 	}
-	return dedupeSystems(systems), nil
+	if note := adt.UnsearchedNote(missed, read+len(missed), "landscape file"); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return dedupeSystems(systems), missed, nil
 }
 
 // dedupeSystems drops repeats. Reading everything at once means the same system
@@ -261,13 +283,21 @@ func searchDomains(cmd *cobra.Command) []string {
 }
 
 func runLandscapeList(cmd *cobra.Command, args []string) error {
-	systems, err := loadLandscape(cmd)
+	systems, missed, err := loadLandscape(cmd)
 	if err != nil {
 		return err
 	}
 	filter, _ := cmd.Flags().GetString("filter")
 	systems = filterSystems(systems, filter, args)
 	if len(systems) == 0 {
+		if len(missed) > 0 {
+			// The shared landscape is the one that fails to open, and it is
+			// also the one holding the system being looked for. "No systems
+			// matched" over an unread file sends the reader to check their
+			// spelling.
+			fmt.Printf("No systems matched — but %d landscape file(s) could not be read (see above).\n", len(missed))
+			return nil
+		}
 		fmt.Println("No systems matched.")
 		return nil
 	}
@@ -343,13 +373,16 @@ func truncate(s string, n int) string {
 }
 
 func runLandscapeImport(cmd *cobra.Command, args []string) error {
-	systems, err := loadLandscape(cmd)
+	systems, missed, err := loadLandscape(cmd)
 	if err != nil {
 		return err
 	}
 	filter, _ := cmd.Flags().GetString("filter")
 	systems = filterSystems(systems, filter, args)
 	if len(systems) == 0 {
+		if len(missed) > 0 {
+			return fmt.Errorf("no systems matched, and %d landscape file(s) could not be read — the one you want may be in them", len(missed))
+		}
 		return fmt.Errorf("no systems matched — nothing to import")
 	}
 

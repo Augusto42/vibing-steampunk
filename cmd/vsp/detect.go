@@ -116,6 +116,17 @@ func runDetect(cmd *cobra.Command, args []string) error {
 }
 
 func printFindings(result *adt.PortScanResult, showOpen bool) {
+	if len(result.Unsearched) > 0 {
+		// This comes before "Nothing answered", and replaces it when the scan
+		// never ran: a name that does not resolve sent readers hunting for a
+		// firewall, because the empty result looks the same either way.
+		fmt.Println(adt.UnsearchedNote(result.Unsearched, len(result.Unsearched), "host"))
+		if len(result.Findings) == 0 {
+			fmt.Println("No port was reached, so nothing here says whether the system is up.")
+			return
+		}
+		fmt.Println()
+	}
 	if len(result.Findings) == 0 {
 		fmt.Printf("Nothing answered on %s.\n", result.Host)
 		fmt.Println("The host may be firewalled from here, or the name may not be the one that serves HTTP —")
@@ -255,6 +266,12 @@ func findInLandscape(cmd *cobra.Command, target string) *adt.LandscapeSystem {
 	for _, path := range adt.FindLandscapeFiles(cmd.Context(), "") {
 		lf, err := adt.ParseLandscape(path)
 		if err != nil {
+			// Not finding the target in a file that was read is an answer; not
+			// finding it in a file that would not parse is not. The scan can
+			// still go on from a bare hostname, but it goes on without the
+			// instance number — so it uses the wrong shortlist of ports and
+			// then reports that nothing answered.
+			fmt.Fprintf(os.Stderr, "note: %s could not be read, so %s was not looked up in it: %v\n", path, target, err)
 			continue
 		}
 		for _, sys := range lf.Systems(path) {

@@ -3,6 +3,7 @@ package adt
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // A sweep over many objects fails on some of them, and the question is what it
@@ -59,7 +60,36 @@ func UnsearchedNote(missed []Unsearched, total int, noun string) string {
 			fmt.Fprintf(&b, "\n  … and %d more", len(missed)-named)
 			break
 		}
-		fmt.Fprintf(&b, "\n  %s: %s", m.Object, m.Reason)
+		fmt.Fprintf(&b, "\n  %s: %s", m.Object, oneLine(m.Reason))
 	}
 	return b.String()
+}
+
+// reasonWidth is how much of a reason the note shows.
+//
+// An expired session does not answer 401 with a sentence — ICF returns a whole
+// HTML logon page, and carrying it verbatim into the note buries the count that
+// is the point of the note under forty kilobytes of markup. Same argument as
+// naming only the first five: the rendering is for a reader. The Reason field
+// itself is untouched, so JSON callers still get the failure whole.
+const reasonWidth = 160
+
+func oneLine(reason string) string {
+	if i := strings.IndexAny(reason, "\r\n"); i >= 0 {
+		reason = reason[:i]
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > reasonWidth {
+		// Cut on a rune boundary; a reason can carry a system message in any
+		// code page SAP felt like.
+		cut := reasonWidth
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = strings.TrimSpace(reason[:cut]) + "…"
+	}
+	if reason == "" {
+		return "(no reason given)"
+	}
+	return reason
 }

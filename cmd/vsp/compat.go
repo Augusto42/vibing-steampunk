@@ -104,7 +104,16 @@ func probeSystem(cmd *cobra.Command, params *systemParams, depth adt.CompatDepth
 	targets.Class, _ = cmd.Flags().GetString("class")
 	targets.Program, _ = cmd.Flags().GetString("program")
 	targets.Package, _ = cmd.Flags().GetString("package")
-	fillMissingTargets(cmd, client, &targets)
+	missed := fillMissingTargets(cmd, client, &targets)
+
+	// The report will say "skipped: no object of the required kind was found to
+	// probe with", which is a statement about the system. When the search is
+	// what failed it is a statement about us, and the difference decides
+	// whether a reader goes to basis or reruns with --class. On stderr because
+	// the report itself may be JSON on stdout.
+	if note := adt.UnsearchedNote(missed, 4, "object kind"); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 
 	fmt.Fprintf(os.Stderr, "probing %s...\n", params.Name)
 	return client.RunCompatProbe(cmd.Context(), targets, depth), nil
@@ -115,7 +124,11 @@ func probeSystem(cmd *cobra.Command, params *systemParams, depth adt.CompatDepth
 // The checks that need a target are the interesting ones, and a probe that
 // skipped them because the caller did not know a class name on this system
 // would be quiet about exactly what it exists to find out.
-func fillMissingTargets(cmd *cobra.Command, client *adt.Client, targets *adt.CompatTargets) {
+func fillMissingTargets(cmd *cobra.Command, client *adt.Client, targets *adt.CompatTargets) []adt.Unsearched {
+	// Why a kind came back empty is the part the report cannot work out for
+	// itself: a search that returned nothing means the system has none, and a
+	// search that failed means nobody looked.
+	var missed []adt.Unsearched
 	// One search is not enough: a system with hundreds of Z objects returns the
 	// first page alphabetically, and the kind being looked for may not be on
 	// it. Widen the net before giving up, because a skipped check is a question
@@ -125,9 +138,14 @@ func fillMissingTargets(cmd *cobra.Command, client *adt.Client, targets *adt.Com
 	// the probe would read a 404 it caused itself as the system lacking the
 	// resource, and say so in a report someone else will act on.
 	find := func(objType string, patterns ...string) string {
+		var lastErr error
 		for _, pattern := range patterns {
 			results, err := client.SearchObject(cmd.Context(), pattern, 100)
 			if err != nil {
+				// Trying the next pattern is right: one search that fails
+				// should not decide the kind. Only a kind where every search
+				// failed is a gap.
+				lastErr = err
 				continue
 			}
 			for _, r := range results {
@@ -135,6 +153,10 @@ func fillMissingTargets(cmd *cobra.Command, client *adt.Client, targets *adt.Com
 					return r.Name
 				}
 			}
+			lastErr = nil
+		}
+		if lastErr != nil {
+			missed = append(missed, adt.Unsearched{Object: objType, Reason: lastErr.Error()})
 		}
 		return ""
 	}
@@ -153,6 +175,7 @@ func fillMissingTargets(cmd *cobra.Command, client *adt.Client, targets *adt.Com
 	if found := find("DEVC/K", "Z*", "*"); found != "" && !cmd.Flags().Changed("package") {
 		targets.Package = found
 	}
+	return missed
 }
 
 // resolveNamedSystem resolves a second system by name, so --against can be given
