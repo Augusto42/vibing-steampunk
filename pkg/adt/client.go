@@ -481,7 +481,15 @@ func (c *Client) GetFunctionGroup(ctx context.Context, groupName string) (*Funct
 // FUGR/FF (function modules); we resolve each child's source/main URI and concatenate.
 // Individual sub-fetches that fail are skipped (best-effort) so a single broken include
 // does not hide deps from the rest of the group.
-func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName string) (string, error) {
+//
+// The second return value is what did not make it into the string, and callers
+// must not throw it away. This source is fetched to be searched for
+// dependencies, and an include that failed to load contributes no dependencies —
+// which is indistinguishable, downstream, from an include that has none. That is
+// how a boundary report comes back clean about code nobody read. The safety cap
+// below lands in the same list, because a caveat written only to stderr is no
+// caveat at all to an MCP caller.
+func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName string) (string, []Unsearched, error) {
 	groupName = strings.ToLower(groupName)
 
 	structPath := fmt.Sprintf("/sap/bc/adt/functions/groups/%s/objectstructure", url.PathEscape(groupName))
@@ -490,7 +498,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 		Accept: "application/vnd.sap.adt.objectstructure.v2+xml",
 	})
 	if err != nil {
-		return "", fmt.Errorf("getting function group structure: %w", err)
+		return "", nil, fmt.Errorf("getting function group structure: %w", err)
 	}
 
 	type atomLink struct {
@@ -505,7 +513,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	}
 	var root element
 	if err := xml.Unmarshal(resp.Body, &root); err != nil {
-		return "", fmt.Errorf("parsing function group structure: %w", err)
+		return "", nil, fmt.Errorf("parsing function group structure: %w", err)
 	}
 
 	seen := make(map[string]bool)
@@ -540,15 +548,24 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	}
 	sort.Strings(srcURIs)
 
+	var missed []Unsearched
+
 	// Safety cap. A pathological function group with hundreds of FMs would
 	// otherwise produce a sequential fetch storm that looks like a hang. 150
 	// is well above the largest normal FUGR (~50 modules) and keeps worst-
-	// case latency bounded. We log when we cut things short so the caller
-	// knows the analysis is partial.
+	// case latency bounded. The cut goes into missed as well as to stderr: an
+	// MCP caller has no stderr, and the whole point of the cap is that the
+	// analysis is partial.
 	const maxFUGRSubfetches = 150
 	if len(srcURIs) > maxFUGRSubfetches {
 		fmt.Fprintf(os.Stderr, "    [FUGR %s] capped at %d of %d sub-URIs\n",
 			strings.ToUpper(groupName), maxFUGRSubfetches, len(srcURIs))
+		for _, uri := range srcURIs[maxFUGRSubfetches:] {
+			missed = append(missed, Unsearched{
+				Object: uri,
+				Reason: fmt.Sprintf("not fetched: function group has %d sub-sources, capped at %d", len(srcURIs), maxFUGRSubfetches),
+			})
+		}
 		srcURIs = srcURIs[:maxFUGRSubfetches]
 	}
 	fmt.Fprintf(os.Stderr, "    [FUGR %s] fetching %d sub-sources\n",
@@ -557,6 +574,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	type fetchResult struct {
 		idx  int
 		body string
+		err  error
 	}
 	const fugrWorkers = 6
 	jobCh := make(chan int)
@@ -576,7 +594,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 					Accept: "text/plain",
 				})
 				if err != nil {
-					resCh <- fetchResult{idx: idx}
+					resCh <- fetchResult{idx: idx, err: err}
 					continue
 				}
 				resCh <- fetchResult{idx: idx, body: string(r.Body)}
@@ -593,13 +611,30 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	}()
 
 	results := make([]string, len(srcURIs))
+	answered := make([]bool, len(srcURIs))
 	completed := 0
 	for res := range resCh {
 		results[res.idx] = res.body
+		answered[res.idx] = true
+		if res.err != nil {
+			missed = append(missed, Unsearched{Object: srcURIs[res.idx], Reason: res.err.Error()})
+		}
 		completed++
 		if completed == len(srcURIs) || completed%5 == 0 {
 			fmt.Fprintf(os.Stderr, "    [FUGR %s] %d/%d sub-sources fetched\n",
 				strings.ToUpper(groupName), completed, len(srcURIs))
+		}
+	}
+	// A cancelled context stops the workers mid-queue, so some URIs never come
+	// back at all — not even as an error. They are missing from the source just
+	// the same, and only this pass can tell.
+	for idx, ok := range answered {
+		if !ok {
+			reason := "not fetched: the fetch was cancelled before this sub-source was read"
+			if ctx.Err() != nil {
+				reason = "not fetched: " + ctx.Err().Error()
+			}
+			missed = append(missed, Unsearched{Object: srcURIs[idx], Reason: reason})
 		}
 	}
 
@@ -611,7 +646,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 		combined.WriteString(body)
 		combined.WriteString("\n")
 	}
-	return combined.String(), nil
+	return combined.String(), missed, nil
 }
 
 // GetFunction retrieves the source code of a function module.

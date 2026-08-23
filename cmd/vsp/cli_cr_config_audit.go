@@ -835,7 +835,14 @@ func runValueLevelAudit(
 		var source string
 		var err error
 		if c.objType == "FUGR" {
-			source, err = client.GetFunctionGroupAllSources(ctx, c.objName)
+			var missed []adt.Unsearched
+			source, missed, err = client.GetFunctionGroupAllSources(ctx, c.objName)
+			// An include that did not load contributes no literals, and a
+			// missing literal here reads as "this caller does not use the
+			// variable". Say which includes went unread.
+			for _, m := range missed {
+				fmt.Fprintf(os.Stderr, "    WARN: %s: %s\n", m.Object, m.Reason)
+			}
 		} else {
 			source, err = client.GetSource(ctx, c.objType, c.objName, nil)
 		}

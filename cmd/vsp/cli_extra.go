@@ -1887,19 +1887,15 @@ func runGraphWhereUsedConfig(cmd *cobra.Command, args []string) error {
 	doGrep := !noGrep
 	ctx := context.Background()
 
-	// Step 1: Find programs that reference TVARVC table
-	fmt.Fprintf(os.Stderr, "Querying CROSS for TVARVC references...\n")
-	crossQuery := "SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = 'TVARVC' AND TYPE = 'DA'"
-	crossResult, err := client.RunQuery(ctx, crossQuery, 500)
-	if err != nil {
-		return fmt.Errorf("CROSS query failed: %w", err)
-	}
-	if crossResult == nil || len(crossResult.Rows) == 0 {
-		fmt.Println("No programs reference the TVARVC table.")
-		return nil
-	}
-
-	// Step 2: Normalize includes → deduplicate to object level
+	// Step 1: Find the includes whose code touches the TVARVC table.
+	//
+	// WBCROSSGT OTYPE='TY' covers OO code, CROSS TYPE='S' covers classic
+	// procedural code, and neither alone covers both — the same pairing
+	// queryTableReaderIncludes uses. The query that used to be here,
+	// CROSS TYPE='DA', could never return a row: CROSS.TYPE is C(1), 'DA' is
+	// two characters, and SAP answers 400. 'DA' belongs to WBCROSSGT's C(2)
+	// OTYPE column and means a data object rather than a table.
+	fmt.Fprintf(os.Stderr, "Querying WBCROSSGT and CROSS for TVARVC references...\n")
 	type candidate struct {
 		objType string
 		objName string
@@ -1907,30 +1903,64 @@ func runGraphWhereUsedConfig(cmd *cobra.Command, args []string) error {
 	seen := make(map[string]bool)
 	var candidates []candidate
 
-	for _, row := range crossResult.Rows {
-		include := strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"]))
-		if include == "" {
-			continue
+	collect := func(label, query string) error {
+		res, err := client.RunQuery(ctx, query, 500)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
 		}
-		_, objType, objName := graph.NormalizeInclude(include)
-		key := objType + ":" + objName
-		if !seen[key] {
-			seen[key] = true
-			candidates = append(candidates, candidate{objType, objName})
+		if res == nil {
+			return nil
 		}
+		for _, row := range res.Rows {
+			include := strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"]))
+			if include == "" {
+				continue
+			}
+			_, objType, objName := graph.NormalizeInclude(include)
+			key := objType + ":" + objName
+			if !seen[key] {
+				seen[key] = true
+				candidates = append(candidates, candidate{objType, objName})
+			}
+		}
+		return nil
+	}
+
+	wbErr := collect("WBCROSSGT", "SELECT INCLUDE FROM WBCROSSGT WHERE OTYPE = 'TY' AND NAME = 'TVARVC'")
+	crossErr := collect("CROSS", "SELECT INCLUDE FROM CROSS WHERE TYPE = 'S' AND NAME = 'TVARVC'")
+	if wbErr != nil && crossErr != nil {
+		return fmt.Errorf("neither cross-reference table could be read, so this is not an answer: %v; %v", wbErr, crossErr)
+	}
+	// Half an answer is worth printing, but not worth printing silently.
+	if wbErr != nil {
+		fmt.Fprintf(os.Stderr, "WARN: object-oriented callers were not searched: %v\n", wbErr)
+	}
+	if crossErr != nil {
+		fmt.Fprintf(os.Stderr, "WARN: classic procedural callers were not searched: %v\n", crossErr)
+	}
+	if len(candidates) == 0 {
+		fmt.Println("No programs reference the TVARVC table.")
+		return nil
 	}
 	fmt.Fprintf(os.Stderr, "Found %d candidate programs. ", len(candidates))
 
 	// Step 3: Grep each candidate for the variable name
 	var refs []graph.TVARVCReference
 	grepCount := 0
+	grepFailed := 0
 	for _, c := range candidates {
 		confirmed := false
 		if doGrep {
 			objURL := cliADTObjectURL(c.objType, c.objName)
 			if objURL != "" {
 				grepResult, err := client.GrepObject(ctx, objURL, variable, true, 0)
-				if err == nil && grepResult != nil && len(grepResult.Matches) > 0 {
+				switch {
+				case err != nil:
+					// Unconfirmed already means "read it, the name is not
+					// there". A grep that failed must not be filed under it.
+					grepFailed++
+					fmt.Fprintf(os.Stderr, "WARN: %s %s could not be grepped: %v\n", c.objType, c.objName, err)
+				case grepResult != nil && len(grepResult.Matches) > 0:
 					confirmed = true
 					grepCount++
 				}
@@ -1945,6 +1975,10 @@ func runGraphWhereUsedConfig(cmd *cobra.Command, args []string) error {
 	}
 	if doGrep {
 		fmt.Fprintf(os.Stderr, "Grep confirmed %d.\n", grepCount)
+		if grepFailed > 0 {
+			fmt.Fprintf(os.Stderr, "WARN: %d of %d candidates could not be grepped, so an unconfirmed row below may only mean unread.\n",
+				grepFailed, len(candidates))
+		}
 	} else {
 		fmt.Fprintf(os.Stderr, "Grep skipped.\n")
 	}
