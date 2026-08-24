@@ -179,6 +179,54 @@ func graphProbes() []Probe {
 			EmptyIsFine: true,
 		},
 		{
+			ID: "graph.analyze_call_graph", Capability: "analyze type=analyze_call_graph",
+			Why:    "the call graph with its statistics; the statistics counted two nodes for twenty-seven edges until 2026-08-24",
+			Action: "analyze", Needs: []string{"references"},
+			Params: map[string]any{"type": "analyze_call_graph", "object_type": "CLAS",
+				"object_name": "{references}", "direction": "callees"},
+			Oracle:      oracleCrossOrLongName,
+			MustContain: "edges",
+		},
+		{
+			ID: "graph.compare_call_graphs", Capability: "analyze type=compare_call_graphs",
+			Why:    "static prediction against a supplied trace; the trace is ours, so only the static half is under test",
+			Action: "analyze", Needs: []string{"references"},
+			Params: map[string]any{"type": "compare_call_graphs",
+				"object_uri": "{references_uri}",
+				// One synthetic edge, because the comparison needs something to
+				// compare against and a real trace is not available to a sweep.
+				// What is being checked is that the static side has edges at
+				// all: for an object the tables have rows for, zero is a death.
+				"trace_data": `[{"caller_name":"{references}","callee_name":"NOTHING_AT_ALL"}]`},
+			Oracle:      oracleCrossOrLongName,
+			MustContain: "static_edges",
+		},
+		{
+			ID: "graph.trace_execution", Capability: "analyze type=trace_execution",
+			Why:    "predicted against actual; with no trace recorded the static half must still answer, and the absence must be declared",
+			Action: "analyze", Needs: []string{"references"},
+			Params: map[string]any{"type": "trace_execution",
+				"object_uri": "{references_uri}"},
+			// Not "comparison": that is legitimately absent when nothing ran.
+			// The static statistics are not, and this returned neither along
+			// with no word that anything was missing until 2026-08-24.
+			MustContain: "static_stats",
+			Oracle:      oracleCrossOrLongName,
+		},
+		{
+			ID: "graph.cr_boundaries", Capability: "analyze type=cr_boundaries",
+			Why:    "change requests grouped across transports; needs the CR attribute this landscape uses",
+			Action: "analyze", Requires: []string{"cr_attribute"},
+			Params: map[string]any{"type": "cr_boundaries", "cr_id": "CR-EXAMPLE"},
+			// A landscape with no CR attribute configured cannot be asked this,
+			// and the handler says so clearly — which is the capability working,
+			// not failing. The first version of this probe asserted the answer
+			// would name the CR, was told about configuration instead, and
+			// reported a working capability as broken. Requiring the target
+			// turns that into a skip with a reason, which is what it is.
+			EmptyIsFine: true,
+		},
+		{
 			ID: "graph.tr_boundaries", Capability: "analyze type=tr_boundaries",
 			Why:         "a transport holding nothing was once reported SELF-CONSISTENT",
 			Action:      "analyze",
@@ -223,6 +271,52 @@ func postMortemProbes() []Probe {
 			Action: "analyze", Params: map[string]any{"type": "list_sql_traces"},
 			// A quiet system genuinely has no traces. What this catches is the
 			// 406 that made the call fail whatever the system held.
+			EmptyIsFine: true,
+		},
+		{
+			ID: "pm.get_dump", Capability: "analyze type=get_dump",
+			Why:    "one runtime error in full; the id is resolved before the sweep so an empty feed reads as skipped",
+			Action: "analyze", Needs: []string{"dump"},
+			Params:      map[string]any{"type": "get_dump", "dump_id": "{dump}"},
+			MustContain: "dump",
+		},
+		{
+			ID: "pm.explain_dump", Capability: "analyze type=explain_dump",
+			Why:    "the dump joined to what the application log said around it",
+			Action: "analyze", Needs: []string{"dump"},
+			Params: map[string]any{"type": "explain_dump", "dump_id": "{dump}"},
+			// Log matches are genuinely often absent; the dump itself is not.
+			MustContain: "dump",
+		},
+		{
+			ID: "pm.similar_dumps", Capability: "analyze type=similar_dumps",
+			Why:    "a dump is always similar to itself, so an empty answer here cannot be true",
+			Action: "analyze", Needs: []string{"dump"},
+			Params: map[string]any{"type": "similar_dumps", "dump_id": "{dump}"},
+			Oracle: oracleAlwaysSome("the dump the question is about exists, and nothing is more like it than itself"),
+		},
+		{
+			ID: "pm.dump_impact", Capability: "analyze type=dump_impact",
+			Why:    "what the failing program reaches; the blast radius rung",
+			Action: "analyze", Needs: []string{"dump"},
+			Params:      map[string]any{"type": "dump_impact", "dump_id": "{dump}"},
+			MustContain: "dump",
+		},
+		{
+			ID: "pm.get_trace", Capability: "analyze type=get_trace",
+			Why:    "one recorded trace read back; skipped when nothing was ever recorded",
+			Action: "analyze", Needs: []string{"trace"},
+			Params: map[string]any{"type": "get_trace", "trace_id": "{trace}"},
+			// The id came from the system's own listing a moment earlier, so
+			// there is nothing for an empty answer to be true about. Without
+			// saying this the probe would be the third unfalsifiable one, and
+			// the table's own test refuses to let that pass — correctly.
+			Oracle: oracleAlwaysSome("the trace id was read from this system's trace listing, so that trace exists"),
+		},
+		{
+			ID: "pm.list_sql_traces", Capability: "analyze type=list_sql_traces",
+			Why:    "ST05 records; a system nobody traced has none",
+			Action: "analyze", Params: map[string]any{"type": "list_sql_traces", "max_results": 5},
 			EmptyIsFine: true,
 		},
 		{

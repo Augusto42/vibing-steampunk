@@ -132,6 +132,17 @@ type SweepTargets struct {
 	// References is an object known to reference other code — the down
 	// direction of the same problem.
 	References string
+	// Dump is the id of a runtime error that exists on this system. The
+	// post-mortem types default to "latest" and refuse when the feed is empty,
+	// which is correct and is not a defect — so a probe without one must be
+	// skipped rather than counted as a death. A quiet system is quiet.
+	Dump string
+	// Trace is the id of a recorded trace, for the same reason.
+	Trace string
+	// CRAttribute is the transport attribute this landscape groups change
+	// requests by. Without it the CR types cannot be asked anything, and say so
+	// — which is them working. A probe that reads that as a failure is wrong.
+	CRAttribute string
 }
 
 // Have reports whether every named target kind is available.
@@ -160,17 +171,48 @@ func (t SweepTargets) get(kind string) string {
 		return t.Referenced
 	case "references":
 		return t.References
+	case "dump":
+		return t.Dump
+	case "trace":
+		return t.Trace
+	case "cr_attribute":
+		return t.CRAttribute
 	}
 	return ""
 }
 
 // expand substitutes {class}, {program}, {package}, {group}, {table},
-// {referenced} and {references} in a string.
+// {referenced}, {references}, {dump} and {trace} in a string.
 func (t SweepTargets) expand(s string) string {
-	for _, k := range []string{"class", "program", "package", "group", "table", "referenced", "references"} {
+	// URI forms first, because {references_uri} contains {references} and the
+	// plain substitution would eat its prefix.
+	//
+	// These exist because two types take only an object_uri and leave the
+	// caller to build it. Building one by concatenation is a trap: a namespaced
+	// name carries slashes, so /sap/bc/adt/oo/classes/ + /BOBF/CL_X yields a
+	// path with an empty segment and the object loses its name. That defect was
+	// fixed in the handler on 2026-08-24; a probe that concatenates recreates it
+	// on the caller's side and then blames the capability.
+	for _, k := range []string{"class", "referenced", "references"} {
+		s = strings.ReplaceAll(s, "{"+k+"_uri}", classURI(t.get(k)))
+	}
+	for _, k := range []string{"class", "program", "package", "group", "table", "referenced", "references", "dump", "trace"} {
 		s = strings.ReplaceAll(s, "{"+k+"}", t.get(k))
 	}
 	return s
+}
+
+// classURI builds the ADT path of a class. It delegates rather than formatting,
+// because the escaping is the whole point and there should be one copy of it:
+// adt.GetObjectURL is what every other caller uses, and writing a fourth
+// version here is how the third one came to disagree with the other two.
+//
+// Empty in, empty out — a probe with no target is skipped before it gets here.
+func classURI(name string) string {
+	if name == "" {
+		return ""
+	}
+	return adt.GetObjectURL(adt.ObjectTypeClass, name, "")
 }
 
 // Oracle is a second, independent route to the same fact.
@@ -194,8 +236,20 @@ type Probe struct {
 	Action string
 	Target string
 	Params map[string]any
-	// Needs lists target kinds without which this probe cannot run.
+	// Needs lists target kinds the call interpolates — {class}, {references_uri}
+	// and so on. Without them there is nothing to substitute.
 	Needs []string
+	// Requires lists target kinds the call does not interpolate but cannot mean
+	// anything without: a precondition of the system rather than an input.
+	// cr_boundaries takes only a cr_id, but on a landscape with no change-request
+	// attribute configured it can only answer "not configured" — which is the
+	// capability working, and counting it as broken is the probe's fault.
+	//
+	// The distinction is not pedantry. A probe that names a target it never uses
+	// would be skipped forever and its capability never checked, so the test
+	// insists Needs are substituted; Requires exist to keep that test strict
+	// rather than to escape it.
+	Requires []string
 	// Oracle, when set, decides whether an empty answer is a dead capability.
 	Oracle Oracle
 	// MustContain is a substring the answer has to carry to count. Use it
@@ -460,7 +514,7 @@ func (s *Server) runProbe(ctx context.Context, p Probe, t SweepTargets) SweepFin
 		f.Detail = "the sweep does not run write actions"
 		return f
 	}
-	if kind, ok := t.Have(p.Needs...); !ok {
+	if kind, ok := t.Have(append(append([]string{}, p.Needs...), p.Requires...)...); !ok {
 		f.Verdict = VerdictSkipped
 		f.Detail = "no " + kind + " was available to probe with"
 		return f
