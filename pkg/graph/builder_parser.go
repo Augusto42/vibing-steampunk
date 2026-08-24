@@ -75,6 +75,21 @@ func extractFromStatement(stmt abaplint.Statement, sourceNodeID string) []*Edge 
 		return extractClassDef(toks, sourceNodeID)
 	case "Call":
 		return extractMethodCall(toks, sourceNodeID)
+	case "Move":
+		// x = zcl_y=>method( ). Modern ABAP is written this way, and this
+		// parser saw none of it: only a bare CALL was classified as a Call, so
+		// a functional-style static call produced no edge at all. Measured
+		// against the other parser in this repo on one real class, that was
+		// three of nine dependencies missing — and the two parsers are reached
+		// by two capabilities that are supposed to agree.
+		return extractStaticSelectors(toks, sourceNodeID)
+	case "Catch":
+		// The exception classes a block handles are dependencies of it.
+		return extractExceptionList(toks, sourceNodeID, "CATCH", "INTO")
+	case "MethodDef":
+		// ... RAISING zcx_something: declared in the signature, so the class
+		// depends on it whether or not any line raises one.
+		return extractExceptionList(toks, sourceNodeID, "RAISING", "")
 	case "Raise":
 		return extractRaise(toks, sourceNodeID)
 	case "CallTransaction":
@@ -85,6 +100,70 @@ func extractFromStatement(stmt abaplint.Statement, sourceNodeID string) []*Edge 
 		return extractCallTransformation(toks, sourceNodeID)
 	}
 	return nil
+}
+
+// extractStaticSelectors finds every class or interface named on the left of
+// the static component selector.
+//
+// The rule is syntactic and exact: `=>` selects a static component, and what
+// stands to its left is a class or an interface name — never a variable, which
+// takes `->`. So any token immediately before `=>` is an object this code
+// depends on, wherever in the statement it appears, including the middle of a
+// chained expression: zcl_a=>get( )->use( ) names zcl_a and nothing else here.
+func extractStaticSelectors(toks []abaplint.Token, from string) []*Edge {
+	var edges []*Edge
+	seen := map[string]bool{}
+	for i := 1; i < len(toks); i++ {
+		if toks[i].Str != "=>" {
+			continue
+		}
+		name := strings.ToUpper(strings.TrimSpace(toks[i-1].Str))
+		if name == "" || !isIdentifier(name) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		edges = append(edges, &Edge{
+			From:      from,
+			To:        NodeID(guessTypeFromName(name), name),
+			Kind:      EdgeCalls,
+			Source:    SourceParser,
+			RefDetail: "STATIC:" + name,
+		})
+	}
+	return edges
+}
+
+// extractExceptionList reads the class names between a keyword and a stopper —
+// CATCH zcx_a zcx_b INTO lx, or RAISING zcx_a zcx_b to the end of a signature.
+func extractExceptionList(toks []abaplint.Token, from, keyword, stop string) []*Edge {
+	var edges []*Edge
+	seen := map[string]bool{}
+	collecting := false
+	for _, t := range toks {
+		up := strings.ToUpper(strings.TrimSpace(t.Str))
+		switch {
+		case up == keyword:
+			collecting = true
+			continue
+		case !collecting:
+			continue
+		case stop != "" && up == stop, up == ".":
+			collecting = false
+			continue
+		}
+		if !isIdentifier(up) || seen[up] {
+			continue
+		}
+		seen[up] = true
+		edges = append(edges, &Edge{
+			From:      from,
+			To:        NodeID(guessTypeFromName(up), up),
+			Kind:      EdgeReferences,
+			Source:    SourceParser,
+			RefDetail: keyword + ":" + up,
+		})
+	}
+	return edges
 }
 
 // CALL FUNCTION 'FM_NAME' ...
