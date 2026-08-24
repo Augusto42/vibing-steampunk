@@ -17,7 +17,7 @@ var depsCmd = &cobra.Command{
 	Use:   "deps <package>",
 	Short: "Analyze package dependencies and transport readiness",
 	Long: `Analyze dependencies of all objects in a package.
-Shows internal vs external references, DDIC dependencies,
+Shows internal vs external references,
 and transport readiness (can this package move autonomously?).
 
 Uses TADIR, WBCROSSGT, CROSS, DD02L, DD03L tables via standard ADT.
@@ -105,6 +105,10 @@ func runDeps(cmd *cobra.Command, args []string) error {
 
 	// 2. For each object, get WBCROSSGT references
 	var deps []depInfo
+	// An object whose references could not be read contributes none, and none
+	// is what an object with no dependencies looks like. This report's whole
+	// subject is what depends on what.
+	var unreadable []adt.Unsearched
 
 	for _, obj := range objects {
 		if obj.objType != "CLAS" && obj.objType != "PROG" && obj.objType != "INTF" && obj.objType != "FUGR" {
@@ -114,7 +118,8 @@ func runDeps(cmd *cobra.Command, args []string) error {
 		di := depInfo{Name: obj.name, Type: obj.objType, Package: obj.pkg}
 
 		// Query WBCROSSGT for this object's references
-		refs := queryObjectRefs(ctx, client, obj.name, obj.objType)
+		refs, gaps := queryObjectRefs(ctx, client, obj.name, obj.objType)
+		unreadable = append(unreadable, gaps...)
 
 		for _, ref := range refs {
 			refName := ref.name
@@ -141,6 +146,10 @@ func runDeps(cmd *cobra.Command, args []string) error {
 	}
 
 	// 3. Output
+	if note := adt.UnsearchedNote(unreadable, len(objects), "object"); note != "" {
+		fmt.Fprintf(os.Stderr, "%s\nDependencies of the objects above are absent from what follows.\n\n", note)
+	}
+
 	switch format {
 	case "summary":
 		printDepsSummary(deps, pkg)
@@ -156,55 +165,90 @@ type crossRef struct {
 	otype string
 }
 
-func queryObjectRefs(ctx context.Context, client *adt.Client, name, objType string) []crossRef {
-	var refs []crossRef
-
-	// WBCROSSGT
-	sql := fmt.Sprintf("SELECT OTYPE, NAME FROM WBCROSSGT WHERE INCLUDE LIKE '%s%%'", name)
-	result, err := client.RunQuery(ctx, sql, 500)
-	if err == nil && result != nil {
-		for _, row := range result.Rows {
-			ot := strings.TrimSpace(fmt.Sprintf("%v", row["OTYPE"]))
-			nm := strings.TrimSpace(fmt.Sprintf("%v", row["NAME"]))
-			// Skip self-references and component refs
-			if strings.Contains(nm, "\\") || nm == name {
-				continue
-			}
-			refs = append(refs, crossRef{nm, ot})
-		}
+// queryObjectRefs reads what one object references.
+//
+// It used to run its own pair of queries, and carried every defect that was
+// fixed in the shared reader over the past week: both queries failed silently,
+// so a blocked table read was indistinguishable from an object that references
+// nothing; the include filter was a bare prefix, so ZCL_ORDER collected
+// ZCL_ORDER_ITEM's references as its own; INDIRECT rows were not excluded, so
+// types implied by types arrived as dependencies; and a name too long for
+// WBCROSSGT's NAME column arrived as the SHA-1 it is stored under and would
+// have been printed as the name of a dependency.
+//
+// Callees has all four guards and one place to keep them. The gaps it reports
+// are returned rather than dropped, because "this object references nothing"
+// and "the tables could not be read" are the two answers this command exists to
+// tell apart.
+func queryObjectRefs(ctx context.Context, client *adt.Client, name, objType string) ([]crossRef, []adt.Unsearched) {
+	uri := adt.GetObjectURL(objectTypeForDeps(objType), name, "")
+	if uri == "" {
+		return nil, []adt.Unsearched{{Object: objType + " " + name,
+			Reason: "no ADT path is known for this object type, so its references cannot be read"}}
 	}
 
-	// CROSS (for procedural refs)
-	var crossIncl string
-	switch objType {
-	case "PROG":
-		crossIncl = name
-	case "FUGR":
-		crossIncl = "L" + name + "%"
-	default:
-		crossIncl = name + "%"
-	}
-	sql2 := fmt.Sprintf("SELECT TYPE, NAME FROM CROSS WHERE INCLUDE LIKE '%s'", crossIncl)
-	result2, err := client.RunQuery(ctx, sql2, 500)
-	if err == nil && result2 != nil {
-		for _, row := range result2.Rows {
-			ot := strings.TrimSpace(fmt.Sprintf("%v", row["TYPE"]))
-			nm := strings.TrimSpace(fmt.Sprintf("%v", row["NAME"]))
-			if nm == name || nm == "" {
-				continue
-			}
-			refs = append(refs, crossRef{nm, ot})
-		}
+	callees, gaps, err := client.Callees(ctx, uri)
+	if err != nil {
+		return nil, append(gaps, adt.Unsearched{Object: objType + " " + name, Reason: err.Error()})
 	}
 
-	return refs
+	refs := make([]crossRef, 0, len(callees))
+	for _, c := range callees {
+		refs = append(refs, crossRef{c.Name, crossTypeCodeOf(c)})
+	}
+	return refs, gaps
 }
 
-func isDDIC(otype string) bool {
-	switch otype {
-	case "DA", "TY": // data, type — could be DDIC
-		return false // need further resolution
+// objectTypeForDeps maps the package listing's short kind to the creatable type
+// the URL builder speaks.
+func objectTypeForDeps(objType string) adt.CreatableObjectType {
+	switch strings.ToUpper(objType) {
+	case "CLAS":
+		return adt.ObjectTypeClass
+	case "INTF":
+		return adt.ObjectTypeInterface
+	case "PROG":
+		return adt.ObjectTypeProgram
+	case "FUGR":
+		return adt.ObjectTypeFunctionGroup
 	}
+	return ""
+}
+
+// crossTypeCodeOf turns the decoded kind back into the one-or-two letter code
+// this command's classifier reads.
+//
+// Going back to the raw code is deliberate rather than lazy: isDDIC below asks
+// whether a reference is a type or a data object, and those are exactly the
+// codes WBCROSSGT uses. Rewriting the classifier to speak the decoded kinds
+// would change what "DDIC" means in the report as a side effect of a refactor,
+// which is the kind of quiet change this week has been about not making.
+func crossTypeCodeOf(c adt.Callee) string {
+	switch c.Kind {
+	case "type":
+		return "TY"
+	case "data":
+		return "DA"
+	case "method":
+		return "ME"
+	case "function module":
+		return "F"
+	}
+	return strings.ToUpper(c.Kind)
+}
+
+// isDDIC is not implemented, and returns false on every path.
+//
+// Left as it is rather than guessed at: telling a DDIC type from an ordinary
+// one needs a TADIR lookup, and the codes available here — DA for a data
+// object, TY for a type — say nothing about where the type lives. Reporting
+// them as DDIC would be inventing a classification out of a code that does not
+// carry it.
+//
+// The DDIC field it feeds is never printed either, so nothing in the output
+// claims a classification that is not happening. The command's own description
+// did claim it, and no longer does.
+func isDDIC(otype string) bool {
 	return false
 }
 
@@ -325,4 +369,12 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// queryObjectRefsOnly is queryObjectRefs for a caller that cannot yet carry the
+// gaps. It exists so the dropping is visible at the call site and greppable,
+// rather than hidden inside a function that silently returns less than it knows.
+func queryObjectRefsOnly(ctx context.Context, client *adt.Client, name, objType string) []crossRef {
+	refs, _ := queryObjectRefs(ctx, client, name, objType)
+	return refs
 }
