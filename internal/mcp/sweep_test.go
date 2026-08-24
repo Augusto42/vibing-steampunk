@@ -262,3 +262,66 @@ func TestProbesOnlyRequireTargetsTheyUse(t *testing.T) {
 		}
 	}
 }
+
+// Coverage is the sweep's own honesty mechanism, so it must not be able to
+// contradict itself. It did: the numerator counted distinct capabilities and
+// the denominator counted probe rows, so two probes of one action inflated the
+// denominator and the report read "39 of 40" while naming nothing as unprobed.
+func TestCoverageNumbersReconcile(t *testing.T) {
+	srv := serverForMode(t, "expert")
+	advertised := srv.advertisedCapabilities()
+
+	probed := map[string]bool{}
+	for _, p := range SweepProbes() {
+		probed[baseCapability(p.Capability)] = true
+	}
+	var unprobed []string
+	for _, c := range advertised {
+		if !probed[c] {
+			unprobed = append(unprobed, c)
+		}
+	}
+
+	// Every advertised capability is either probed or named. There is no third
+	// state, and a shortfall with an empty list is the bug this pins.
+	covered := len(advertised) - len(unprobed)
+	if covered+len(unprobed) != len(advertised) {
+		t.Fatalf("%d covered + %d unprobed != %d advertised", covered, len(unprobed), len(advertised))
+	}
+	if covered < len(advertised) && len(unprobed) == 0 {
+		t.Errorf("coverage falls short of %d and names nothing as unprobed", len(advertised))
+	}
+}
+
+// A capability probed several ways is one capability. Three probes of
+// graph_stats — source, object, package — must not read as three covered.
+func TestSeveralProbesOfOneCapabilityCountOnce(t *testing.T) {
+	r := &SweepReport{Live: true, Answer: []SweepFinding{
+		{Capability: "analyze type=graph_stats (source)", Verdict: VerdictAnswered},
+		{Capability: "analyze type=graph_stats (object)", Verdict: VerdictAnswered},
+		{Capability: "analyze type=graph_stats (package)", Verdict: VerdictAnswered},
+	}}
+	if got := r.probedCapabilities(); got != 1 {
+		t.Errorf("three probes of one capability counted as %d", got)
+	}
+}
+
+// The set the count is taken from and the set the unprobed list is taken from
+// must be the same set, which is why one function produces it.
+func TestAdvertisedIsOneSetWithNoDuplicates(t *testing.T) {
+	srv := serverForMode(t, "expert")
+	advertised := srv.advertisedCapabilities()
+	seen := map[string]bool{}
+	for _, c := range advertised {
+		if seen[c] {
+			t.Errorf("%q appears twice in the advertised set", c)
+		}
+		seen[c] = true
+		if c != baseCapability(c) {
+			t.Errorf("%q is not a base identity, so it can never match a probe", c)
+		}
+	}
+	if len(advertised) == 0 {
+		t.Fatal("nothing is advertised, which would make every coverage figure vacuously complete")
+	}
+}

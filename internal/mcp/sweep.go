@@ -532,7 +532,7 @@ func (s *Server) RunSweep(ctx context.Context, system string, targets SweepTarge
 	probes := SweepProbes()
 	probed := map[string]bool{}
 	for _, p := range probes {
-		probed[p.Capability] = true
+		probed[baseCapability(p.Capability)] = true
 	}
 
 	for _, p := range probes {
@@ -547,15 +547,44 @@ func (s *Server) RunSweep(ctx context.Context, system string, targets SweepTarge
 		cancel()
 	}
 
-	// Coverage, stated rather than implied.
-	for _, t := range s.AnalyzeTypes() {
-		if !probed["analyze type="+t] {
-			report.Unprobed = append(report.Unprobed, "analyze type="+t)
+	// Coverage, stated rather than implied — and both halves derived from one
+	// set, so they cannot drift apart.
+	//
+	// They had. The numerator counted distinct capabilities and the denominator
+	// counted probe rows, so two probes of one action inflated the denominator
+	// and the report said "39 of 40" while naming nothing as unprobed. A
+	// coverage figure that can be internally inconsistent is the health report
+	// saying GOOD over a scan that never ran, in the tool built to catch it.
+	advertised := s.advertisedCapabilities()
+	for _, c := range advertised {
+		if !probed[c] {
+			report.Unprobed = append(report.Unprobed, c)
 		}
 	}
 	sort.Strings(report.Unprobed)
-	report.Advertised = len(s.AnalyzeTypes()) + len(coreActionProbes())
+	report.Advertised = len(advertised)
 	return report
+}
+
+// advertisedCapabilities is the population coverage is measured against.
+//
+// One function, so the count and the unprobed list are answers to the same
+// question. Identities are the base ones: a type probed three ways — source,
+// object, package — is one capability, not three.
+func (s *Server) advertisedCapabilities() []string {
+	seen := map[string]bool{}
+	for _, t := range s.AnalyzeTypes() {
+		seen["analyze type="+t] = true
+	}
+	for _, p := range coreActionProbes() {
+		seen[baseCapability(p.Capability)] = true
+	}
+	out := make([]string, 0, len(seen))
+	for c := range seen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // runProbe calls one capability through the same dispatch an agent uses, so a
