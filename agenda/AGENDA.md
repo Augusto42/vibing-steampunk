@@ -31,11 +31,35 @@ Channel, built against `$ZADT_VSP` as reference). Reproducible on a4h, reported
    the AMC pair is the same shape. Sequence is `lock → corr_insert(package) →
    set_data → save → unlock` through `IF_WB_OBJECT_PERSIST`. One implementation
    closes the whole family.
-4. `query` and `grep` are listed among valid actions but answer "No handler
-   found for action=…" on the MCP surface. Both work on the CLI — used
-   repeatedly on 2026-08-24 — so this is a registration gap, not a lost
-   implementation. **Confirm against a freshly started server first**: the
-   reporter's process, like ours, may predate the build.
+4. ~~`query` and `grep` unhandled on the MCP surface~~ — **withdrawn by the
+   reporter**: their server process started 2026-08-23 19:31 against a binary
+   rebuilt 2026-08-24 00:52, so they were calling yesterday's image. Not a bug.
+   Items 1–3 were observed on that same image and are worth re-observing on a
+   fresh one before anyone works them.
+
+**Item 2 above is fixed** (`edit`/deploy for function modules): a module is
+addressable only under its group, the abapGit filename carries both, and
+ParseABAPFile reads both correctly — but the deploy path dropped the group twice,
+in the object URL and again in the source URL. It failed on *update* and not on
+create, which is why it looked intermittent: DeployFromFile delegates to
+UpdateFromFile whenever the object already exists, so the first deploy of a
+module could succeed and every one after it could not.
+
+**Two findings from the same reporter, about SAP rather than about vsp:**
+
+- **An RFC session holds a loaded function group.** Edit a module, activate,
+  call it again in the same session, and the *old* code runs — activation
+  succeeds, the answer is well-formed, and it is simply the previous version.
+  The symptom is indistinguishable from "my edit was wrong", which is what makes
+  it expensive. Passing a destination override opens a fresh connection and
+  reloads. **Open for us:** should `edit` reopen the connection after activating
+  a FUGR, or at least say in its answer that a call on this session may return
+  the old code?
+- **AMC channels need program authorisations, and fail silently without them.**
+  Both send and bind simply do nothing. With a trap: binding an AMC channel to a
+  WebSocket connection is *not* covered by activity `R` even though the
+  connection only consumes — the APC bind manager checks `C`. Recorded here
+  because the next person into ABAP Channels loses an evening to it otherwise.
 
 **The graph surface, swept 2026-08-24** —
 [001-graph-surface-sweep](2026-08-24-001-graph-surface-sweep.md). All fifteen
