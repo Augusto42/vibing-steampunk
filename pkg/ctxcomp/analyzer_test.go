@@ -6,6 +6,12 @@ import (
 )
 
 func TestAnalyzerOffline(t *testing.T) {
+	// The comment below uses " and not an indented *, because an indented * is
+	// not a comment in ABAP — it is a syntax error, and source like it cannot
+	// be read from an activated object. The fixture had one, the old extractor
+	// was lenient about it, and the statement parser is not. Strictness loses
+	// nothing real here and the leniency was hiding that this layer was not
+	// using the parser it was named for.
 	source := `CLASS zcl_demo DEFINITION PUBLIC.
   PUBLIC SECTION.
     DATA mo_log TYPE REF TO zif_logger.
@@ -16,7 +22,7 @@ CLASS zcl_demo IMPLEMENTATION.
     DATA(lo) = NEW zcl_factory( ).
     zcl_util=>do_stuff( ).
     CALL FUNCTION 'Z_GET_DATA'.
-    * comment: zcl_fake_comment=>nope
+    " comment: zcl_fake_comment=>nope
     WRITE 'zcl_fake_string=>nope'.
   ENDMETHOD.
 ENDCLASS.`

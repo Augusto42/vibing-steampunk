@@ -147,7 +147,7 @@ func fetchAPISurfaceRows(ctx context.Context, client *adt.Client, objects []apiS
 	fmt.Fprintf(os.Stderr, "Querying object references...\n")
 	for _, obj := range objects {
 		include := apiSurfaceCallerInclude(obj)
-		for _, ref := range queryObjectRefs(ctx, client, obj.name, obj.objType) {
+		for _, ref := range queryObjectRefsOnly(ctx, client, obj.name, obj.objType) {
 			rows = append(rows, graph.APISurfaceRow{
 				Include: include,
 				RefName: ref.name,

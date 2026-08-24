@@ -96,13 +96,18 @@ type Node struct {
 //	CLAS:ZCL_FOO --IN_TRANSPORT--> TR:A4HK900123 (ZCL_FOO is in transport)
 //	PROG:ZREPORT --READS_CONFIG--> TVARVC:ZKEKEKE (ZREPORT reads ZKEKEKE)
 type Edge struct {
-	From       string         `json:"from"`                  // Source node ID
-	To         string         `json:"to"`                    // Target node ID
-	Kind       EdgeKind       `json:"kind"`                  // CALLS, REFERENCES, IN_TRANSPORT, READS_CONFIG, ...
-	Source     EdgeSource     `json:"source"`                // Where this evidence came from
-	RawInclude string         `json:"raw_include,omitempty"` // Original include where ref occurs
-	RefDetail  string         `json:"ref_detail,omitempty"`  // e.g. "METHOD:GET_DATA" or "FM:BAPI_USER_GET_DETAIL"
-	Meta       map[string]any `json:"meta,omitempty"`        // Enrichment signals (confidence, last_seen, etc.)
+	From       string     `json:"from"`                  // Source node ID
+	To         string     `json:"to"`                    // Target node ID
+	Kind       EdgeKind   `json:"kind"`                  // CALLS, REFERENCES, IN_TRANSPORT, READS_CONFIG, ...
+	Source     EdgeSource `json:"source"`                // Where this evidence came from
+	RawInclude string     `json:"raw_include,omitempty"` // Original include where ref occurs
+	RefDetail  string     `json:"ref_detail,omitempty"`  // e.g. "METHOD:GET_DATA" or "FM:BAPI_USER_GET_DETAIL"
+	// Line is where the statement that produced this edge starts, 1-based, or 0
+	// when the edge came from a table rather than from source. The lexer has
+	// carried it all along; nothing asked, so a consumer that needed line
+	// numbers had to keep its own parser.
+	Line int            `json:"line,omitempty"`
+	Meta map[string]any `json:"meta,omitempty"` // Enrichment signals (confidence, last_seen, etc.)
 }
 
 // Well-known Meta key constants for enrichment signals.
