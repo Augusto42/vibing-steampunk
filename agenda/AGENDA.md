@@ -121,6 +121,35 @@ There is no stated API stability promise; if one is wanted, now is the time.
 
 ## Needs a decision
 
+**The three graph decisions are taken** — branch `feat/graph-stats-and-loads`.
+
+- **`graph_stats` widened, not renamed.** The case was in the same file:
+  `check_boundaries` already accepts source, an object or a package, so the
+  restriction here was the order things were written in. Its package route now
+  goes through a scanner extracted from `check_boundaries` rather than a copy of
+  it, so both get the object codes, the read type, the unreadable objects and
+  the cap right once.
+- **`WBCROSSGTI` is reachable and never merged.** Callees answers what an object
+  references, and the running code is what that means; the inactive index
+  describes a version that does not run. One list holding both would describe
+  behaviour nothing has. So: a separate call, `include_inactive` on the surface,
+  rows in their own field, every row carrying `Inactive` and its source. The one
+  place it is consulted without being asked for is an *empty* answer, where the
+  alternative is "references nothing" over an object with 29 of them filed
+  against an unactivated version.
+- **`D010INC` is built.** The load graph, `analyze type=loads`, both directions.
+  It is the only source here that answers what must be *loaded* rather than what
+  is *named*, and that is not a nuance: nothing references an include, it is
+  included, so an include nothing loads is dead in a way no where-used list
+  shows. Three kinds of row in that table and only one is a dependency between
+  objects; the other two are containment and kernel machinery.
+
+**Still open, and now the oldest thing on this board:** unify `cli_deps.go`,
+`cli_extra.go` and `ctxcomp/analyzer.go`, which still do not import `pkg/graph`.
+Three implementations of dependency resolution, and this week showed what
+happens when two of them answer the same question by different routes.
+
+
 **Four gaps reported by a neighbouring project** (an IRC server on ABAP Push
 Channel, built against `$ZADT_VSP` as reference). Reproducible on a4h, reported
 2026-08-24, none blocking — workarounds exist for all but the last:

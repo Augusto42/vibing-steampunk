@@ -130,10 +130,14 @@ func inactiveServer(t *testing.T, inactiveRows bool) *httptest.Server {
 		}
 		body, _ := io.ReadAll(r.Body)
 		if strings.Contains(string(body), " FROM WBCROSSGTI ") && inactiveRows {
+			// DIRECT is part of the real table and the callee reader filters on
+			// it: an INDIRECT row is a type implied by a type, not something
+			// the object named. A fixture without it silently returns nothing.
 			w.Write([]byte(tableXML(
 				col("INCLUDE", "ZDEMO_REPORT", "ZDEMO_REPORT"),
 				col("OTYPE", "TY", "DA"),
 				col("NAME", "ZCL_DEMO_HELPER", "ABAP_TRUE"),
+				col("DIRECT", "X", "X"),
 			)))
 			return
 		}
@@ -167,5 +171,57 @@ func TestAnEmptyAnswerWithNothingInactiveStaysHonestlyEmpty(t *testing.T) {
 	client := NewClient(srv.URL, "user", "pass")
 	if n := client.InactiveReferenceCount(context.Background(), "/sap/bc/adt/programs/programs/zdemo_report"); n != 0 {
 		t.Errorf("nothing is filed anywhere, so there is nothing to explain, got %d", n)
+	}
+}
+
+// The decision recorded here, because a later reader will be tempted to merge:
+// Callees answers what an object references, and the running code is what that
+// means. The inactive index describes a version that is not running, so a list
+// holding both would describe behaviour nothing has. It is a different
+// question, so it is a different call — and every row it returns says so.
+
+func TestInactiveCalleesAreNeverMixedIntoTheOrdinaryAnswer(t *testing.T) {
+	srv := inactiveServer(t, true)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "user", "pass")
+	uri := "/sap/bc/adt/programs/programs/zdemo_report"
+
+	callees, _, err := client.Callees(context.Background(), uri)
+	if err != nil {
+		t.Fatalf("an empty answer is an answer: %v", err)
+	}
+	if len(callees) != 0 {
+		t.Fatalf("the active tables hold nothing for this object; %d rows leaked in from somewhere", len(callees))
+	}
+
+	inactive, _, err := client.InactiveCallees(context.Background(), uri)
+	if err != nil {
+		t.Fatalf("asking the other question explicitly: %v", err)
+	}
+	if len(inactive) == 0 {
+		t.Fatal("the inactive index has rows for this object and they must be reachable")
+	}
+	for _, c := range inactive {
+		if !c.Inactive {
+			t.Errorf("%s is quoted from the inactive index and must carry that, or it can be repeated as fact", c.Name)
+		}
+		if c.Source != "WBCROSSGTI" {
+			t.Errorf("%s should name the index it came from, got %q", c.Name, c.Source)
+		}
+	}
+}
+
+func TestAnObjectWithNoInactiveVersionHasNoInactiveReferences(t *testing.T) {
+	srv := inactiveServer(t, false)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "user", "pass")
+	inactive, _, err := client.InactiveCallees(context.Background(), "/sap/bc/adt/programs/programs/zdemo_report")
+	if err != nil {
+		t.Fatalf("nothing there is not a failure: %v", err)
+	}
+	if len(inactive) != 0 {
+		t.Errorf("nothing is filed against an inactive version, got %d", len(inactive))
 	}
 }

@@ -156,6 +156,33 @@ func graphProbes() []Probe {
 			Oracle: oracleAlwaysSome("source with a PERFORM in it has at least one edge"),
 		},
 		{
+			ID: "graph.graph_stats.object", Capability: "analyze type=graph_stats (object)",
+			Why:    "the same counts asked about a repository object, which the type refused to do until 2026-08-25 while its name promised otherwise",
+			Action: "analyze", Needs: []string{"references"},
+			Params: map[string]any{"type": "graph_stats", "object_type": "CLAS", "object_name": "{references}"},
+			// The object was chosen because the cross-reference tables have rows
+			// for it, so its source cannot be free of dependencies either.
+			Oracle: oracleCrossOrLongName,
+		},
+		{
+			ID: "graph.graph_stats.package", Capability: "analyze type=graph_stats (package)",
+			Why:    "counts over a whole package, through the same scanner the boundary check uses",
+			Action: "analyze", Needs: []string{"package"},
+			Params: map[string]any{"type": "graph_stats", "package": "{package}"},
+			Oracle: oraclePackageHasReadableSource,
+		},
+		{
+			ID: "graph.loads", Capability: "analyze type=loads",
+			Why:    "the compile-time load graph from D010INC; the one source here that answers what must be present rather than what is named",
+			Action: "analyze", Needs: []string{"class"},
+			Params: map[string]any{"type": "loads", "object_name": "{class}", "direction": "both"},
+			// A class always loads something and is always loaded by its own
+			// pool, so the table has rows for it; whether any of them survive
+			// the containment filter is what the answer is about, and the
+			// handler says so when none do.
+			MustContain: "D010INC",
+		},
+		{
 			ID: "graph.health", Capability: "analyze type=health",
 			Why:    "the report that once said GOOD over a scan that could not run",
 			Action: "analyze", Needs: []string{"package"},

@@ -42,6 +42,7 @@ func (s *Server) analysisTypes() map[string]server.ToolHandlerFunc {
 		"compare_call_graphs": s.handleCompareCallGraphs,
 		"trace_execution":     s.handleTraceExecution,
 		"check_boundaries":    s.handleCheckBoundaries,
+		"loads":               s.handleLoads,
 		"graph_stats":         s.handleGraphStats,
 		"co_change":           s.handleCoChange,
 		"impact":              s.handleImpact,
@@ -202,6 +203,24 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 			callees = callees[:limit]
 		}
 		answer["callees"] = callees
+		// Asked for explicitly, and returned beside the answer rather than in
+		// it. "What does this reference" is about the code that runs; the
+		// inactive index describes a version that does not. One list holding
+		// both would describe behaviour nothing has.
+		if v, ok := request.GetArguments()["include_inactive"].(bool); ok && v {
+			inactive, _, ierr := s.adtClient.InactiveCallees(ctx, objectURI)
+			switch {
+			case ierr != nil:
+				answer["inactive_error"] = ierr.Error()
+			case len(inactive) > 0:
+				answer["inactive"] = inactive
+				answer["inactive_note"] = fmt.Sprintf(
+					"%d references are recorded against an unactivated version of this object. "+
+						"They are listed separately because they describe what will change when it is "+
+						"activated, not what the running code does.", len(inactive))
+			}
+		}
+
 		if len(callees) == 0 {
 			answer["note"] = emptyCalleesNote
 			if n := s.adtClient.InactiveReferenceCount(ctx, objectURI); n > 0 {

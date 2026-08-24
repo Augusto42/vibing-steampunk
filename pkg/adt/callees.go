@@ -48,10 +48,18 @@ type Callee struct {
 	// FUNCTION, a PERFORM, a SUBMIT — rather than a mention of a type or a
 	// constant. Both are real dependencies; only one is a call.
 	Calls bool `json:"calls"`
-	// Source names the table the row came from, because the two have different
-	// blind spots: WBCROSSGT knows nothing of CALL FUNCTION and CROSS knows
-	// nothing of classes.
+	// Source names the table the row came from, because they have different
+	// blind spots: WBCROSSGT knows nothing of CALL FUNCTION, CROSS knows
+	// nothing of classes, and WBCROSSGTI knows only about a version that is
+	// not running.
 	Source string `json:"source"`
+	// Inactive marks a reference recorded against a version of the object that
+	// has not been activated. It is never mixed into an ordinary answer: the
+	// question "what does this object reference" is about the code that runs,
+	// and a row from the inactive index describes code that does not. Asked
+	// for explicitly it is useful — "what will change when this is activated" —
+	// and then every such row says so, in the field and in Source.
+	Inactive bool `json:"inactive,omitempty"`
 }
 
 // calleeTarget is an object translated into the terms the cross-reference
@@ -171,19 +179,59 @@ func (c *Client) Callees(ctx context.Context, objectURI string) ([]Callee, []Uns
 // zero: a probe that cannot run leaves the empty answer exactly as ambiguous as
 // it already was, and a caveat about a caveat helps nobody.
 func (c *Client) InactiveReferenceCount(ctx context.Context, objectURI string) int {
-	target, err := calleeTargetFromURI(objectURI)
+	rows, _, err := c.inactiveCallees(ctx, objectURI)
 	if err != nil {
 		return 0
+	}
+	return len(rows)
+}
+
+// InactiveCallees answers a different question from Callees, which is why it is
+// a different call and not a flag with a default.
+//
+// Callees says what an object references. This says what the *unactivated* copy
+// of it references — the answer to "what will change when somebody activates
+// this", and to nothing else. Merging the two would produce a list describing
+// behaviour no running code has, which is the invented answer this package
+// spends most of its comments guarding against; keeping the inactive rows out
+// of sight would repeat the older mistake of an empty list that cannot say why.
+// So: separate call, and every row it returns carries Inactive and a Source of
+// WBCROSSGTI, so a row cannot be quoted out of context by accident.
+func (c *Client) InactiveCallees(ctx context.Context, objectURI string) ([]Callee, []Unsearched, error) {
+	rows, target, err := c.inactiveCallees(ctx, objectURI)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := wbCrossCallees(rows, target)
+	for i := range out {
+		out[i].Inactive = true
+		out[i].Source = "WBCROSSGTI"
+	}
+	return mergeCallees(out), nil, nil
+}
+
+func (c *Client) inactiveCallees(ctx context.Context, objectURI string) ([]map[string]interface{}, calleeTarget, error) {
+	target, err := calleeTargetFromURI(objectURI)
+	if err != nil {
+		return nil, calleeTarget{}, err
 	}
 	predicate, err := c.includePredicate(ctx, target)
 	if err != nil {
-		return 0
+		return nil, target, err
 	}
-	res, err := c.RunQuery(ctx, "SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGTI WHERE "+predicate, calleeRowLimit)
-	if err != nil || res == nil {
-		return 0
+	res, err := c.RunQuery(ctx,
+		"SELECT INCLUDE, OTYPE, NAME, DIRECT FROM WBCROSSGTI WHERE "+predicate, calleeRowLimit)
+	if err != nil {
+		return nil, target, err
 	}
-	return len(res.Rows)
+	if res == nil {
+		return nil, target, nil
+	}
+	// The same long-name decoding the active index needs: a name too long for
+	// CHAR(120) is a hash here too, and a hash reported as an object name is
+	// the worst class of wrong answer this package has produced.
+	_ = c.ResolveLongNames(ctx, res.Rows)
+	return res.Rows, target, nil
 }
 
 // calleeRowLimit caps each table query. A class with more references than this
