@@ -187,7 +187,17 @@ func NewServer(cfg *Config) *Server {
 	opts = append(opts, adt.WithSafety(safety))
 
 	adtClient := adt.NewClient(cfg.BaseURL, cfg.Username, cfg.Password, opts...)
+	return NewServerWithClient(cfg, adtClient)
+}
 
+// NewServerWithClient builds a server around a client the caller already holds.
+//
+// The CLI resolves a system into a client of its own — carrying that system's
+// cookies, its browser single sign-on with the refresh hook attached, and its
+// declared safety — and none of that survives a round trip through Config.
+// `vsp sweep` has to call handlers through the real dispatch path on the real
+// connection, so it hands the client over rather than describing it.
+func NewServerWithClient(cfg *Config, adtClient *adt.Client) *Server {
 	// Set terminal ID for debugger operations
 	// Priority: 1) Custom ID (SAP GUI), 2) User-based ID
 	if cfg.TerminalID != "" {

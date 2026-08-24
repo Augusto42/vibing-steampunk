@@ -9,52 +9,49 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
+
+// analysisTypes is the routing table as data rather than as control flow.
+//
+// It is a map and not a switch so that the surface can be enumerated — `vsp
+// sweep` walks it to ask whether every advertised type is reachable, and a test
+// asserts the published list and this table are the same set. A switch answers
+// "is this type routed?" only by running the handler, which is no use to
+// anything that wants to check the surface without calling into SAP.
+func (s *Server) analysisTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"call_graph":          s.handleGetCallGraph,
+		"object_structure":    s.handleGetObjectStructure,
+		"callers":             s.handleGetCallersOf,
+		"callees":             s.handleGetCalleesOf,
+		"analyze_call_graph":  s.handleAnalyzeCallGraph,
+		"compare_call_graphs": s.handleCompareCallGraphs,
+		"trace_execution":     s.handleTraceExecution,
+		"check_boundaries":    s.handleCheckBoundaries,
+		"graph_stats":         s.handleGraphStats,
+		"co_change":           s.handleCoChange,
+		"impact":              s.handleImpact,
+		"where_used_config":   s.handleWhereUsedConfig,
+		"usage_examples":      s.handleUsageExamples,
+		"health":              s.handleHealth,
+		"cr_history":          s.handleCRHistory,
+		"tr_boundaries":       s.handleTransportBoundaries,
+		"cr_boundaries":       s.handleCRBoundaries,
+	}
+}
 
 // routeAnalysisAction routes "analyze" with call graph and structure types.
 func (s *Server) routeAnalysisAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action != "analyze" {
 		return nil, false, nil
 	}
-	analysisType := getStringParam(params, "type")
-	switch analysisType {
-	case "call_graph":
-		return s.callHandler(ctx, s.handleGetCallGraph, params)
-	case "object_structure":
-		return s.callHandler(ctx, s.handleGetObjectStructure, params)
-	case "callers":
-		return s.callHandler(ctx, s.handleGetCallersOf, params)
-	case "callees":
-		return s.callHandler(ctx, s.handleGetCalleesOf, params)
-	case "analyze_call_graph":
-		return s.callHandler(ctx, s.handleAnalyzeCallGraph, params)
-	case "compare_call_graphs":
-		return s.callHandler(ctx, s.handleCompareCallGraphs, params)
-	case "trace_execution":
-		return s.callHandler(ctx, s.handleTraceExecution, params)
-	case "check_boundaries":
-		return s.callHandler(ctx, s.handleCheckBoundaries, params)
-	case "graph_stats":
-		return s.callHandler(ctx, s.handleGraphStats, params)
-	case "co_change":
-		return s.callHandler(ctx, s.handleCoChange, params)
-	case "impact":
-		return s.callHandler(ctx, s.handleImpact, params)
-	case "where_used_config":
-		return s.callHandler(ctx, s.handleWhereUsedConfig, params)
-	case "usage_examples":
-		return s.callHandler(ctx, s.handleUsageExamples, params)
-	case "health":
-		return s.callHandler(ctx, s.handleHealth, params)
-	case "cr_history":
-		return s.callHandler(ctx, s.handleCRHistory, params)
-	case "tr_boundaries":
-		return s.callHandler(ctx, s.handleTransportBoundaries, params)
-	case "cr_boundaries":
-		return s.callHandler(ctx, s.handleCRBoundaries, params)
+	handler, known := s.analysisTypes()[getStringParam(params, "type")]
+	if !known {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	return s.callHandler(ctx, handler, params)
 }
 
 // --- Code Analysis Infrastructure Handlers ---

@@ -8,22 +8,28 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
+
+// traceAnalysisTypes is the routing table as data; see analysisTypes.
+func (s *Server) traceAnalysisTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"list_traces": s.handleListTraces,
+		"get_trace":   s.handleGetTrace,
+	}
+}
 
 // routeTracesAction routes "analyze" with trace-related types.
 func (s *Server) routeTracesAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action != "analyze" {
 		return nil, false, nil
 	}
-	analysisType := getStringParam(params, "type")
-	switch analysisType {
-	case "list_traces":
-		return s.callHandler(ctx, s.handleListTraces, params)
-	case "get_trace":
-		return s.callHandler(ctx, s.handleGetTrace, params)
+	handler, known := s.traceAnalysisTypes()[getStringParam(params, "type")]
+	if !known {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	return s.callHandler(ctx, handler, params)
 }
 
 // --- ABAP Profiler / Traces Handlers ---

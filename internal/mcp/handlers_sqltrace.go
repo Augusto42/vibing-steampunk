@@ -8,21 +8,27 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
+
+// sqlTraceAnalysisTypes is the routing table as data; see analysisTypes.
+func (s *Server) sqlTraceAnalysisTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"sql_trace_state": s.handleGetSQLTraceState,
+		"list_sql_traces": s.handleListSQLTraces,
+	}
+}
 
 // routeSQLTraceAction routes "analyze" with SQL trace types.
 func (s *Server) routeSQLTraceAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action != "analyze" {
 		return nil, false, nil
 	}
-	analysisType := getStringParam(params, "type")
-	switch analysisType {
-	case "sql_trace_state":
-		return s.callHandler(ctx, s.handleGetSQLTraceState, params)
-	case "list_sql_traces":
-		return s.callHandler(ctx, s.handleListSQLTraces, params)
+	handler, known := s.sqlTraceAnalysisTypes()[getStringParam(params, "type")]
+	if !known {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	return s.callHandler(ctx, handler, params)
 }
 
 // --- SQL Trace (ST05) Handlers ---

@@ -1,0 +1,721 @@
+package mcp
+
+// Ten capabilities were found this August that had been advertised in the
+// README, registered as tools, reachable by a user, and had never once
+// returned a correct answer. Not one of them was visible by reading the code:
+// each needed a live system to find, and each was found by hand, by somebody
+// who happened to be looking.
+//
+// The eleventh will ship the same way unless the looking is automated. That is
+// what this is.
+//
+// It walks the advertised surface and asks two different questions, because
+// they fail in two different ways:
+//
+//	Reach.  Is the capability registered and routed at all? Ten gCTS tools sat
+//	        in the whitelist for months behind a registration function that
+//	        nothing called. This question needs no SAP system and belongs in
+//	        CI.
+//
+//	Answer. Called against a real system with an input that has an answer, does
+//	        it produce one? This is the question that found the other ten, and
+//	        it cannot be asked offline.
+//
+// The distinction that carries the whole design is between an empty answer that
+// is true and an empty answer that is a failure wearing a truthful face. A
+// probe therefore may carry an *oracle*: a second, independent way to find out
+// whether there is anything to find. When the oracle says there are twelve and
+// the capability says none, that is not an empty result. It is a dead feature,
+// and the sweep says so in those words.
+//
+// Two rules this file is built to obey, both learned by breaking them:
+//
+//  1. A sweep that cannot cover everything must say what it did not cover.
+//     A clean report over a third of the surface is the health report that
+//     said GOOD over a scan that never ran.
+//  2. The sweep never writes. Every probe is a read, enforced below rather
+//     than merely intended, because a verification tool that mutates a
+//     customer's system to verify itself is not a verification tool.
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/oisee/vibing-steampunk/pkg/adt"
+)
+
+// Verdict is what one capability did when it was called.
+//
+// The values are deliberately more numerous than pass/fail. "Nothing came back"
+// is four different situations — the release does not have it, the user may not
+// see it, there is genuinely nothing there, or the feature is dead — and
+// collapsing them is how the dead ones stayed hidden.
+type Verdict string
+
+const (
+	// VerdictAnswered — a real answer came back.
+	VerdictAnswered Verdict = "answered"
+	// VerdictDead — the call succeeded and returned nothing, and an
+	// independent oracle says there was something to find. This is the finding
+	// the sweep exists for.
+	VerdictDead Verdict = "dead"
+	// VerdictEmpty — nothing came back and nothing was expected to. True on
+	// this system, today, and not evidence either way about the capability.
+	VerdictEmpty Verdict = "empty"
+	// VerdictRefused — the system said no, out loud: an authorisation, a
+	// safety block, a validation error. The capability works; the answer is no.
+	VerdictRefused Verdict = "refused"
+	// VerdictAbsent — the resource is not on this release. A statement about
+	// the system, not about us.
+	VerdictAbsent Verdict = "absent"
+	// VerdictBroken — our fault. An unroutable action, a malformed call, a
+	// parse failure, a panic.
+	VerdictBroken Verdict = "broken"
+	// VerdictUnreachable — advertised somewhere and registered or routed
+	// nowhere. Found without a system.
+	VerdictUnreachable Verdict = "unreachable"
+	// VerdictSkipped — no object of the required kind was available to probe
+	// with. The probe's fault, not the system's, and reporting it as absent
+	// would put a missing feature on the system's record.
+	VerdictSkipped Verdict = "skipped"
+	// VerdictUnprobed — advertised, reachable, and this sweep has no probe for
+	// it. Counted and named, never quietly omitted.
+	VerdictUnprobed Verdict = "unprobed"
+	// VerdictMisprobed — the handler read the call and said what was missing
+	// from it. That is the capability working, and the probe calling it wrong.
+	//
+	// This verdict exists because the first live run produced nine "broken"
+	// rows that were all mine: parameters named differently from what I
+	// guessed. A sweep whose findings are mostly its own mistakes teaches its
+	// reader to skim, and then the one real finding goes past unread. So the
+	// probe's fault is separated from the product's, loudly enough to be fixed
+	// and never counted as a defect in what is being swept.
+	VerdictMisprobed Verdict = "misprobed"
+)
+
+// Bad reports whether a verdict is a finding a maintainer must act on, as
+// opposed to a fact about the system or a gap in the sweep.
+func (v Verdict) Bad() bool {
+	return v == VerdictDead || v == VerdictBroken || v == VerdictUnreachable
+}
+
+// OurFault reports whether the sweep, rather than the thing swept, is wrong.
+// These belong in the report — an unmaintained probe table is how a sweep
+// stops being evidence — but never among the findings.
+func (v Verdict) OurFault() bool {
+	return v == VerdictMisprobed || v == VerdictSkipped
+}
+
+// SweepTargets names the objects probes may read. A probe whose requirements
+// are not met is skipped by name rather than failed.
+type SweepTargets struct {
+	// Class is any class that exists. Used for reads and structure.
+	Class string
+	// Program is any program that exists.
+	Program string
+	// Package is a package that exists and holds objects.
+	Package string
+	// Group is a function group that exists.
+	Group string
+	// Table is a table that exists and has rows — T000 on every system.
+	Table string
+	// Referenced is an object known to be referenced by other code. It is the
+	// input for every probe about callers, and choosing one at random is how
+	// a dead where-used check passes: most custom objects have no callers, so
+	// an empty answer is true and proves nothing.
+	Referenced string
+	// References is an object known to reference other code — the down
+	// direction of the same problem.
+	References string
+}
+
+// Have reports whether every named target kind is available.
+func (t SweepTargets) Have(kinds ...string) (string, bool) {
+	for _, k := range kinds {
+		if t.get(k) == "" {
+			return k, false
+		}
+	}
+	return "", true
+}
+
+func (t SweepTargets) get(kind string) string {
+	switch kind {
+	case "class":
+		return t.Class
+	case "program":
+		return t.Program
+	case "package":
+		return t.Package
+	case "group":
+		return t.Group
+	case "table":
+		return t.Table
+	case "referenced":
+		return t.Referenced
+	case "references":
+		return t.References
+	}
+	return ""
+}
+
+// expand substitutes {class}, {program}, {package}, {group}, {table},
+// {referenced} and {references} in a string.
+func (t SweepTargets) expand(s string) string {
+	for _, k := range []string{"class", "program", "package", "group", "table", "referenced", "references"} {
+		s = strings.ReplaceAll(s, "{"+k+"}", t.get(k))
+	}
+	return s
+}
+
+// Oracle is a second, independent route to the same fact.
+//
+// It returns how many results *must* exist and one sentence saying how it
+// knows. The sweep never trusts the oracle's number as an answer — only its
+// zero-or-more — because the point is not to check arithmetic, it is to know
+// whether an empty answer could possibly be true.
+type Oracle func(ctx context.Context, c *adt.Client, t SweepTargets) (count int, how string, err error)
+
+// Probe is one question to put to the product surface.
+type Probe struct {
+	// ID is stable across runs so two sweeps can be diffed.
+	ID string
+	// Capability is what this probe is evidence about, in the vocabulary the
+	// user sees: an analyze type, an action, a tool name.
+	Capability string
+	// Why says, in a few words, what a reader learns from the answer.
+	Why string
+	// Action and Params are the call, exactly as an agent would make it.
+	Action string
+	Target string
+	Params map[string]any
+	// Needs lists target kinds without which this probe cannot run.
+	Needs []string
+	// Oracle, when set, decides whether an empty answer is a dead capability.
+	Oracle Oracle
+	// MustContain is a substring the answer has to carry to count. Use it
+	// where "not empty" is too weak — a handler that returns its own help text
+	// on a bad input is not answering.
+	MustContain string
+	// EmptyIsFine marks a capability where nothing found is the ordinary case
+	// on a quiet system: no dumps today, no traces recorded. Without it every
+	// clean system would read as a wall of failures.
+	EmptyIsFine bool
+}
+
+// SweepFinding is one probe's answer.
+type SweepFinding struct {
+	ID         string  `json:"id"`
+	Capability string  `json:"capability"`
+	Why        string  `json:"why,omitempty"`
+	Verdict    Verdict `json:"verdict"`
+	Detail     string  `json:"detail,omitempty"`
+	// Oracle records what the second route said, when one was consulted. It is
+	// the difference between "we think this is dead" and "this is dead, and
+	// here is the count it should have returned".
+	OracleCount int           `json:"oracleCount,omitempty"`
+	OracleHow   string        `json:"oracleHow,omitempty"`
+	Evidence    string        `json:"evidence,omitempty"`
+	Elapsed     time.Duration `json:"-"`
+}
+
+// SweepReport is one system's answers, plus an honest account of what was not
+// asked.
+type SweepReport struct {
+	System string `json:"system"`
+	// Reach is the offline pass: registration and routing.
+	Reach []SweepFinding `json:"reach"`
+	// Answer is the live pass.
+	Answer []SweepFinding `json:"answer,omitempty"`
+	// Unprobed names every advertised capability this sweep has no probe for.
+	// It is the coverage denominator, and printing the numerator without it
+	// would be the defect this tool exists to find.
+	Unprobed []string `json:"unprobed,omitempty"`
+	// Advertised is how many capabilities were counted as the surface.
+	Advertised int `json:"advertised"`
+	// Missed lists targets the sweep could not obtain, which is why some
+	// probes were skipped.
+	Missed []adt.Unsearched `json:"missed,omitempty"`
+	// ReachChecked counts the names the offline pass examined, so that pass can
+	// state its own coverage too rather than borrowing the live pass's.
+	ReachChecked int  `json:"reachChecked"`
+	Live         bool `json:"live"`
+}
+
+// --- the advertised surface ----------------------------------------------
+
+// AnalyzeTypes returns every analyze type the server routes, from the routing
+// tables themselves rather than from a list kept alongside them.
+//
+// A list kept alongside is a claim; this is the surface. Four types were
+// advertised for months on a namespace that does not exist on any release, and
+// nothing could tell the difference because nothing could enumerate them.
+func (s *Server) AnalyzeTypes() []string {
+	seen := map[string]bool{}
+	for _, table := range []map[string]any{
+		toAny(s.analysisTypes()),
+		toAny(s.dumpAnalysisTypes()),
+		toAny(s.traceAnalysisTypes()),
+		toAny(s.sqlTraceAnalysisTypes()),
+		toAny(s.contextAnalysisTypes()),
+	} {
+		for k := range table {
+			seen[k] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func toAny[T any](m map[string]T) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// RegisteredTools returns the tool names this server registers, sorted.
+func (s *Server) RegisteredTools() []string {
+	registered := s.mcpServer.ListTools()
+	names := make([]string, 0, len(registered))
+	for name := range registered {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// SweepReach runs the offline pass: is every advertised capability actually
+// reachable? No network, so it belongs in CI.
+func SweepReach() []SweepFinding {
+	var out []SweepFinding
+
+	// Every name the focused whitelist advertises must be a tool that some
+	// mode registers. This is the check that found ten gCTS tools whitelisted
+	// behind a registration function nothing called.
+	expert := map[string]bool{}
+	expertSrv := NewServer(&Config{BaseURL: "https://example.invalid", Mode: "expert"})
+	for _, n := range expertSrv.RegisteredTools() {
+		expert[n] = true
+	}
+	for _, n := range focusedToolNames() {
+		if expert[n] {
+			continue
+		}
+		out = append(out, SweepFinding{
+			ID:         "reach.focused." + n,
+			Capability: n,
+			Why:        "whitelisted for focused mode",
+			Verdict:    VerdictUnreachable,
+			Detail:     "named in the focused whitelist and registered by no mode; a user selecting focused sees a tool that is not there",
+		})
+	}
+
+	// Every analyze type this sweep knows how to probe must still be routed.
+	// The reverse direction — a routed type nobody probes — is reported as
+	// coverage, not as a defect.
+	routed := map[string]bool{}
+	for _, t := range expertSrv.AnalyzeTypes() {
+		routed[t] = true
+	}
+	for _, p := range SweepProbes() {
+		if p.Action != "analyze" {
+			continue
+		}
+		typ, _ := p.Params["type"].(string)
+		if typ == "" || routed[typ] {
+			continue
+		}
+		out = append(out, SweepFinding{
+			ID:         "reach.analyze." + typ,
+			Capability: "analyze type=" + typ,
+			Why:        "probed by this sweep",
+			Verdict:    VerdictUnreachable,
+			Detail:     "no router claims this type, so the call falls through to \"no handler found\"",
+		})
+	}
+
+	// The universal tool is the only way an agent in hyperfocused mode reaches
+	// anything. If it is not registered there, nothing is.
+	hyper := NewServer(&Config{BaseURL: "https://example.invalid", Mode: "hyperfocused"})
+	if len(hyper.RegisteredTools()) == 0 {
+		out = append(out, SweepFinding{
+			ID: "reach.hyperfocused", Capability: "SAP", Verdict: VerdictUnreachable,
+			Detail: "hyperfocused mode registers no tool at all",
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// ReachChecked counts the names the offline pass examines, so the pass can
+// print its own denominator instead of borrowing the live pass's.
+func ReachChecked() int {
+	srv := NewServer(&Config{BaseURL: "https://example.invalid", Mode: "expert"})
+	return len(srv.RegisteredTools()) + len(focusedToolNames()) + len(srv.AnalyzeTypes())
+}
+
+// --- the live pass --------------------------------------------------------
+
+// writeActions never run. The sweep verifies; it does not modify. This is a
+// list and not a comment because the difference has to survive somebody adding
+// a probe in a hurry.
+var writeActions = map[string]bool{
+	"edit": true, "create": true, "delete": true, "deploy": true,
+	"install": true, "activate": true, "transport": true, "git": true,
+	"write": true, "rename": true, "move": true, "copy": true,
+}
+
+// SweepOptions shape one run.
+type SweepOptions struct {
+	// Only restricts the run to probes whose id or capability contains it.
+	Only string
+	// PerProbe caps a single probe.
+	//
+	// Without a cap one capability that never returns takes the whole sweep
+	// with it, and a sweep that produces no report is worse than one that
+	// reports a timeout: the first says nothing, the second names the
+	// capability that hung. A probe that runs out of time is a finding, not a
+	// skip — something a user calls would have hung on them too.
+	PerProbe time.Duration
+	// Progress, when set, is called before each probe so a person watching a
+	// long run can see which capability is being asked.
+	Progress func(p Probe)
+}
+
+// RunSweep asks the live pass and assembles the report.
+func (s *Server) RunSweep(ctx context.Context, system string, targets SweepTargets, opts SweepOptions) *SweepReport {
+	if opts.PerProbe <= 0 {
+		opts.PerProbe = 45 * time.Second
+	}
+	only := opts.Only
+	report := &SweepReport{System: system, Reach: SweepReach(), ReachChecked: ReachChecked(), Live: true}
+
+	probes := SweepProbes()
+	probed := map[string]bool{}
+	for _, p := range probes {
+		probed[p.Capability] = true
+	}
+
+	for _, p := range probes {
+		if only != "" && !strings.Contains(p.ID, only) && !strings.Contains(p.Capability, only) {
+			continue
+		}
+		if opts.Progress != nil {
+			opts.Progress(p)
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, opts.PerProbe)
+		report.Answer = append(report.Answer, s.runProbe(probeCtx, p, targets))
+		cancel()
+	}
+
+	// Coverage, stated rather than implied.
+	for _, t := range s.AnalyzeTypes() {
+		if !probed["analyze type="+t] {
+			report.Unprobed = append(report.Unprobed, "analyze type="+t)
+		}
+	}
+	sort.Strings(report.Unprobed)
+	report.Advertised = len(s.AnalyzeTypes()) + len(coreActionProbes())
+	return report
+}
+
+// runProbe calls one capability through the same dispatch an agent uses, so a
+// capability that is implemented but unrouted fails here exactly as it would
+// for a user.
+func (s *Server) runProbe(ctx context.Context, p Probe, t SweepTargets) SweepFinding {
+	f := SweepFinding{ID: p.ID, Capability: p.Capability, Why: p.Why}
+
+	if writeActions[strings.ToLower(p.Action)] {
+		f.Verdict = VerdictSkipped
+		f.Detail = "the sweep does not run write actions"
+		return f
+	}
+	if kind, ok := t.Have(p.Needs...); !ok {
+		f.Verdict = VerdictSkipped
+		f.Detail = "no " + kind + " was available to probe with"
+		return f
+	}
+
+	args := map[string]any{"action": p.Action}
+	if p.Target != "" {
+		args["target"] = t.expand(p.Target)
+	}
+	if len(p.Params) > 0 {
+		params := make(map[string]any, len(p.Params))
+		for k, v := range p.Params {
+			if sv, ok := v.(string); ok {
+				v = t.expand(sv)
+			}
+			params[k] = v
+		}
+		args["params"] = params
+	}
+
+	start := time.Now()
+	result, err := s.handleUniversalTool(ctx, newRequest(args))
+	f.Elapsed = time.Since(start)
+
+	if err != nil {
+		f.Verdict = VerdictBroken
+		f.Detail = err.Error()
+		if ctx.Err() != nil {
+			f.Detail = "did not answer within the probe timeout; a user calling this would have hung too"
+		}
+		return f
+	}
+	text := resultText(result)
+	f.Evidence = firstLine(text)
+
+	if result != nil && result.IsError {
+		f.Verdict, f.Detail = classifyError(text)
+		return f
+	}
+
+	if p.MustContain != "" && !strings.Contains(strings.ToLower(text), strings.ToLower(p.MustContain)) {
+		f.Verdict = VerdictBroken
+		f.Detail = "the answer does not contain " + strconv.Quote(p.MustContain) + ", so it is not an answer to this question"
+		return f
+	}
+
+	if !looksEmpty(text) {
+		f.Verdict = VerdictAnswered
+		return f
+	}
+
+	// Nothing came back. Whether that is true is the whole question.
+	if p.Oracle == nil {
+		if p.EmptyIsFine {
+			f.Verdict = VerdictEmpty
+			f.Detail = "nothing found, and on this capability that is an ordinary answer"
+			return f
+		}
+		f.Verdict = VerdictEmpty
+		f.Detail = "nothing found, and this sweep has no second route to say whether that is true"
+		return f
+	}
+
+	count, how, oerr := p.Oracle(ctx, s.adtClient, t)
+	f.OracleCount, f.OracleHow = count, how
+	switch {
+	case oerr != nil:
+		f.Verdict = VerdictEmpty
+		f.Detail = "nothing found, and the oracle could not run either: " + oerr.Error()
+	case count > 0:
+		f.Verdict = VerdictDead
+		f.Detail = fmt.Sprintf("returned nothing while %s says there are %d", how, count)
+	default:
+		f.Verdict = VerdictEmpty
+		f.Detail = "nothing found, and " + how + " agrees there is nothing"
+	}
+	return f
+}
+
+// classifyError separates what the system said from what we did wrong.
+func classifyError(text string) (Verdict, string) {
+	low := strings.ToLower(text)
+	switch {
+	// A handler that names the parameter it wanted has read the call and
+	// answered it. Nothing is wrong with the capability; the probe asked
+	// badly, and saying so is what keeps the findings list worth reading.
+	case strings.Contains(low, "is required"),
+		strings.Contains(low, "are required"),
+		strings.Contains(low, "needs a target"),
+		strings.Contains(low, "provide '"),
+		strings.Contains(low, "example: sap("):
+		return VerdictMisprobed, firstLine(text)
+	case strings.Contains(low, "no handler found"),
+		strings.Contains(low, "unknown action"),
+		strings.Contains(low, "unknown analysis type"),
+		strings.Contains(low, "not supported"):
+		return VerdictUnreachable, firstLine(text)
+	case strings.Contains(low, "404"),
+		strings.Contains(low, "not found on this"),
+		strings.Contains(low, "does not exist on this release"):
+		return VerdictAbsent, firstLine(text)
+	case strings.Contains(low, "403"),
+		strings.Contains(low, "not authorized"),
+		strings.Contains(low, "forbidden"),
+		strings.Contains(low, "blocked"),
+		strings.Contains(low, "read-only"):
+		return VerdictRefused, firstLine(text)
+	default:
+		return VerdictBroken, firstLine(text)
+	}
+}
+
+// looksEmpty decides whether an answer carries anything.
+//
+// It is a heuristic and is treated as one: an answer it calls empty is then put
+// to an oracle rather than reported as a failure. The phrases are the ones the
+// handlers actually emit.
+func looksEmpty(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || trimmed == "[]" || trimmed == "{}" {
+		return true
+	}
+	low := strings.ToLower(trimmed)
+	for _, phrase := range []string{
+		"no results", "no matches", "nothing found", "no objects",
+		"no callers", "no callees", "no references", "no dumps",
+		"no traces", "no entries", "no examples", "0 results",
+		"found 0 ", "no output captured", "empty",
+	} {
+		if strings.Contains(low, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func resultText(r *mcp.CallToolResult) string {
+	if r == nil || len(r.Content) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range r.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			b.WriteString(tc.Text)
+		}
+	}
+	return b.String()
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 160 {
+		s = s[:157] + "..."
+	}
+	return s
+}
+
+// focusedToolNames returns the focused whitelist as a sorted slice.
+func focusedToolNames() []string {
+	set := focusedToolSet()
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// --- rendering ------------------------------------------------------------
+
+// Counts tallies verdicts across both passes.
+func (r *SweepReport) Counts() map[Verdict]int {
+	out := map[Verdict]int{}
+	for _, f := range append(append([]SweepFinding{}, r.Reach...), r.Answer...) {
+		out[f.Verdict]++
+	}
+	return out
+}
+
+// Findings returns only what a maintainer must act on.
+func (r *SweepReport) Findings() []SweepFinding {
+	var out []SweepFinding
+	for _, f := range append(append([]SweepFinding{}, r.Reach...), r.Answer...) {
+		if f.Verdict.Bad() {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// Text renders the report for a person.
+//
+// The findings come first and the tally second, because a reader who stops
+// after one screen must have seen the dead capabilities rather than the score.
+// The coverage line is not optional: a sweep that reports six clean answers out
+// of a surface of thirty-one, without saying so, is the defect it was built to
+// find.
+func (r *SweepReport) Text() string {
+	var b strings.Builder
+
+	findings := r.Findings()
+	if len(findings) == 0 {
+		if r.Live {
+			fmt.Fprintf(&b, "No dead capabilities found on %s.\n", r.System)
+		} else {
+			fmt.Fprintf(&b, "Every advertised capability is registered and routed.\n")
+		}
+	} else {
+		fmt.Fprintf(&b, "%d finding(s) on %s\n\n", len(findings), r.System)
+		for _, f := range findings {
+			fmt.Fprintf(&b, "  %-11s %s\n", f.Verdict, f.Capability)
+			if f.Detail != "" {
+				fmt.Fprintf(&b, "              %s\n", f.Detail)
+			}
+			if f.OracleHow != "" && f.OracleCount > 0 {
+				fmt.Fprintf(&b, "              oracle: %s\n", f.OracleHow)
+			}
+			if f.Why != "" {
+				fmt.Fprintf(&b, "              why it is probed: %s\n", f.Why)
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	counts := r.Counts()
+	if len(counts) > 0 {
+		b.WriteString("\nVerdicts\n\n")
+	}
+	for _, v := range []Verdict{
+		VerdictAnswered, VerdictDead, VerdictBroken, VerdictUnreachable,
+		VerdictEmpty, VerdictRefused, VerdictAbsent, VerdictSkipped, VerdictMisprobed,
+	} {
+		if counts[v] > 0 {
+			fmt.Fprintf(&b, "  %-11s %d\n", v, counts[v])
+		}
+	}
+
+	// What was not asked, stated in the same breath as what was. Two passes
+	// have two denominators and printing the wrong one would be its own small
+	// lie: the offline pass covers names, the live pass covers behaviour.
+	b.WriteString("\nCoverage\n\n")
+	if !r.Live {
+		fmt.Fprintf(&b, "  %d advertised names checked for registration and routing\n", r.ReachChecked)
+		b.WriteString("  This pass cannot tell whether a reachable capability answers.\n")
+		b.WriteString("  Run it against a system for that.\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "  %d capabilities probed of %d advertised\n", len(r.Answer), r.Advertised)
+	if len(r.Unprobed) > 0 {
+		fmt.Fprintf(&b, "  %d advertised and not probed by this sweep:\n", len(r.Unprobed))
+		for _, u := range r.Unprobed {
+			fmt.Fprintf(&b, "    %s\n", u)
+		}
+		b.WriteString("  A clean result above is a statement about the probed ones only.\n")
+	}
+	var ours []SweepFinding
+	for _, f := range append(append([]SweepFinding{}, r.Reach...), r.Answer...) {
+		if f.Verdict.OurFault() {
+			ours = append(ours, f)
+		}
+	}
+	if len(ours) > 0 {
+		fmt.Fprintf(&b, "\nThe sweep's own gaps (%d) — these are not findings about the product\n\n", len(ours))
+		for _, f := range ours {
+			fmt.Fprintf(&b, "  %-11s %-34s %s\n", f.Verdict, f.Capability, f.Detail)
+		}
+	}
+
+	if note := adt.UnsearchedNote(r.Missed, len(r.Missed)+4, "probe target"); note != "" {
+		fmt.Fprintf(&b, "\n%s\n", note)
+	}
+	return b.String()
+}
