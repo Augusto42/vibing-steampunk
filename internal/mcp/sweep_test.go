@@ -245,8 +245,19 @@ func TestProbesOnlyRequireTargetsTheyUse(t *testing.T) {
 			}
 		}
 		for _, need := range p.Needs {
-			if !strings.Contains(blob, "{"+need+"}") {
+			// {references} and {references_uri} are both uses of the same
+			// target: one is the name, the other the escaped ADT path built
+			// from it for the two types that accept only a URI.
+			if !strings.Contains(blob, "{"+need+"}") && !strings.Contains(blob, "{"+need+"_uri}") {
 				t.Errorf("probe %s requires a %s and never substitutes {%s}", p.ID, need, need)
+			}
+		}
+		// The other half of the same rule. Requires is for preconditions, and a
+		// kind that IS interpolated belongs in Needs, where the check above can
+		// see it — otherwise the escape hatch quietly becomes the default.
+		for _, req := range p.Requires {
+			if strings.Contains(blob, "{"+req+"}") || strings.Contains(blob, "{"+req+"_uri}") {
+				t.Errorf("probe %s lists %s under Requires but substitutes it; that is a Need", p.ID, req)
 			}
 		}
 	}

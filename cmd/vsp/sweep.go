@@ -207,6 +207,52 @@ func fillSweepTargets(cmd *cobra.Command, client *adt.Client, targets *mcp.Sweep
 		}
 	}
 
+	// The post-mortem types default to "latest" and refuse when the feed is
+	// empty. That refusal is correct — a system with no dumps has no dumps —
+	// so the probes are skipped rather than run, and the report says which.
+	// Resolving here rather than inside a probe keeps "there was nothing to
+	// ask about" distinct from "asking failed".
+	if targets.Dump == "" {
+		dumps, err := client.Dumps(ctx, adt.DumpFilter{Limit: 1})
+		switch {
+		case err != nil:
+			missed = append(missed, adt.Unsearched{Object: "runtime dump", Reason: err.Error()})
+		case len(dumps) == 0:
+			missed = append(missed, adt.Unsearched{Object: "runtime dump",
+				Reason: "the dump feed is empty on this system, which is a fact about the system rather than about the capability"})
+		default:
+			targets.Dump = dumps[0].ID
+		}
+	}
+	// The CR types group transports by a landscape-specific attribute. Without
+	// it configured they refuse, clearly and correctly — so the probe is skipped
+	// rather than run, and the reason is the configuration rather than the code.
+	if targets.CRAttribute == "" {
+		attr := ""
+		if params, perr := resolveSystemParams(cmd); perr == nil {
+			attr = params.TransportAttribute
+		}
+		if attr != "" {
+			targets.CRAttribute = attr
+		} else {
+			missed = append(missed, adt.Unsearched{Object: "CR attribute",
+				Reason: "no transport_attribute is configured for this system, so the change-request types have nothing to group by"})
+		}
+	}
+
+	if targets.Trace == "" {
+		traces, err := client.ListTraces(ctx, &adt.TraceQueryOptions{MaxResults: 1})
+		switch {
+		case err != nil:
+			missed = append(missed, adt.Unsearched{Object: "ABAP trace", Reason: err.Error()})
+		case len(traces) == 0:
+			missed = append(missed, adt.Unsearched{Object: "ABAP trace",
+				Reason: "no trace has been recorded on this system; nothing to ask get_trace about"})
+		default:
+			targets.Trace = traces[0].ID
+		}
+	}
+
 	// An object the cross-reference tables demonstrably have rows for. Only for
 	// such an object is an empty callee list impossible, which is the whole
 	// premise of that probe.
