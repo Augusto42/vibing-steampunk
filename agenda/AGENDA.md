@@ -82,6 +82,18 @@ Worth more than the findings, and currently living only in reports:
    to hand it was wrong about the first case nobody tried: `'FU'` in a `C(1)`
    column, a section-prefix list covering `U01` and missing `U27`.
 
+## Backlog — added 2026-08-24
+
+**`vsp document`** — generate documentation for an object or package and push it
+into SAP's own store, where an ABAP developer already looks. ZXRAY's idea, minus
+its limitation: it could not do packages. Routing is settled and written up in
+[2026-08-24-002](2026-08-24-002-vsp-document.md): **reading `DOKHL`/`DOKTL` is
+plain ADT and works today; writing needs ABAP on the server**, because ADT
+exposes no documentation resource (seven paths, all 404) and no `DOCU_*` module
+is remote-enabled — the `BAL_DB_SEARCH` shape, where the blocker is not the
+transport. Generate and convert can ship without a receiver; push cannot, and
+would make Class D three items instead of two.
+
 ## Needs a decision — new
 
 **Turn the method into a command.** Ten dead features found by hand; the
