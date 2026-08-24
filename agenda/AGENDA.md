@@ -12,6 +12,20 @@ on this repo from other machines. Last updated 2026-08-24 by **vsp-amdp-c1**.
 
 ---
 
+> **Start here for the graph:** [contexts/2026-08-24-graph-handoff.md](../contexts/2026-08-24-graph-handoff.md)
+> — state, direction and where to resume. This board carries the items; that
+> file carries the shape and the order.
+
+## Ready to land
+
+**`feat/graph-forward`, ten commits, no conflicts with `main`.** Tree clean,
+`go test ./...` green. Two of them unblock the ABAP-IRC project, which is
+working around both by hand right now: `e58097d` (a function module could be
+created from a file but never updated) and `438c3d8` (`edit` accepts TABL).
+Either the release session takes them as it took the previous five, or they go
+to `main` directly. **Nothing else in this file matters until this happens** —
+the rest is work to choose, this is work already done and unavailable.
+
 ## Needs a decision
 
 **Four gaps reported by a neighbouring project** (an IRC server on ABAP Push
@@ -86,6 +100,11 @@ two failures marked for recheck were stale-process artefacts and needed no fix.
 `graph_stats` remains open as a scope question, not a bug: it analyses source
 handed to it and cannot be asked about a repository object, which its name does
 not suggest.
+
+**Ordered next steps** are in the handoff linked at the top; in short: land the
+branch, then one sentence in `edit` about function-group activation, then the
+sweep as a command, then describe the fifteen against it. The traversal layer is
+deliberately not next.
 
 **Open question:** build the sweep as a command (`vsp compat` already has the
 shape — checks, report, JSON, two-system comparison), so "does this work" is
