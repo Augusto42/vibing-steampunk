@@ -334,6 +334,16 @@ func contextProbes() []Probe {
 			Oracle: oracleAlwaysSome("a class that reads has a source, so it has a context"),
 		},
 		{
+			ID: "ctx.effects", Capability: "analyze type=effects",
+			Why:    "side effects and LUW class; a library with no caller until 2026-08-25",
+			Action: "analyze",
+			Params: map[string]any{"type": "effects", "source": "METHOD m. COMMIT WORK. ENDMETHOD."},
+			// Source containing COMMIT WORK cannot honestly analyse to nothing,
+			// and the answer must carry the classification rather than an empty
+			// shell of booleans.
+			MustContain: "owner",
+		},
+		{
 			ID: "ctx.parse_abap", Capability: "analyze type=parse_abap",
 			Why:    "the offline parser; it needs no system and must never be empty",
 			Action: "analyze",

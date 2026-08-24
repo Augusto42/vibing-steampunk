@@ -420,12 +420,31 @@ Not just "crossed" or "not crossed" — **which direction** the dependency flows
 
 Export to 7 formats: `text`, `json`, `md`, `mermaid`, `html`, `dot` (Graphviz), `plantuml`, `graphml` (Gephi/yEd).
 
-### Side Effect & LUW Analysis — library only, not yet a command
+### Side Effect & LUW Analysis
 
-> **Status:** `pkg/graph.ExtractEffects` is implemented and tested, and **nothing
-> calls it.** There is no CLI command and no MCP action that reaches it, so this
-> is a Go API you can import, not a feature you can run. Wiring it is on the
-> board.
+```bash
+vsp -s dev effects ZCL_DEMO_ORDER      # from SAP
+vsp effects --file ./local.abap        # no system needed
+```
+
+```
+  LUW          unsafe
+               both commits and registers deferred work — part of what it queues
+               is committed by each
+  reads        ZDEMO_ORDERS
+  writes       ZDEMO_ORDERS
+  effects      COMMIT WORK, IN UPDATE TASK
+```
+
+Also `SAP(action="analyze", params={"type": "effects", ...})`.
+
+The interesting effects in ABAP are not database writes but **LUW effects**: a
+unit calling `IN UPDATE TASK` has not written anything yet, and whoever calls
+`COMMIT WORK` higher up triggers everything it queued. That is invisible
+coupling, and nothing in SAP's toolchain reports it.
+
+The analysis is **local** — it reads the unit's own source and nothing it calls
+— and every answer says so.
 
 The parser detects transactional patterns in ABAP source:
 
@@ -701,7 +720,7 @@ See **[CLI Guide](docs/cli-guide.md)** for the complete reference with feature r
 | **Package Health** | `vsp health` — tests, ATC, boundary crossings, staleness in one report (text/md/html) |
 | **Dead Code Detection** | `vsp slim` — method-level dead/internal/live classification via WBCROSSGT reverse refs |
 | **Boundary Analysis** | `vsp boundaries` — directional crossings (UPWARD/SIBLING/DOWNWARD/EXTERNAL/CIRCULAR) |
-| **Side Effect Detection** *(library only — no command reaches it yet)* | DB read/write, COMMIT/ROLLBACK, UPDATE TASK, RFC, async — LUW classification |
+| **Side Effect Detection** | `vsp effects` — DB read/write, COMMIT/ROLLBACK, UPDATE TASK, RFC, async, and the LUW class with what it means for the caller |
 | **Transport History** | `vsp changelog` + `vsp changes` — transport correlation and CR-level grouping |
 | **API Surface** | `vsp api-surface` — Clean Core inventory: which standard APIs does your code use? |
 | **Graph Export** | 7 formats: mermaid, HTML, DOT (Graphviz), PlantUML, GraphML (Gephi), JSON, MD |

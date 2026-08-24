@@ -20,6 +20,7 @@ func (s *Server) contextAnalysisTypes() map[string]server.ToolHandlerFunc {
 		"context":      s.handleGetContext,
 		"parse_abap":   s.handleParseABAP,
 		"analyze_deps": s.handleAnalyzeDeps,
+		"effects":      s.handleAnalyzeEffects,
 	}
 }
 
