@@ -9,16 +9,27 @@
 ## Current Priorities
 
 ### 1. Graph Engine (`pkg/graph/`) — In Progress
-Sequence: unify existing dep logic → SQL/ADT adapters → impact/path queries.
-- Done: core types, parser dep extraction, boundary analyzer (11 tests)
-- Pending: SQL adapters (CROSS/WBCROSSGT/D010INC), ADT adapters, unify `cli_deps.go` + `cli_extra.go` + `ctxcomp/analyzer.go`
+This section understated the package for four months; corrected 2026-08-24.
+- Done: core types, parser dep extraction, boundary analyzer, **SQL adapters
+  (`builder_sql.go` — CROSS + WBCROSSGT + WBCROSSGTX long names)**,
+  `builder_transport.go`, `builder_config.go`, and the `queries_*.go` surface
+  behind slim / health / impact / api-surface / rename / examples.
+  45 files, 195 test functions.
+- Pending: **D010INC** — the compile-time *load* graph, which is the one novel
+  source in the original design and exists only as two constants (`EdgeLoads`,
+  `SourceD010INC`). Also: unify `cli_deps.go` + `cli_extra.go` +
+  `ctxcomp/analyzer.go`, which still do not import `pkg/graph`.
+- Not wired: `graph.ExtractEffects` (side effects / LUW) has **no caller** — no
+  CLI command, no MCP action. Library, not feature.
 - Design: [002](reports/2026-04-05-002-graph-engine-design.md), [003](reports/2026-04-05-003-graph-engine-alignment-for-claude.md)
 
 ### 2. GUI Debugger (Issue #2) — Strategic
 Plan: MCP debug sessions → DAP → Web UI. ADT REST API mapped from `CL_TPDA_ADT_RES_APP`. Design: [001](reports/2026-04-05-001-gui-debugger-design.md)
 
 ### 3. Open Issues
-- **#88** Lock handle bug (EditSource/WriteSource) — real user report
+- ~~**#88** Lock handle bug~~ — closed 2026-04-15 by `22517d4` (Stateful +
+  ModificationSupport guard), together with #91, #92, #98. Left here in struck
+  form because this list said "open" for four months after the fix.
 - **#55** RunReport in APC — architectural limit
 - **#46, #45** Sync script — low effort
 

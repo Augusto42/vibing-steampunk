@@ -420,7 +420,12 @@ Not just "crossed" or "not crossed" — **which direction** the dependency flows
 
 Export to 7 formats: `text`, `json`, `md`, `mermaid`, `html`, `dot` (Graphviz), `plantuml`, `graphml` (Gephi/yEd).
 
-### Side Effect & LUW Analysis
+### Side Effect & LUW Analysis — library only, not yet a command
+
+> **Status:** `pkg/graph.ExtractEffects` is implemented and tested, and **nothing
+> calls it.** There is no CLI command and no MCP action that reaches it, so this
+> is a Go API you can import, not a feature you can run. Wiring it is on the
+> board.
 
 The parser detects transactional patterns in ABAP source:
 
@@ -696,7 +701,7 @@ See **[CLI Guide](docs/cli-guide.md)** for the complete reference with feature r
 | **Package Health** | `vsp health` — tests, ATC, boundary crossings, staleness in one report (text/md/html) |
 | **Dead Code Detection** | `vsp slim` — method-level dead/internal/live classification via WBCROSSGT reverse refs |
 | **Boundary Analysis** | `vsp boundaries` — directional crossings (UPWARD/SIBLING/DOWNWARD/EXTERNAL/CIRCULAR) |
-| **Side Effect Detection** | DB read/write, COMMIT/ROLLBACK, UPDATE TASK, RFC, async — LUW classification |
+| **Side Effect Detection** *(library only — no command reaches it yet)* | DB read/write, COMMIT/ROLLBACK, UPDATE TASK, RFC, async — LUW classification |
 | **Transport History** | `vsp changelog` + `vsp changes` — transport correlation and CR-level grouping |
 | **API Surface** | `vsp api-surface` — Clean Core inventory: which standard APIs does your code use? |
 | **Graph Export** | 7 formats: mermaid, HTML, DOT (Graphviz), PlantUML, GraphML (Gephi), JSON, MD |
