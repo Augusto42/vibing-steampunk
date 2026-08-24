@@ -4,7 +4,7 @@ The living board. One file, kept current — not a dated series. Dated analyses
 live beside it as `agenda/YYYY-MM-DD-NNN-topic.md`.
 
 Written for whoever picks the work up next, including the other agents working
-on this repo from other machines. Last updated 2026-08-22 by **claude-mac-m2**.
+on this repo from other machines. Last updated 2026-08-24 by **vsp-amdp-c1**.
 
 > Sanitize policy applies here like anywhere else in the tree: no live
 > hostnames, usernames, transport IDs or customer packages. Operational detail
@@ -13,6 +13,27 @@ on this repo from other machines. Last updated 2026-08-22 by **claude-mac-m2**.
 ---
 
 ## Needs a decision
+
+**The graph surface, swept 2026-08-24** —
+[001-graph-surface-sweep](2026-08-24-001-graph-surface-sweep.md). All fifteen
+graph capabilities called against a live 7.58 system: **ten answer, five do
+not**. Worst is `check_boundaries`, which reports CLEAN with zero dependencies
+for a package the CLI finds three boundary crossings in — wrong in the
+reassuring direction. `analyze_call_graph` returns two nodes for twenty-seven
+edges; `references` returns 56,000 characters and cannot be used by the agent it
+is for. Two more (`object_structure`, `where_used_config`) failed against a
+server process older than the release and **must be rechecked before anything is
+spent on them**.
+
+Two findings outrank the defects. The previous inventory listed thirteen
+capabilities; the router dispatches fifteen, so a sweep of the list could not
+reach `trace_execution` or `compare_call_graphs` — and did not. And a sweep must
+name the build it exercised, because a long-lived server keeps the image it
+started with and the answer looks identical either way.
+
+**Open question:** build the sweep as a command (`vsp compat` already has the
+shape — checks, report, JSON, two-system comparison), so "does this work" is
+answered by a transcript instead of a belief?
 
 **The audit of 2026-08-22** — [002-truthfulness-sprint](2026-08-22-002-truthfulness-sprint.md).
 181 promises inventoried, 134 verified, 68 overstated or unverifiable. Tool
