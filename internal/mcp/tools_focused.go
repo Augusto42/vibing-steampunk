@@ -5,6 +5,12 @@ package mcp
 // focusedToolSet returns the set of tools enabled in focused mode (81+ essential tools).
 func focusedToolSet() map[string]bool {
 	return map[string]bool{
+		// The universal router. It is on the whitelist rather than special-cased
+		// so that focused mode reaches the analyze surface — thirty-eight types
+		// that are routed through SAP() and registered as tools nowhere — and so
+		// that a deployment can still switch it off by name like anything else.
+		"SAP": true,
+
 		// Unified tools (2)
 		"GetSource":   true,
 		"WriteSource": true,

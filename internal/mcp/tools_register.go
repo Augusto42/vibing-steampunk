@@ -27,7 +27,7 @@ import (
 //   - If tool is explicitly enabled (true), it WILL be registered (overrides focused mode)
 //   - If tool is not in config, mode/disabledGroups rules apply
 func (s *Server) registerTools(mode string, disabledGroups string, toolsConfig map[string]bool) {
-	// Hyperfocused mode: single universal SAP tool
+	// Hyperfocused mode: the universal tool, and nothing else.
 	if mode == "hyperfocused" {
 		s.registerUniversalTool()
 		return
@@ -63,6 +63,22 @@ func (s *Server) registerTools(mode string, disabledGroups string, toolsConfig m
 			return true // Expert mode: register all tools (except disabled)
 		}
 		return focusedTools[toolName] // Focused mode: only whitelisted tools (except disabled)
+	}
+
+	// The universal tool is registered in every mode, not only hyperfocused.
+	//
+	// It used to be hyperfocused-only, which meant an agent in focused or
+	// expert could not reach a single one of the thirty-eight `analyze` types:
+	// eight analysis handlers, every post-mortem type and every AMDP target are
+	// routed through SAP() and registered as tools nowhere. Two of the three
+	// modes advertised a capability surface that was missing a third of itself,
+	// and nothing said so — the same disease as a tool whitelisted behind a
+	// registration function nobody calls.
+	//
+	// It goes through shouldRegister like everything else, so a deployment that
+	// wants it gone can still turn it off by name.
+	if shouldRegister("SAP") {
+		s.registerUniversalTool()
 	}
 
 	// Register all tools
