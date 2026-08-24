@@ -51,7 +51,7 @@ EXE=$(if $(filter windows,$(CURRENT_OS)),.exe,)
 LOCAL_BINARY=$(BINARY_NAME)-$(CURRENT_OS)-$(CURRENT_ARCH)$(EXE)
 
 .PHONY: all build clean test lint fmt deps tidy help install install-user link local-alias run
-.PHONY: build-all build-all-all build-linux build-darwin build-windows sso-helper
+.PHONY: build-all build-all-all build-linux build-darwin build-windows build-win sso-helper
 .PHONY: deploy-windows sync-embedded release refresh-deps fetch-deps check-deps
 
 all: deps lint test build
@@ -132,18 +132,42 @@ build-windows: ## Build for Windows (amd64, arm64, 386)
 		GOOS=windows GOARCH=$$arch $(GOBUILD) $(LDFLAGS) -o $$output $(CMD_DIR) || exit 1; \
 	done
 
-# WSL deployment directory
-WINDOWS_DEPLOY_DIR=/mnt/c/bin/vibing-steampunk
+# WSL deployment directory. Overridable:
+#   make deploy-windows WINDOWS_DEPLOY_DIR=/mnt/c/tools
+WINDOWS_DEPLOY_DIR ?= /mnt/c/bin
 
-deploy-windows: ## Build Windows amd64 and deploy to /mnt/c/bin/vibing-steampunk/
+build-win: build-windows ## Alias for build-windows
+
+deploy-windows: ## Build vsp.exe + vsp-sso.exe (amd64) and copy both to $(WINDOWS_DEPLOY_DIR)
 	@mkdir -p $(BUILD_DIR)
-	@echo "Building Windows amd64 binary..."
-	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_DIR)
+	@echo "Building windows/amd64..."
+	@GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_DIR)
+	@GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(SSO_HELPER) $(SSO_HELPER_DIR)
 	@mkdir -p $(WINDOWS_DEPLOY_DIR)
-	@echo "Deploying to $(WINDOWS_DEPLOY_DIR)..."
-	cp $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe
-	@echo "Deployed: $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe"
-	@ls -lh $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe
+	@# Both binaries go, not just vsp. FindSSOHelper looks beside the running
+	@# executable, so a vsp.exe deployed alone cannot do browser SSO at all —
+	@# and the failure surfaces later, as a capture that cannot start.
+	@# A running .exe cannot be overwritten on a Windows mount, so say which
+	@# one is held rather than leaving a half-finished deploy.
+	@for f in $(BINARY_NAME).exe vsp-sso.exe; do \
+		src=$(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe; \
+		[ "$$f" = "vsp-sso.exe" ] && src=$(SSO_HELPER); \
+		cp "$$src" "$(WINDOWS_DEPLOY_DIR)/$$f" || { \
+			echo "could not write $(WINDOWS_DEPLOY_DIR)/$$f — is it running on the Windows side?"; \
+			exit 1; }; \
+	done
+	@# Prove what landed. A silently mis-targeted cross-compile is the one
+	@# failure this target could otherwise hand on without noticing.
+	@echo
+	@for f in $(BINARY_NAME).exe vsp-sso.exe; do \
+		printf '  %-14s ' "$$f"; \
+		file -b "$(WINDOWS_DEPLOY_DIR)/$$f" | cut -d, -f1-2; \
+	done
+	@echo
+	@ls -lh $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe $(WINDOWS_DEPLOY_DIR)/vsp-sso.exe
+	@echo
+	@# printf, not echo: echo eats the backslash in a Windows path and prints C:in.
+	@printf 'On the Windows side: %s\n' "$$(wslpath -w $(WINDOWS_DEPLOY_DIR) 2>/dev/null || echo $(WINDOWS_DEPLOY_DIR))"
 
 sync-embedded: build ## Export $ZADT_VSP from SAP to embedded/abap/ (requires SAP_* env vars)
 	@echo "Exporting ZADT_VSP package from SAP..."
