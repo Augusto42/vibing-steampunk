@@ -37,6 +37,15 @@ func ExtractDepsFromSource(source string, sourceNodeID string) []*Edge {
 		}
 
 		extracted := extractFromStatement(stmt, sourceNodeID)
+		// Stamped in one place rather than in fifteen extractors: every edge
+		// from source knows where in the source it came from.
+		if len(stmt.Tokens) > 0 {
+			for _, e := range extracted {
+				if e.Line == 0 {
+					e.Line = stmt.Tokens[0].Row
+				}
+			}
+		}
 		edges = append(edges, extracted...)
 	}
 
@@ -75,6 +84,11 @@ func extractFromStatement(stmt abaplint.Statement, sourceNodeID string) []*Edge 
 		return extractClassDef(toks, sourceNodeID)
 	case "Call":
 		return extractMethodCall(toks, sourceNodeID)
+	case "MethodDef":
+		// A signature names types as well as exceptions: IMPORTING io TYPE REF
+		// TO zcl_x is a dependency of the class whether or not any line uses it.
+		return append(extractTypeRef(toks, sourceNodeID),
+			extractExceptionList(toks, sourceNodeID, "RAISING", "")...)
 	case "Move":
 		// x = zcl_y=>method( ). Modern ABAP is written this way, and this
 		// parser saw none of it: only a bare CALL was classified as a Call, so
@@ -82,14 +96,15 @@ func extractFromStatement(stmt abaplint.Statement, sourceNodeID string) []*Edge 
 		// against the other parser in this repo on one real class, that was
 		// three of nine dependencies missing — and the two parsers are reached
 		// by two capabilities that are supposed to agree.
-		return extractStaticSelectors(toks, sourceNodeID)
+		// NEW zcl_x( ) instantiates, which is a dependency of the same weight
+		// as calling it. Both shapes appear on the right of an assignment and
+		// neither was seen.
+		return append(extractStaticSelectors(toks, sourceNodeID),
+			extractNewOperator(toks, sourceNodeID)...)
 	case "Catch":
 		// The exception classes a block handles are dependencies of it.
 		return extractExceptionList(toks, sourceNodeID, "CATCH", "INTO")
-	case "MethodDef":
-		// ... RAISING zcx_something: declared in the signature, so the class
-		// depends on it whether or not any line raises one.
-		return extractExceptionList(toks, sourceNodeID, "RAISING", "")
+
 	case "Raise":
 		return extractRaise(toks, sourceNodeID)
 	case "CallTransaction":
@@ -128,6 +143,32 @@ func extractStaticSelectors(toks []abaplint.Token, from string) []*Edge {
 			Kind:      EdgeCalls,
 			Source:    SourceParser,
 			RefDetail: "STATIC:" + name,
+		})
+	}
+	return edges
+}
+
+// extractNewOperator reads the class from NEW zcl_x( ). The token after NEW is
+// the class unless it is an opening parenthesis, which is NEW #( ) — the type
+// inferred from context, and inferring it here would be guessing.
+func extractNewOperator(toks []abaplint.Token, from string) []*Edge {
+	var edges []*Edge
+	seen := map[string]bool{}
+	for i := 0; i+1 < len(toks); i++ {
+		if !strings.EqualFold(toks[i].Str, "NEW") {
+			continue
+		}
+		name := strings.ToUpper(strings.TrimSpace(toks[i+1].Str))
+		if name == "" || name == "#" || !isIdentifier(name) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		edges = append(edges, &Edge{
+			From:      from,
+			To:        NodeID(guessTypeFromName(name), name),
+			Kind:      EdgeCalls,
+			Source:    SourceParser,
+			RefDetail: "NEW:" + name,
 		})
 	}
 	return edges

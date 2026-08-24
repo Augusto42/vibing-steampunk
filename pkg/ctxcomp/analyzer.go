@@ -5,17 +5,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/oisee/vibing-steampunk/pkg/graph"
 )
 
 // AnalysisLayer identifies which analysis method found a dependency.
 type AnalysisLayer int
 
 const (
-	LayerRegex    AnalysisLayer = iota // 3b: Go regex (ctxcomp) — filesystem, fastest
-	LayerParser                        // 3:  abaplint parser — filesystem or SAP, deep
-	LayerScan                          // 2:  SCAN ABAP-SOURCE — SAP kernel tokenizer
-	LayerCross                         // 1b: CROSS/WBCROSSGT — SAP index, instant
-	LayerWhereUsed                     // 1:  ADT Where-Used — SAP full cross-ref
+	LayerRegex     AnalysisLayer = iota // 3b: Go regex (ctxcomp) — filesystem, fastest
+	LayerParser                         // 3:  abaplint parser — filesystem or SAP, deep
+	LayerScan                           // 2:  SCAN ABAP-SOURCE — SAP kernel tokenizer
+	LayerCross                          // 1b: CROSS/WBCROSSGT — SAP index, instant
+	LayerWhereUsed                      // 1:  ADT Where-Used — SAP full cross-ref
 )
 
 func (l AnalysisLayer) String() string {
@@ -47,13 +49,13 @@ type AnalyzedDep struct {
 
 // AnalysisResult holds the combined output.
 type AnalysisResult struct {
-	ObjectName    string
-	TotalLines    int
-	Dependencies  []AnalyzedDep
-	TrueDeps      int // confirmed by 2+ layers or high confidence
+	ObjectName     string
+	TotalLines     int
+	Dependencies   []AnalyzedDep
+	TrueDeps       int // confirmed by 2+ layers or high confidence
 	FalsePositives int
-	Layers        []AnalysisLayer // which layers were used
-	Duration      time.Duration
+	Layers         []AnalysisLayer // which layers were used
+	Duration       time.Duration
 	LayerDurations map[AnalysisLayer]time.Duration
 }
 
@@ -78,13 +80,14 @@ type ScanToken struct {
 // Analyzer combines all layers for comprehensive code intelligence.
 //
 // Confidence model:
-//   1.0  — parser + SAP layer (scan or cross) agree
-//   0.95 — parser + regex agree (no SAP needed)
-//   0.9  — parser only (authoritative — reads actual source)
-//   0.85 — SCAN ABAP-SOURCE only (SAP kernel, reliable)
-//   0.8  — CROSS index + regex agree
-//   0.6  — CROSS index only (may be stale — only updated on activation)
-//   0.3  — regex only (likely false positive — found in string/comment)
+//
+//	1.0  — parser + SAP layer (scan or cross) agree
+//	0.95 — parser + regex agree (no SAP needed)
+//	0.9  — parser only (authoritative — reads actual source)
+//	0.85 — SCAN ABAP-SOURCE only (SAP kernel, reliable)
+//	0.8  — CROSS index + regex agree
+//	0.6  — CROSS index only (may be stale — only updated on activation)
+//	0.3  — regex only (likely false positive — found in string/comment)
 //
 // Key insight: CROSS/WBCROSSGT tables can be stale (inactive objects,
 // $TMP, unactivated changes). The abaplint parser is the real-time
@@ -121,10 +124,20 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		addOrMerge(merged, d.Name, d.Kind, d.Line, LayerRegex)
 	}
 
-	// Layer 3: Parser-based (runs in Go — simulate by checking token context)
-	// Uses the same regex scan but validates against string/comment patterns
+	// Layer 3: the ABAP statement parser.
+	//
+	// This layer was named for the parser and did not use it: it ran the same
+	// regex again with string and comment filtering, and the comment said
+	// "simulate". That made the corroboration below a fiction — an answer
+	// marked found_by [regex, parser] told a reader two independent analyses
+	// agreed, when it was one analysis run twice and filtered once.
+	//
+	// It is the parser now. Measured on one real class before the change, the
+	// two disagreed by three dependencies out of nine; the parser also sees
+	// what a regex cannot — a static call on the right of an assignment, the
+	// exception classes in a CATCH, the RAISING in a signature.
 	t0 = time.Now()
-	parserDeps := extractWithValidation(source)
+	parserDeps := parserLayerDeps(source, objectName)
 	result.LayerDurations[LayerParser] = time.Since(t0)
 	result.Layers = append(result.Layers, LayerParser)
 
@@ -195,7 +208,7 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		case hasCross && hasRegex:
 			dep.Confidence = 0.8 // CROSS index + regex agree
 		case hasCross:
-			dep.Confidence = 0.6 // CROSS only — might be stale but notable
+			dep.Confidence = 0.6  // CROSS only — might be stale but notable
 			dep.InComment = false // not a false positive, just from index
 		case hasRegex:
 			dep.Confidence = 0.3 // regex only — likely false positive
@@ -232,6 +245,49 @@ type parsedDep struct {
 	name string
 	kind DependencyKind
 	line int
+}
+
+// parserLayerDeps runs the shared statement parser and speaks its answer in the
+// terms this package merges in.
+//
+// It is deliberately a translation and not a second implementation. The reason
+// this layer had its own extraction at all was that pkg/graph carried no line
+// numbers; the lexer always knew them and nothing asked, so the fix was one
+// field there rather than a parser here.
+func parserLayerDeps(source, objectName string) []parsedDep {
+	name := strings.ToUpper(strings.TrimSpace(objectName))
+	if name == "" {
+		name = "SOURCE"
+	}
+	var out []parsedDep
+	seen := map[string]bool{}
+	for _, e := range graph.ExtractDepsFromSource(source, graph.NodeID("CLAS", name)) {
+		parts := strings.SplitN(e.To, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		kind, target := parts[0], strings.ToUpper(parts[1])
+		if target == "" || target == name || seen[target] {
+			continue
+		}
+		seen[target] = true
+		out = append(out, parsedDep{name: target, kind: dependencyKindOf(kind), line: e.Line})
+	}
+	return out
+}
+
+// dependencyKindOf maps a graph node type to the three kinds this package
+// distinguishes. Anything else is a class as far as a contract lookup is
+// concerned, and guessing more precisely would be inventing.
+func dependencyKindOf(nodeType string) DependencyKind {
+	switch strings.ToUpper(nodeType) {
+	case "INTF":
+		return KindInterface
+	case "FUGR", "FUNC":
+		return KindFunction
+	default:
+		return KindClass
+	}
 }
 
 // extractWithValidation does regex extraction but skips matches inside strings and comments.
