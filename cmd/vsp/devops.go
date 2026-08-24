@@ -209,10 +209,20 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 	// Analyze crossings
 	crossReport := graph.AnalyzeCrossings(g, scope, nil)
 
-	// The caveat goes to stderr rather than into the report: this command
-	// writes DOT, GraphML and JSON to stdout, and a sentence in the middle of
-	// those is not a caveat, it is a parse error. stderr already carries the
-	// per-object WARN lines this summarises.
+	// The gap goes into the report as data, not as a sentence appended to it.
+	//
+	// It used to go to stderr only, on the reasoning that this command writes
+	// DOT, GraphML and JSON to stdout and prose in the middle of those is a
+	// parse error rather than a caveat. That reasoning is right about the
+	// machine formats and wrong about the text one, which is what a person
+	// reads and what `> report.txt` captures: a package where 53 of 167 objects
+	// answered 404 printed "No crossings found." with every failure on the
+	// other stream.
+	crossReport.SourceAttempted = sourceBearing
+	crossReport.SourceRead = sourceBearing - len(missed)
+	for _, m := range missed {
+		crossReport.Unreadable = append(crossReport.Unreadable, m.Object+": "+m.Reason)
+	}
 	if note := adt.UnsearchedNote(missed, sourceBearing+len(missed), "object"); note != "" {
 		fmt.Fprintln(os.Stderr, note)
 	}
@@ -292,11 +302,22 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 }
 
 func printCrossingsText(report *graph.CrossingReport) {
-	fmt.Printf("Boundaries: %s (%d packages, %d objects scanned)\n\n",
+	fmt.Printf("Boundaries: %s (%d packages, %d objects in the graph)\n\n",
 		report.RootPackage, report.PackagesScanned, report.ObjectsScanned)
 
+	// Above the verdict, not below it. A reader who stops at "No crossings
+	// found" has to have seen this first, or they have read a clean bill over a
+	// package that was read in part.
+	if caveat := report.Caveat(); caveat != "" {
+		fmt.Printf("%s\n\n", caveat)
+	}
+
 	if len(report.Entries) == 0 {
-		fmt.Println("No crossings found.")
+		if report.Complete() {
+			fmt.Println("No crossings found.")
+		} else {
+			fmt.Println("No crossings found in what could be read.")
+		}
 		return
 	}
 
