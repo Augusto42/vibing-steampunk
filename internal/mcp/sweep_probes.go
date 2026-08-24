@@ -218,6 +218,14 @@ func postMortemProbes() []Probe {
 			EmptyIsFine: true,
 		},
 		{
+			ID: "pm.list_sql_traces", Capability: "analyze type=list_sql_traces",
+			Why:    "the ST05 trace directory; unprobed until its sibling turned out to be dead",
+			Action: "analyze", Params: map[string]any{"type": "list_sql_traces"},
+			// A quiet system genuinely has no traces. What this catches is the
+			// 406 that made the call fail whatever the system held.
+			EmptyIsFine: true,
+		},
+		{
 			ID: "pm.sql_trace_state", Capability: "analyze type=sql_trace_state",
 			Why:    "ST05 state always has an answer, on or off",
 			Action: "analyze", Params: map[string]any{"type": "sql_trace_state"},

@@ -34,12 +34,29 @@ func (s *Server) routeSQLTraceAction(ctx context.Context, action, objectType, ob
 // --- SQL Trace (ST05) Handlers ---
 
 func (s *Server) handleGetSQLTraceState(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	state, err := s.adtClient.GetSQLTraceState(ctx)
+	instances, err := s.adtClient.GetSQLTraceState(ctx)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to get SQL trace state: %v", err)), nil
 	}
 
-	result, _ := json.MarshalIndent(state, "", "  ")
+	// The resource answers per application server instance and covers eight
+	// trace types, of which SQL is one. A single boolean was the old model and
+	// it could not have been right on any system with more than one instance.
+	anyOn := false
+	for i := range instances {
+		if instances[i].Active() {
+			anyOn = true
+		}
+	}
+	answer := map[string]any{
+		"instances":     instances,
+		"anyTraceOn":    anyOn,
+		"instanceCount": len(instances),
+	}
+	if len(instances) == 0 {
+		answer["note"] = "the system reported no application server instances, which is not the same as tracing being off"
+	}
+	result, _ := json.MarshalIndent(answer, "", "  ")
 	return mcp.NewToolResultText(string(result)), nil
 }
 
@@ -54,11 +71,24 @@ func (s *Server) handleListSQLTraces(ctx context.Context, request mcp.CallToolRe
 		maxResults = int(max)
 	}
 
-	traces, err := s.adtClient.ListSQLTraces(ctx, user, maxResults)
+	dir, err := s.adtClient.ListSQLTraces(ctx, user, maxResults)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to list SQL traces: %v", err)), nil
 	}
 
-	result, _ := json.MarshalIndent(traces, "", "  ")
+	answer := map[string]any{
+		"entries": dir.Entries,
+		"total":   len(dir.Entries),
+	}
+	if len(dir.Entries) == 0 && dir.AnalysisURL != "" {
+		// Not "no traces". The resource on this release lists none and points
+		// at the web application instead, and saying so is the difference
+		// between a fact about the system and a fact about the API.
+		answer["note"] = "this release does not list trace files through the ADT directory; " +
+			"it returns a link to the trace analysis application instead. " +
+			"An empty list here says nothing about whether traces exist."
+		answer["analysisUrl"] = dir.AnalysisURL
+	}
+	result, _ := json.MarshalIndent(answer, "", "  ")
 	return mcp.NewToolResultText(string(result)), nil
 }

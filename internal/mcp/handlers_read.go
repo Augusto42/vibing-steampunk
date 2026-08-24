@@ -84,25 +84,44 @@ func (s *Server) routeReadAction(ctx context.Context, action, objectType, object
 	}
 
 	if action == "query" {
+		// `sql` is what the CLI flag is called and what a caller writes first;
+		// accepting only `sql_query` sent that call down the chain to "no
+		// handler found for action=query", which is not true of any build.
+		sqlQuery := firstParam(params, "sql_query", "sql", "query")
 		switch objectType {
 		case "TABL_CONTENTS":
 			args := map[string]any{"table_name": objectName}
 			if v, ok := getFloatParam(params, "max_rows"); ok {
 				args["max_rows"] = v
 			}
-			if v := getStringParam(params, "sql_query"); v != "" {
-				args["sql_query"] = v
+			if sqlQuery != "" {
+				args["sql_query"] = sqlQuery
 			}
 			return s.callHandler(ctx, s.handleGetTableContents, args)
 		case "SQL", "":
-			if sqlQuery := getStringParam(params, "sql_query"); sqlQuery != "" {
+			if sqlQuery != "" {
 				args := map[string]any{"sql_query": sqlQuery}
 				if v, ok := getFloatParam(params, "max_rows"); ok {
 					args["max_rows"] = v
 				}
 				return s.callHandler(ctx, s.handleRunQuery, args)
 			}
+			// A table named as the target, with no SQL, is the other thing a
+			// caller plainly means by "query TABL X".
+			if objectName != "" {
+				args := map[string]any{"table_name": objectName}
+				if v, ok := getFloatParam(params, "max_rows"); ok {
+					args["max_rows"] = v
+				}
+				return s.callHandler(ctx, s.handleGetTableContents, args)
+			}
 		}
+		// The action was recognised. Saying so is the whole point: the chain
+		// would otherwise report that action="query" does not exist.
+		return needParams("query", params,
+			[]string{"sql_query (or sql)", "target=\"TABL_CONTENTS <table>\""},
+			`SAP(action="query", params={"sql": "SELECT * FROM T000"})
+  SAP(action="query", target="TABL_CONTENTS T000", params={"max_rows": 50})`), true, nil
 	}
 
 	return nil, false, nil
@@ -429,4 +448,3 @@ func (s *Server) handleGetAPIReleaseState(ctx context.Context, request mcp.CallT
 	result, _ := json.MarshalIndent(state, "", "  ")
 	return mcp.NewToolResultText(string(result)), nil
 }
-
