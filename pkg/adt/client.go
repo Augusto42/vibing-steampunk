@@ -1405,7 +1405,24 @@ type CallGraphEdge struct {
 	CallerName string `json:"caller_name"`
 	CalleeURI  string `json:"callee_uri"`
 	CalleeName string `json:"callee_name"`
+	// CalleeKind is what the cross-reference row said the callee is — method,
+	// function module, type, data. It decides whether an edge is something that
+	// could execute, which a coverage figure has to know: a reference to a type
+	// is not a path anything could take.
+	CalleeKind string `json:"callee_kind,omitempty"`
 	Line       int    `json:"line,omitempty"`
+}
+
+// IsExecutableKind reports whether a callee kind is something a run could
+// actually reach. The vocabulary is wbCrossKind's and crossKind's, kept in one
+// place so a coverage figure and a callee list cannot drift apart.
+func IsExecutableKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "method", "function module", "report", "transaction", "subroutine", "program", "dialog module":
+		return true
+	default:
+		return false
+	}
 }
 
 // FlattenCallGraph converts a hierarchical call graph to a flat list of edges.
@@ -1423,6 +1440,7 @@ func FlattenCallGraph(root *CallGraphNode) []CallGraphEdge {
 				CallerName: parent.Name,
 				CalleeURI:  child.URI,
 				CalleeName: child.Name,
+				CalleeKind: child.Type,
 				Line:       child.Line,
 			})
 			childCopy := child
@@ -1454,13 +1472,25 @@ func AnalyzeCallGraph(root *CallGraphNode) *CallGraphStats {
 	seen := make(map[string]bool)
 	var maxDepth int
 
+	// Keyed by identity, not by URI. The callee side builds children from
+	// cross-reference rows, which name an object but carry no ADT path, so every
+	// child arrived with URI "" — and a dedup on that key folded all of them
+	// into one. The result was a graph reporting two nodes beside its own list
+	// of twenty-seven edges, in an answer that showed both.
+	key := func(n *CallGraphNode) string {
+		if n.URI != "" {
+			return "uri:" + n.URI
+		}
+		return "name:" + n.Type + ":" + n.Name
+	}
+
 	var traverse func(node *CallGraphNode, depth int)
 	traverse = func(node *CallGraphNode, depth int) {
 		if depth > maxDepth {
 			maxDepth = depth
 		}
-		if !seen[node.URI] {
-			seen[node.URI] = true
+		if k := key(node); !seen[k] {
+			seen[k] = true
 			stats.TotalNodes++
 			stats.NodesByType[node.Type]++
 			stats.UniqueNodes = append(stats.UniqueNodes, node.Name)
@@ -1478,10 +1508,17 @@ func AnalyzeCallGraph(root *CallGraphNode) *CallGraphStats {
 
 // CallGraphComparison compares static and actual call graphs.
 type CallGraphComparison struct {
-	CommonEdges   []CallGraphEdge `json:"common_edges"`   // In both static and actual
-	StaticOnly    []CallGraphEdge `json:"static_only"`    // In static but not executed
-	ActualOnly    []CallGraphEdge `json:"actual_only"`    // Executed but not in static (dynamic calls)
-	CoverageRatio float64         `json:"coverage_ratio"` // Actual/Static ratio
+	CommonEdges []CallGraphEdge `json:"common_edges"` // In both static and actual
+	StaticOnly  []CallGraphEdge `json:"static_only"`  // In static but not executed
+	ActualOnly  []CallGraphEdge `json:"actual_only"`  // Executed but not in static (dynamic calls)
+	// CoverageRatio is executed invocations over recorded invocations, or -1
+	// when nothing callable was recorded at all — which is not the same as
+	// nothing having run.
+	CoverageRatio float64 `json:"coverage_ratio"`
+	// ExecutableEdges is how many of the static edges were invocations rather
+	// than type or data references. The denominator, stated so a reader can
+	// see what the ratio is of.
+	ExecutableEdges int `json:"executable_edges"`
 }
 
 // CompareCallGraphs compares a static call graph with an actual execution trace.
@@ -1518,8 +1555,29 @@ func CompareCallGraphs(staticEdges, actualEdges []CallGraphEdge) *CallGraphCompa
 	}
 
 	// Coverage ratio
-	if len(staticEdges) > 0 {
-		comp.CoverageRatio = float64(len(comp.CommonEdges)) / float64(len(staticEdges))
+	// Only the edges something could execute count towards coverage. Most of a
+	// class's static edges are type and data references — ABAP_BOOL, SYST,
+	// TADIR — and counting those as paths that were never taken produced
+	// figures like 0.037 for a run that exercised everything callable.
+	executable := 0
+	for _, e := range staticEdges {
+		if IsExecutableKind(e.CalleeKind) {
+			executable++
+		}
+	}
+	comp.ExecutableEdges = executable
+	commonExecutable := 0
+	for _, e := range comp.CommonEdges {
+		if IsExecutableKind(e.CalleeKind) {
+			commonExecutable++
+		}
+	}
+	if executable > 0 {
+		comp.CoverageRatio = float64(commonExecutable) / float64(executable)
+	} else if len(staticEdges) > 0 {
+		// Nothing callable was recorded, so there is no coverage to report. A
+		// zero here would read as "none of it ran".
+		comp.CoverageRatio = -1
 	}
 
 	return comp
