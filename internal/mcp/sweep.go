@@ -417,14 +417,45 @@ func SweepReach() []SweepFinding {
 		})
 	}
 
-	// The universal tool is the only way an agent in hyperfocused mode reaches
-	// anything. If it is not registered there, nothing is.
-	hyper := NewServer(&Config{BaseURL: "https://example.invalid", Mode: "hyperfocused"})
-	if len(hyper.RegisteredTools()) == 0 {
-		out = append(out, SweepFinding{
-			ID: "reach.hyperfocused", Capability: "SAP", Verdict: VerdictUnreachable,
-			Detail: "hyperfocused mode registers no tool at all",
-		})
+	// Every mode must be able to reach the analyze surface.
+	//
+	// This check exists because the reach pass did not catch the defect it is
+	// named after. `SAP()` was registered only in hyperfocused, and the
+	// thirty-eight analyze types are routed through it and registered as tools
+	// nowhere — so two of the three modes advertised a capability surface
+	// missing a third of itself, and the sweep reported everything reachable.
+	//
+	// The old check asked "is every whitelisted name registered somewhere",
+	// which is a question about names. This asks whether a capability can be
+	// reached from a mode that claims to offer it, which is the question a user
+	// has. A sweep blind to the difference is how the gap survived being swept.
+	for _, mode := range []string{"hyperfocused", "focused", "expert"} {
+		srv := NewServer(&Config{BaseURL: "https://example.invalid", Mode: mode})
+		tools := srv.RegisteredTools()
+		if len(tools) == 0 {
+			out = append(out, SweepFinding{
+				ID: "reach.mode." + mode, Capability: "mode " + mode, Verdict: VerdictUnreachable,
+				Detail: "this mode registers no tool at all",
+			})
+			continue
+		}
+		universal := false
+		for _, n := range tools {
+			if n == "SAP" {
+				universal = true
+				break
+			}
+		}
+		if !universal {
+			out = append(out, SweepFinding{
+				ID:         "reach.analyze." + mode,
+				Capability: "the analyze surface in " + mode + " mode",
+				Why:        "every analyze type is routed through SAP() and registered as a tool nowhere",
+				Verdict:    VerdictUnreachable,
+				Detail: fmt.Sprintf("%s registers %d tools and not SAP, so none of the %d analyze types can be called from it",
+					mode, len(tools), len(srv.AnalyzeTypes())),
+			})
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
