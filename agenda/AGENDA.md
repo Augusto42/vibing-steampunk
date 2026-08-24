@@ -14,6 +14,29 @@ on this repo from other machines. Last updated 2026-08-24 by **vsp-amdp-c1**.
 
 ## Needs a decision
 
+**Four gaps reported by a neighbouring project** (an IRC server on ABAP Push
+Channel, built against `$ZADT_VSP` as reference). Reproducible on a4h, reported
+2026-08-24, none blocking — workarounds exist for all but the last:
+
+1. `create TABL` adds the client field itself but does not reject a `MANDT` the
+   caller also passed, producing a table with two client fields that activates
+   and looks correct. An error is wanted, not silent precedence — a silent wrong
+   result is indistinguishable from a right one.
+2. `edit` does not accept TABL, though the low-level path exists and works:
+   LOCK → UPDATE_SOURCE on `/ddic/tables/<name>/source/main` → ACTIVATE → UNLOCK.
+   Registering the type in the high-level `edit` is the whole job.
+3. `create` does not know ABAP Channels (`SAPC`, `SAMC`, `DMON`). The recipe,
+   read out of abapGit's own object handlers: `CL_APC_APPLICATION_OBJ_DATA` /
+   `_OBJ_PERS` with structure `APC_APPLICATION_COMPLETE` and lock `E_APC_APPL`;
+   the AMC pair is the same shape. Sequence is `lock → corr_insert(package) →
+   set_data → save → unlock` through `IF_WB_OBJECT_PERSIST`. One implementation
+   closes the whole family.
+4. `query` and `grep` are listed among valid actions but answer "No handler
+   found for action=…" on the MCP surface. Both work on the CLI — used
+   repeatedly on 2026-08-24 — so this is a registration gap, not a lost
+   implementation. **Confirm against a freshly started server first**: the
+   reporter's process, like ours, may predate the build.
+
 **The graph surface, swept 2026-08-24** —
 [001-graph-surface-sweep](2026-08-24-001-graph-surface-sweep.md). All fifteen
 graph capabilities called against a live 7.58 system: **ten answer, five do
@@ -30,6 +53,13 @@ capabilities; the router dispatches fifteen, so a sweep of the list could not
 reach `trace_execution` or `compare_call_graphs` — and did not. And a sweep must
 name the build it exercised, because a long-lived server keeps the image it
 started with and the answer looks identical either way.
+
+**Status:** all five defects fixed the same night (`b3a3bbc`, `e678848`,
+`b1b4f29`, `84487ae`), plus two the sweep was not looking for (`62c4c8e`). The
+two failures marked for recheck were stale-process artefacts and needed no fix.
+`graph_stats` remains open as a scope question, not a bug: it analyses source
+handed to it and cannot be asked about a repository object, which its name does
+not suggest.
 
 **Open question:** build the sweep as a command (`vsp compat` already has the
 shape — checks, report, JSON, two-system comparison), so "does this work" is

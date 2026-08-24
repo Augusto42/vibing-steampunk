@@ -157,6 +157,36 @@ edges are type and data references — `ABAP_BOOL`, `SYST`, `TADIR`. A type
 reference is not a path anything could execute, so the ratio measures nothing.
 The `calls: true` flag that `callees` already carries is the fix.
 
+## What was done about it, the same night
+
+| finding | outcome |
+|---|---|
+| `check_boundaries` CLEAN on an unread package | fixed, `b3a3bbc` — three defects stacked, see below |
+| `trace_execution` silent | fixed, `e678848` |
+| `analyze_call_graph` miscounts | fixed, `b1b4f29` — dedup keyed on an empty URI |
+| `compare_call_graphs` ratio | fixed, `b1b4f29` — coverage over invocations only |
+| `references` unbounded | fixed, `84487ae` — scaffolding separated, capped, cap declared |
+| `object_structure` 404 | **no defect** — stale process; the replacement endpoint answers live |
+| `where_used_config` 400 | **no defect** — stale process; the `'DA'` query is not in the tree |
+| `graph_stats` source-only | **open** — a scope decision, not a bug |
+
+`check_boundaries` turned out to be three defects, each producing the same
+reassuring output. The package listing carries SAP's two-part codes (`CLAS/OC`)
+and the filter compared bare kinds, so every object was skipped before anything
+was read — which is why no "could not read" note appeared either: nothing was
+attempted. Under that, the read passed an empty object type to `GetSource`,
+which switches on it and has no branch for the empty string. And the verdict
+ignored `Unknown` entirely, though `classify` sends an unattributable reference
+there and never to `Violation`, so an unknown can only ever hide a violation.
+
+Two findings arrived that the sweep did not go looking for. Probing the
+dependency extractor with a snippet — rather than reading it — showed
+`CALL FUNCTION lv_fm_name` emitting a **static** edge to a function group named
+after the variable, an object that exists nowhere; and dynamic method calls
+(`CALL METHOD (lv_dyn)=>go`) classified and extracted by nobody. Fixed in
+`62c4c8e`. The first is the SHA-1 defect in another room: an invented answer
+rather than a missing one, and it propagates into the boundary verdict.
+
 ## Order
 
 1. `check_boundaries` — a false CLEAN is the only defect here that makes someone
