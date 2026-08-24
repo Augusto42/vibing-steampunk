@@ -960,6 +960,25 @@ func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objTy
 	return nil
 }
 
+// graphFromCross is the fallback, reached only when the good reader has already
+// failed. Two things are worth knowing before adding anything to it.
+//
+// It answers at object level. Upward it could do better: WBCROSSGTX.LONG_NAME
+// accepts LIKE despite being a STRG column — checked live on 7.58, and the
+// table exists on 7.50 too — so a search there yields the hashes under which
+// long names are stored in WBCROSSGT, and those rows are otherwise unreachable
+// by name. Their includes then decode to methods through DecodeMethodIncludes.
+// That was written and deleted rather than shipped, and the reason is the
+// second thing.
+//
+// Nobody knows how often this branch is taken. What is known is what happened
+// to it: usage_examples for function modules, SUBMIT and programs came through
+// here and returned nothing for its entire existence, because a CROSS query
+// asked for 'FU' in a C(1) column and the 400 was read as "no callers found".
+// A branch entered rarely rots unwatched. So enriching it puts more code where
+// nothing checks it — and if it ever seems worth doing, measure how often
+// execution actually lands here first, rather than assuming as this codebase
+// has now done three times in a day.
 func graphFromCross(ctx context.Context, client *adt.Client, name, objType, direction string) error {
 	// Build queries for BOTH cross-reference tables
 	// WBCROSSGT: OO references (classes, interfaces, methods, types)
