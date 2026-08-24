@@ -4,13 +4,90 @@ The living board. One file, kept current — not a dated series. Dated analyses
 live beside it as `agenda/YYYY-MM-DD-NNN-topic.md`.
 
 Written for whoever picks the work up next, including the other agents working
-on this repo from other machines. Last updated 2026-08-22 by **claude-mac-m2**.
+on this repo from other machines. Last updated 2026-08-24 by **wsl-claude**, after two days of work that the
+board had not caught up with.
 
 > Sanitize policy applies here like anywhere else in the tree: no live
 > hostnames, usernames, transport IDs or customer packages. Operational detail
 > with real identifiers belongs under `.local/` or `.private/`.
 
 ---
+
+## Where things stand — 2026-08-24
+
+Three releases in two days: **v2.43.0** (debugger cassettes, post-mortem),
+**v2.44.0** (AMDP fires, MCP parity), **v2.45.0** (AMDP with values, and a graph
+that was inventing object names).
+
+**The AMDP debugger works.** Over plain ADT, nothing installed on the server:
+breakpoints fire, stepping, statement-level traces, variable values, the whole
+scope at a stop, and the call stack with both the ABAP and the native line. This
+project spent months concluding it was impossible, through a Z service and a
+WebSocket protocol built to reach what the system was already offering. The one
+thing missing is table *contents*; the address is right and HANA's own `INIT`
+refuses it — state and next step are in `AMDPTableRows`.
+
+**The debugger is tested without a system.** `vsp adt debug --record` takes a
+cassette from a live run and the tests replay it, so `go test ./...` drives the
+real debugger with no SAP. Cassettes are 7.58 only, by the naming rule.
+
+**Ten features were found dead** — advertised and never working — plus one that
+was worse. Two classes, and they are not the same:
+
+- **Silence**: an error swallowed as an empty result. A dozen sites across CLI,
+  MCP and graph. Three were wrong *numbers*, not missing caveats — a health
+  report saying GOOD over a sweep that could not run, `SELF-CONSISTENT` over a
+  transport holding nothing, `trace unit` exiting zero while saying nobody ran.
+- **Invention**: `vsp graph callees` returned SHA-1 hashes **as the names of
+  referenced objects**, because a name too long for `CHAR(120)` is stored hashed
+  with the real one in `WBCROSSGTX`. Silence is a loss; invention is a
+  corruption. Only this one produced answers that were confidently false.
+
+Not one of them was visible by reading code. Each needed a live system.
+
+### The method that found them
+
+Worth more than the findings, and currently living only in reports:
+
+1. **Ask the system, do not read the catalogue.** Discovery lies both ways — a
+   resource absent from it answers 200, one present in it answers 400, and the
+   dump resources are listed nowhere at all.
+2. **Read the handler.** Five times out of five it answered in one request what
+   inference did not answer in several. Sharper form: *when SAP does something
+   in the kernel, look at what the same class reads from a table* — that is how
+   `TMDIR` was found after `GET_METHOD_BY_INCLUDE` turned out to be a
+   `SYSTEM-CALL`.
+3. **Read what the system already sent.** The AMDP stop event carried the
+   position, then the variables, then the call stack — three finds in one
+   document that had been in hand since the first trace.
+4. **Measure, do not reason.** Every time a rule was inferred from the examples
+   to hand it was wrong about the first case nobody tried: `'FU'` in a `C(1)`
+   column, a section-prefix list covering `U01` and missing `U27`.
+
+## Needs a decision — new
+
+**Turn the method into a command.** Ten dead features found by hand; the
+eleventh will ship the same way unless the sweep is automated. `vsp compat`
+already has the shape — checks, report, JSON, two-system diff. Extending it to
+walk the whole advertised surface is days, not weeks, and it closes the class
+permanently, on customer systems too. **This is the recommendation.**
+
+It composes with the other session's work: they are documenting the ten
+undocumented capabilities in a form a machine can check — not "shows callers"
+but "answers non-empty for an object that has callers, and says the query ran
+when it does not". Description without verification rots silently; verification
+without description does not know what a right answer is. Together: documentation
+that can fail.
+
+**The mode gap.** The universal `SAP()` tool exists only in hyperfocused mode,
+so agents in `focused` and `expert` cannot reach the seven post-mortem types or
+the four AMDP targets at all. Same disease: a capability that looks present and
+is not. A day, plus updating the pinned counts (1 / 101 / 146).
+
+**Breaking changes in minor versions.** v2.45.0 changed `(*adt.Client).Callees`
+and said so in its first paragraph rather than hiding it behind a compatible
+wrapper — the wrapper would have kept the defect reachable under the old name.
+There is no stated API stability promise; if one is wanted, now is the time.
 
 ## Needs a decision
 
@@ -19,8 +96,9 @@ on this repo from other machines. Last updated 2026-08-22 by **claude-mac-m2**.
 counts are corrected and pinned by a test; the rest is queued there, along with
 three open decisions: connect or delete gCTS (884 orphaned lines), what to do
 with `pkg/jseval`, `pkg/cache` and `pkg/ts2go` (no consumers), and
-`vsp install abapgit`, which cannot work because both embedded archives are
-0 bytes. Strategy recorded: debugger plus dynamic analysis, with a time-boxed
+`vsp install abapgit` — half corrected: `abapgit-standalone.zip` is 836 KB and
+real, `abapgit-full.zip` is still 0 bytes. And the question underneath has
+changed shape (see below). Strategy recorded: debugger plus dynamic analysis, with a time-boxed
 truthfulness pass first; open-abap-go parked with its reasoning kept.
 
 
@@ -83,8 +161,9 @@ main before pushing it — see the next section.
 
 ## Cross-machine coordination
 
-**`feat/function-module-edit` (`cf39e41`) is not pushed.** It exists only on the
-Windows/WSL machine. Meanwhile `583f042` landed here and covers the *create*
+**`feat/function-module-edit` is on `origin` now** — the claim below that it
+exists only on one machine is stale as of 2026-08-24. The ADT contract notes
+under it are still worth keeping. Meanwhile `583f042` landed here and covers the *create*
 path for function modules end to end. Before pushing:
 
 1. `git fetch origin && git rebase origin/main` — main has moved by four merges
@@ -163,6 +242,56 @@ flow. Same one-call treatment would suit it.
 Long-standing, unrelated to recent work.
 
 ---
+
+## The installer question, reshaped
+
+The board asked whether `vsp install abapgit` can be made to work. The shape of
+the question changed once the routing was checked on a live system.
+
+Only **two** things still need ZADT_VSP: **stateful RFC** (SOAP-RFC cannot hold
+a session) and **git**. Read, edit, debug, AMDP, table reads, module lists and
+transports are all plain ADT. AMDP left that list this week.
+
+And "git" is not really our package. `vsp copy` handles **six** object types
+natively — PROG, CLAS, INTF, DDLS, BDEF, SRVD — while the Z path handles
+whatever abapGit does, by delegating: `ZCL_VSP_GIT_SERVICE` calls
+`zcl_abapgit_objects=>supported_list( )`. So the dependency is **abapGit**, and
+our service is a bridge to it.
+
+That gives the bootstrap problem a hard edge the earlier note missed. The six
+native types include **PROG and CLAS**, and a program deploys to a bare system
+over plain ADT — verified twice this week, on two releases. So:
+
+- abapGit *standalone* can already be installed with zero Z code. It is one
+  report. But it exposes no global classes, so nothing can call it.
+- Therefore a lean receiver **must itself be a report or a class**. Not a
+  function group, not a package of objects — those cannot be installed by the
+  six, and a receiver that needs a receiver is the circle it was meant to break.
+
+**Step one, unstarted:** confirm a *class* deploys to a bare system the way a
+program does. Everything above rests on it and it is fifteen minutes. Nothing
+should be built before that is checked — building a bootstrap for a dependency
+whose shape we had wrong is how this note started.
+
+## Still open, smaller
+
+- **AMDP table contents.** Address right, HANA's `INIT` refuses. Untried: the
+  `tableHandle` the stop reports, which appears in none of that resource's
+  parameters and so may belong to another route.
+- **`WBCROSSGTI`** is wired only to *explain* an empty answer, not merged into
+  the data — deliberate, until someone decides what a merged list should mean.
+- **`WBCROSSGTX` decodes downward, not upward.** `graphFromCross` stays
+  object-level; `LONG_NAME` takes `LIKE` despite being `STRG`, recorded at the
+  function.
+- **7.50 coverage** for the newest work: the ST22 check in `execute`, `--impact`
+  where the dump detail resource is absent.
+- **gCTS** — parked, never checked at all.
+- **Three orphan packages** — `ts2go` archive, `jseval` extract, `cache`
+  connect. Decided, not executed.
+- **The article.** Material is now large and unusually concrete: self-repairing
+  SSO, RFC with no gateway, a debugger working on a release with no stack
+  resource, an AMDP breakpoint after months of "impossible", ten dead features,
+  and a tool that returned a hash and called it an object.
 
 ## Recently landed
 
