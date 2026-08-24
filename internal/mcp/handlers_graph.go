@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -1651,8 +1652,17 @@ func (s *Server) backfillUsagePackages(ctx context.Context, callers []graph.Call
 }
 
 // buildADTObjectURL constructs an ADT URL for an object by type and name.
+// buildADTObjectURL addresses a repository object.
+//
+// The name is percent-escaped, and that is not cosmetic. A namespaced object is
+// named /BOBF/CL_CONF_ADT_RESOURCE, with slashes inside the name; pasted into a
+// path unescaped it produces /sap/bc/adt/oo/classes//bobf/cl_… , where the
+// segment after the marker is empty. Every reader downstream then behaves as
+// though no object was named — `analyze type=callees` on any namespaced object
+// answered "this object has no name to look up", and had done since it shipped.
+// The rest of the codebase escapes here; this was the one place that did not.
 func buildADTObjectURL(objType, objName string) string {
-	name := strings.ToLower(objName)
+	name := url.PathEscape(strings.ToLower(objName))
 	switch objType {
 	case "CLAS":
 		return "/sap/bc/adt/oo/classes/" + name

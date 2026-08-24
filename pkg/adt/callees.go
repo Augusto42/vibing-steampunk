@@ -672,3 +672,17 @@ func describeCaller(caller ExposedCaller) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// CalleeTargetNameFromURI reports the object name a callee lookup would read
+// out of an object URI.
+//
+// Exported for the test that pins the namespace defect: the failure was that a
+// URI built from /BOBF/CL_X carried no name at all, and the only way to see it
+// without a live system is to read the name back out.
+func CalleeTargetNameFromURI(objectURI string) (string, error) {
+	target, err := calleeTargetFromURI(objectURI)
+	if err != nil {
+		return "", err
+	}
+	return target.Name, nil
+}

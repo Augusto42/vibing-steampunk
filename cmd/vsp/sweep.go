@@ -14,6 +14,7 @@ package main
 // is talking.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -81,6 +82,7 @@ func runSweep(cmd *cobra.Command, args []string) error {
 			System:       "(no system)",
 			Reach:        mcp.SweepReach(),
 			ReachChecked: mcp.ReachChecked(),
+			Build:        sweepBuild(),
 		}
 		if asJSON {
 			return emitJSON(report)
@@ -123,6 +125,8 @@ func runSweep(cmd *cobra.Command, args []string) error {
 		Progress: func(p mcp.Probe) { fmt.Fprintf(os.Stderr, "  %-28s %s\n", p.ID, p.Capability) },
 	})
 	report.Missed = missed
+	report.Build = sweepBuild()
+	report.Targets = targets
 
 	if asJSON {
 		if err := emitJSON(report); err != nil {
@@ -147,19 +151,31 @@ func sweepExit(report *mcp.SweepReport, strict bool) error {
 	return nil
 }
 
-// fillSweepTargets finds a program and a package to probe with when the caller
-// did not name them.
+// fillSweepTargets finds objects to probe with.
 //
-// The defaults for class, table, referenced and references are SAP-standard
-// objects present on every release, so they need no search. A program and a
-// package do: their names differ on every system, and probing with one that
-// does not exist would turn a 404 we caused into a finding about the product.
+// This is most of the value of the sweep, and it is where one can quietly
+// become useless. Ask for the callers of a class nobody calls and the empty
+// answer is true, the probe passes, and a dead capability stays dead.
+//
+// The inverse cost is worse and was paid on the first run: a target chosen for
+// convenience produced a "dead" verdict that was wrong. `CL_ABAP_TYPEDESCR`
+// exists on every system, so it looked like a safe default for the callee
+// probe — but WBCROSSGT holds no rows for its includes at all, so the parser
+// found dependencies in its source, the tables honestly had none, and the sweep
+// read the disagreement as a defect. Two routes that answer *different*
+// questions are not an oracle. A sweep that invents findings is the thing it
+// was built to catch.
+//
+// So the reference targets are resolved by asking the tables which object they
+// have rows for, rather than by naming one and hoping.
 func fillSweepTargets(cmd *cobra.Command, client *adt.Client, targets *mcp.SweepTargets) []adt.Unsearched {
 	var missed []adt.Unsearched
+	ctx := cmd.Context()
+
 	find := func(objType string, patterns ...string) string {
 		var lastErr error
 		for _, pattern := range patterns {
-			results, err := client.SearchObject(cmd.Context(), pattern, 100)
+			results, err := client.SearchObject(ctx, pattern, 100)
 			if err != nil {
 				lastErr = err
 				continue
@@ -179,10 +195,92 @@ func fillSweepTargets(cmd *cobra.Command, client *adt.Client, targets *mcp.Sweep
 	if targets.Program == "" {
 		targets.Program = find("PROG/P", "Z*", "R*")
 	}
+
+	// A package with no source-bearing object cannot answer a boundary
+	// question, and the handler correctly refuses to give it a verdict. Probing
+	// with one tests nothing and reads as a failure.
 	if targets.Package == "" {
-		targets.Package = find("DEVC/K", "Z*", "*")
+		if pkg, err := packageWithSource(ctx, client); err != nil {
+			missed = append(missed, adt.Unsearched{Object: "package with source", Reason: err.Error()})
+		} else {
+			targets.Package = pkg
+		}
+	}
+
+	// An object the cross-reference tables demonstrably have rows for. Only for
+	// such an object is an empty callee list impossible, which is the whole
+	// premise of that probe.
+	if !cmd.Flags().Changed("references") {
+		if obj, err := objectWithCrossReferences(ctx, client); err != nil {
+			missed = append(missed, adt.Unsearched{Object: "object with cross-references", Reason: err.Error()})
+			targets.References = ""
+		} else if obj != "" {
+			targets.References = obj
+		}
 	}
 	return missed
+}
+
+// packageWithSource returns a package that holds at least one class or program.
+func packageWithSource(ctx context.Context, client *adt.Client) (string, error) {
+	res, err := client.GetTableContents(ctx, "TADIR", 50,
+		"SELECT * FROM TADIR WHERE OBJECT = 'CLAS' AND DELFLAG = ''")
+	if err != nil {
+		return "", err
+	}
+	for _, row := range res.Rows {
+		if pkg, _ := row["DEVCLASS"].(string); pkg != "" && !strings.HasPrefix(pkg, "$") {
+			return pkg, nil
+		}
+	}
+	return "", fmt.Errorf("no package with a class was found in TADIR")
+}
+
+// objectWithCrossReferences returns the name of an object whose includes appear
+// in WBCROSSGT, so that "this object references nothing" is known to be false
+// before the question is put.
+func objectWithCrossReferences(ctx context.Context, client *adt.Client) (string, error) {
+	res, err := client.GetTableContents(ctx, "WBCROSSGT", 50, "")
+	if err != nil {
+		return "", err
+	}
+	for _, row := range res.Rows {
+		include, _ := row["INCLUDE"].(string)
+		if name := repositoryNameFromInclude(include); name != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("WBCROSSGT returned no include that names a repository object")
+}
+
+// repositoryNameFromInclude recovers the object name from an include name, or
+// returns empty when the include does not name one.
+//
+// A class include is the class name padded with '=' and a two-letter section:
+// CL_FOO=========================CP. Cutting at the first '=' is the whole
+// trick. The first version trimmed the padding *and* the section letters from
+// the right, which also ate real characters off names ending in those letters
+// — and handed the sweep "%_CCRMB", a generated include, as an object to ask
+// about. The handler refused it correctly and the sweep reported that refusal
+// as a defect in the handler. Garbage in, and the report blames the wrong side.
+func repositoryNameFromInclude(include string) string {
+	name := strings.TrimSpace(strings.Split(include, "=")[0])
+	if len(name) < 4 {
+		return ""
+	}
+	// Generated and internal includes are not repository objects: %_CCRMB,
+	// LZFOO$01, and anything the caller could not name in a query.
+	first := rune(name[0])
+	if first != '/' && !(first >= 'A' && first <= 'Z') {
+		return ""
+	}
+	for _, r := range name {
+		ok := (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '/'
+		if !ok {
+			return ""
+		}
+	}
+	return name
 }
 
 // sweepConfig supplies the settings that shape registration, and nothing about
@@ -195,4 +293,9 @@ func sweepConfig() *mcp.Config {
 	// affects only the reach pass's view of tool registration.
 	c.Mode = "expert"
 	return &c
+}
+
+// sweepBuild names the binary being exercised, for the report to carry.
+func sweepBuild() string {
+	return fmt.Sprintf("%s (commit %s, built %s)", Version, Commit, BuildDate)
 }

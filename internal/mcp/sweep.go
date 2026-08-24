@@ -243,8 +243,26 @@ type SweepReport struct {
 	Missed []adt.Unsearched `json:"missed,omitempty"`
 	// ReachChecked counts the names the offline pass examined, so that pass can
 	// state its own coverage too rather than borrowing the live pass's.
-	ReachChecked int  `json:"reachChecked"`
-	Live         bool `json:"live"`
+	ReachChecked int `json:"reachChecked"`
+	// Targets names the objects the probes were run against.
+	//
+	// Same reason as Build. A verdict is only as good as what it was asked
+	// about: "callees returned nothing" means one thing for an object the
+	// cross-reference tables have rows for and nothing at all for one they do
+	// not. A reader who cannot see the target cannot tell which report they
+	// are holding.
+	Targets SweepTargets `json:"targets"`
+	// Build names the binary that was exercised.
+	//
+	// This is not decoration. A sweep of fifteen capabilities was once run
+	// against an MCP server started the previous evening and nearly recorded as
+	// the state of the release: two of its "refusals" were ghosts of code that
+	// had already been fixed. The corollary bit from the other side on the same
+	// day — a neighbouring project dismissed a real defect, alive since
+	// January, as a stale image. A report that cannot say which build it
+	// exercised can be read either way, and both readings cost a night.
+	Build string `json:"build,omitempty"`
+	Live  bool   `json:"live"`
 }
 
 // --- the advertised surface ----------------------------------------------
@@ -529,7 +547,9 @@ func classifyError(text string) (Verdict, string) {
 	// A handler that names the parameter it wanted has read the call and
 	// answered it. Nothing is wrong with the capability; the probe asked
 	// badly, and saying so is what keeps the findings list worth reading.
-	case strings.Contains(low, "is required"),
+	case strings.Contains(low, "there is no verdict to give"),
+		strings.Contains(low, "no source-bearing objects"),
+		strings.Contains(low, "is required"),
 		strings.Contains(low, "are required"),
 		strings.Contains(low, "needs a target"),
 		strings.Contains(low, "provide '"),
@@ -689,6 +709,7 @@ func (r *SweepReport) Text() string {
 	b.WriteString("\nCoverage\n\n")
 	if !r.Live {
 		fmt.Fprintf(&b, "  %d advertised names checked for registration and routing\n", r.ReachChecked)
+		r.writeBuild(&b)
 		b.WriteString("  This pass cannot tell whether a reachable capability answers.\n")
 		b.WriteString("  Run it against a system for that.\n")
 		return b.String()
@@ -701,6 +722,9 @@ func (r *SweepReport) Text() string {
 		}
 		b.WriteString("  A clean result above is a statement about the probed ones only.\n")
 	}
+	r.writeBuild(&b)
+	b.WriteString("\nProbed against\n\n")
+	r.writeTargets(&b)
 	var ours []SweepFinding
 	for _, f := range append(append([]SweepFinding{}, r.Reach...), r.Answer...) {
 		if f.Verdict.OurFault() {
@@ -718,4 +742,31 @@ func (r *SweepReport) Text() string {
 		fmt.Fprintf(&b, "\n%s\n", note)
 	}
 	return b.String()
+}
+
+// writeBuild names the binary the report describes, or says plainly that it
+// cannot — which is itself the warning, because a reader who does not know
+// which build answered cannot tell a fixed defect from a live one.
+// writeTargets names what the probes were run against.
+func (r *SweepReport) writeTargets(b *strings.Builder) {
+	pairs := [][2]string{
+		{"class", r.Targets.Class}, {"program", r.Targets.Program},
+		{"package", r.Targets.Package}, {"table", r.Targets.Table},
+		{"referenced", r.Targets.Referenced}, {"references", r.Targets.References},
+	}
+	for _, p := range pairs {
+		if p[1] == "" {
+			fmt.Fprintf(b, "  %-11s (none found — probes needing it were skipped)\n", p[0])
+			continue
+		}
+		fmt.Fprintf(b, "  %-11s %s\n", p[0], p[1])
+	}
+}
+
+func (r *SweepReport) writeBuild(b *strings.Builder) {
+	if r.Build == "" {
+		b.WriteString("  build: unknown — this report cannot be dated against a fix\n")
+		return
+	}
+	fmt.Fprintf(b, "  build: %s\n", r.Build)
 }

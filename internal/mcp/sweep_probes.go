@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/oisee/vibing-steampunk/pkg/adt"
+	"github.com/oisee/vibing-steampunk/pkg/ctxcomp"
 )
 
 // SweepProbes returns every probe, in the order a reader would want them.
@@ -93,14 +94,14 @@ func graphProbes() []Probe {
 			Why:    "the up direction; empty means nothing calls this object",
 			Action: "analyze", Needs: []string{"referenced"},
 			Params: map[string]any{"type": "callers", "object_name": "{referenced}", "object_type": "CLAS"},
-			Oracle: oracleWhereUsed,
+			Oracle: oracleCrossOrLongName,
 		},
 		{
 			ID: "graph.callees", Capability: "analyze type=callees",
 			Why:    "the down direction, read from the cross-reference tables",
 			Action: "analyze", Needs: []string{"references"},
 			Params: map[string]any{"type": "callees", "object_name": "{references}", "object_type": "CLAS"},
-			Oracle: oracleCrossReferences,
+			Oracle: oracleParserDeps,
 		},
 		{
 			ID: "graph.call_graph", Capability: "analyze type=call_graph",
@@ -114,21 +115,21 @@ func graphProbes() []Probe {
 			Why:    "a class always has components; an empty structure is never true",
 			Action: "analyze", Needs: []string{"class"},
 			Params: map[string]any{"type": "object_structure", "object_name": "{class}", "object_type": "CLAS"},
-			Oracle: oracleAlwaysSome("a class always has at least one component"),
+			Oracle: oracleSourceHasMethods,
 		},
 		{
 			ID: "graph.impact", Capability: "analyze type=impact",
 			Why:    "reverse dependencies of an object known to have them",
 			Action: "analyze", Needs: []string{"referenced"},
 			Params: map[string]any{"type": "impact", "object_name": "{referenced}", "object_type": "CLAS"},
-			Oracle: oracleWhereUsed,
+			Oracle: oracleCrossOrLongName,
 		},
 		{
 			ID: "graph.usage_examples", Capability: "analyze type=usage_examples",
 			Why:    "asked CROSS for a two-letter code in a one-character column, and had never returned a row",
 			Action: "analyze", Needs: []string{"referenced"},
 			Params: map[string]any{"type": "usage_examples", "object_name": "{referenced}", "object_type": "CLAS"},
-			Oracle: oracleCrossCallers,
+			Oracle: oracleCrossOrLongName,
 		},
 		{
 			ID: "graph.where_used_config", Capability: "analyze type=where_used_config",
@@ -141,8 +142,11 @@ func graphProbes() []Probe {
 			ID: "graph.check_boundaries", Capability: "analyze type=check_boundaries",
 			Why:    "directional package crossings",
 			Action: "analyze", Needs: []string{"package"},
-			Params:      map[string]any{"type": "check_boundaries", "package": "{package}"},
-			EmptyIsFine: true,
+			Params: map[string]any{"type": "check_boundaries", "package": "{package}"},
+			// Not EmptyIsFine. This answered CLEAN on a package it had not
+			// opened a single file of, and "no crossings" is the same sentence
+			// either way.
+			Oracle: oraclePackageHasReadableSource,
 		},
 		{
 			ID: "graph.graph_stats", Capability: "analyze type=graph_stats",
@@ -276,34 +280,87 @@ func oracleWhereUsed(ctx context.Context, c *adt.Client, t SweepTargets) (int, s
 	return len(callers), "the where-used list", nil
 }
 
-// oracleCrossReferences counts what the object references, read from the
-// cross-reference tables themselves.
-func oracleCrossReferences(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
-	return countRows(ctx, c, "WBCROSSGT",
-		fmt.Sprintf("SELECT * FROM WBCROSSGT WHERE INCLUDE LIKE '%s%%'", sqlLiteral(t.References)),
-		"WBCROSSGT")
+// oracleParserDeps is the strongest oracle in the table, because it does not
+// share a source with what it checks.
+//
+// `callees` reads the cross-reference tables. This reads the object's source
+// and parses it. Two different routes to the same fact, so agreement is
+// evidence and disagreement names which side failed: if the parser finds
+// dependencies in the text and the tables report none, the tables are dead —
+// which is exactly the shape the callee defect had.
+func oracleParserDeps(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
+	src, err := c.GetClassSource(ctx, t.References)
+	if err != nil {
+		return 0, "the parser over the object's own source", err
+	}
+	deps := ctxcomp.ExtractDependencies(src)
+	return len(deps), "the parser over the object's own source", nil
 }
 
-// oracleCrossCallers counts rows naming the object as a target, which is what
-// usage_examples is supposed to turn into snippets.
-func oracleCrossCallers(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
-	return countRows(ctx, c, "WBCROSSGT",
-		fmt.Sprintf("SELECT * FROM WBCROSSGT WHERE NAME LIKE '%s%%'", sqlLiteral(t.Referenced)),
-		"WBCROSSGT")
+// oracleCrossOrLongName counts references to an object by name, and then by
+// hash.
+//
+// A name too long for CHAR(120) is not in WBCROSSGT under its own name at all:
+// it is stored as a SHA-1, with the readable form in WBCROSSGTX. An oracle that
+// looked only at the first table would report zero for exactly the objects the
+// long-name defect was about, and a dead capability would pass on the strength
+// of it.
+func oracleCrossOrLongName(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
+	const how = "WBCROSSGT, and WBCROSSGTX for long names"
+	n, _, err := countRows(ctx, c, "WBCROSSGT",
+		fmt.Sprintf("SELECT * FROM WBCROSSGT WHERE NAME LIKE '%s%%'", sqlLiteral(t.Referenced)), how)
+	if err != nil {
+		return 0, how, err
+	}
+	if n > 0 {
+		return n, how, nil
+	}
+	long, _, err := countRows(ctx, c, "WBCROSSGTX",
+		fmt.Sprintf("SELECT * FROM WBCROSSGTX WHERE LONG_NAME LIKE '%s%%'", sqlLiteral(t.Referenced)), how)
+	if err != nil {
+		// The first table answered and found nothing; say so rather than
+		// turning a failed second lookup into a claim about the object.
+		return 0, how, err
+	}
+	return long, how, nil
+}
+
+// oraclePackageHasReadableSource confirms the package holds at least one object
+// whose source can be read.
+//
+// Without it, `check_boundaries` answering "Total dependencies: 0" is
+// indistinguishable from a clean package — which is the defect it had: it
+// reported CLEAN without opening a single file.
+func oraclePackageHasReadableSource(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
+	const how = "the package's own object list"
+	n, _, err := countRows(ctx, c, "TADIR",
+		fmt.Sprintf("SELECT * FROM TADIR WHERE DEVCLASS = '%s'", sqlLiteral(t.Package)), how)
+	return n, how, err
+}
+
+// oracleSourceHasMethods reads the class's own source and counts method
+// definitions. A class whose source declares methods cannot honestly answer
+// with an empty structure.
+func oracleSourceHasMethods(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
+	const how = "METHODS declarations in the class's own source"
+	src, err := c.GetClassSource(ctx, t.Class)
+	if err != nil {
+		return 0, how, err
+	}
+	n := 0
+	for _, line := range strings.Split(src, "\n") {
+		f := strings.Fields(strings.ToUpper(strings.TrimSpace(line)))
+		if len(f) > 0 && (f[0] == "METHODS" || f[0] == "CLASS-METHODS") {
+			n++
+		}
+	}
+	return n, how, nil
 }
 
 // oracleTableHasRows confirms the probe table is not itself empty, so that an
 // empty query result accuses the query path rather than the table.
 func oracleTableHasRows(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
 	return countRows(ctx, c, t.Table, "", t.Table)
-}
-
-// oraclePackageHasObjects confirms the package the sweep was pointed at holds
-// something, so an empty graph is about the graph.
-func oraclePackageHasObjects(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
-	return countRows(ctx, c, "TADIR",
-		fmt.Sprintf("SELECT * FROM TADIR WHERE DEVCLASS = '%s'", sqlLiteral(t.Package)),
-		"TADIR")
 }
 
 func countRows(ctx context.Context, c *adt.Client, table, sql, name string) (int, string, error) {
