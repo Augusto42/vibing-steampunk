@@ -347,21 +347,42 @@ func (s *Server) handleApplicationLog(ctx context.Context, request mcp.CallToolR
 // look like it had ceased to exist.
 func (s *Server) resolveDump(ctx context.Context, args map[string]any) (adt.Dump, []string, error) {
 	which := dumpSelectorFrom(args)
-	if strings.Contains(which, "/runtime/dump") {
-		return adt.Dump{ID: which}, nil, nil
-	}
-
 	filter, notes, err := dumpFilterFrom(args)
 	if err != nil {
 		return adt.Dump{}, nil, err
 	}
-	dumps, err := s.adtClient.Dumps(ctx, filter)
-	if err != nil {
-		return adt.Dump{}, nil, fmt.Errorf("Failed to get dumps: %w", err)
+
+	full := strings.Contains(which, "/runtime/dump")
+
+	dumps, listErr := s.adtClient.Dumps(ctx, filter)
+	if listErr != nil && !full {
+		return adt.Dump{}, nil, fmt.Errorf("Failed to get dumps: %w", listErr)
 	}
-	dump, found := adt.FindDump(dumps, which)
-	if !found {
-		return adt.Dump{}, nil, errors.New(noSuchDump(which))
+	if listErr == nil {
+		if dump, found := adt.FindDump(dumps, which); found {
+			return dump, notes, nil
+		}
+		if !full {
+			return adt.Dump{}, nil, errors.New(noSuchDump(which))
+		}
+	}
+
+	// A full id that the listing does not carry. This is the case the shortcut
+	// existed for — an id quoted from an older conversation falls outside the
+	// window and would otherwise look as though it had ceased to exist.
+	//
+	// What the shortcut got wrong was returning nothing but the id. Three
+	// post-mortem types then worked with a Dump that had no time, no program
+	// and no error type, and explain_dump failed outright with "this dump
+	// carries no timestamp" — of a dump whose timestamp is the first fourteen
+	// characters of the id it was handed.
+	dump := adt.Dump{ID: which, At: adt.DumpTimeFromID(which)}
+	if dump.At.IsZero() {
+		notes = append(notes, "this id carries no timestamp and the dump is not in the current listing, "+
+			"so anything that needs a time — correlation, similarity by recency — cannot run on it")
+	} else {
+		notes = append(notes, "this dump is not in the current listing; its time was read from the id, "+
+			"and the program and error type are unknown, which narrows what can be correlated")
 	}
 	return dump, notes, nil
 }

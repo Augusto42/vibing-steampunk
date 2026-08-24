@@ -198,3 +198,38 @@ func GroupDumps(dumps []Dump) []DumpGroup {
 	})
 	return out
 }
+
+// DumpTimeFromID recovers the moment a dump was written from its own id.
+//
+// An ST22 id begins with the timestamp — 20260824012009 — followed by the
+// instance, the user, the client and a counter. That matters because a caller
+// who quotes a full id is addressing a dump the feed may no longer carry, and
+// the alternative to reading the id is a Dump with no time in it at all, which
+// then fails correlation with "this dump carries no timestamp". The information
+// was never missing; it was in the caller's hand the whole time.
+//
+// Returns the zero time when the id does not start with a timestamp, so a
+// caller can tell recovery from invention.
+func DumpTimeFromID(id string) time.Time {
+	tail := id
+	if i := strings.LastIndex(tail, "/"); i >= 0 {
+		tail = tail[i+1:]
+	}
+	if len(tail) < 14 {
+		return time.Time{}
+	}
+	stamp := tail[:14]
+	for _, r := range stamp {
+		if r < '0' || r > '9' {
+			return time.Time{}
+		}
+	}
+	// The feed reports these in UTC and DumpsFrom parses them as UTC, so the
+	// recovered value has to agree or a correlation window would be shifted by
+	// the server's offset.
+	at, err := time.Parse("20060102150405", stamp)
+	if err != nil {
+		return time.Time{}
+	}
+	return at.UTC()
+}

@@ -266,14 +266,6 @@ func postMortemProbes() []Probe {
 			EmptyIsFine: true,
 		},
 		{
-			ID: "pm.list_sql_traces", Capability: "analyze type=list_sql_traces",
-			Why:    "the ST05 trace directory; unprobed until its sibling turned out to be dead",
-			Action: "analyze", Params: map[string]any{"type": "list_sql_traces"},
-			// A quiet system genuinely has no traces. What this catches is the
-			// 406 that made the call fail whatever the system held.
-			EmptyIsFine: true,
-		},
-		{
 			ID: "pm.get_dump", Capability: "analyze type=get_dump",
 			Why:    "one runtime error in full; the id is resolved before the sweep so an empty feed reads as skipped",
 			Action: "analyze", Needs: []string{"dump"},
@@ -315,6 +307,9 @@ func postMortemProbes() []Probe {
 		},
 		{
 			ID: "pm.list_sql_traces", Capability: "analyze type=list_sql_traces",
+			// Unprobed until its sibling turned out to be dead. A quiet system
+			// genuinely has no traces; what this catches is the 406 that made
+			// the call fail whatever the system held.
 			Why:    "ST05 records; a system nobody traced has none",
 			Action: "analyze", Params: map[string]any{"type": "list_sql_traces", "max_results": 5},
 			EmptyIsFine: true,
