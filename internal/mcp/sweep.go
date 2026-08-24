@@ -262,6 +262,30 @@ type Probe struct {
 	EmptyIsFine bool
 }
 
+// probedCapabilities counts distinct advertised names with at least one probe.
+//
+// The distinction matters because probes and capabilities are not one to one in
+// either direction: several probes may examine one capability from different
+// angles, and a probe skipped for want of a target still names the capability
+// it would have examined. What a reader wants from a coverage line is how much
+// of the surface was looked at, and that is the count of names.
+func (r *SweepReport) probedCapabilities() int {
+	seen := map[string]bool{}
+	for _, f := range r.Answer {
+		seen[baseCapability(f.Capability)] = true
+	}
+	return len(seen)
+}
+
+// baseCapability strips the parenthesised angle a probe may add to say which
+// input it used — "analyze type=graph_stats (package)" is still graph_stats.
+func baseCapability(c string) string {
+	if i := strings.Index(c, " ("); i > 0 {
+		return c[:i]
+	}
+	return c
+}
+
 // SweepFinding is one probe's answer.
 type SweepFinding struct {
 	ID         string  `json:"id"`
@@ -768,7 +792,11 @@ func (r *SweepReport) Text() string {
 		b.WriteString("  Run it against a system for that.\n")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "  %d capabilities probed of %d advertised\n", len(r.Answer), r.Advertised)
+	// Capabilities, not probes. One capability may be probed several ways — a
+	// type that takes source, an object or a package deserves one probe each —
+	// and counting probes against advertised names produced "40 of 38", which
+	// is not a coverage figure at all.
+	fmt.Fprintf(&b, "  %d capabilities probed of %d advertised\n", r.probedCapabilities(), r.Advertised)
 	if len(r.Unprobed) > 0 {
 		fmt.Fprintf(&b, "  %d advertised and not probed by this sweep:\n", len(r.Unprobed))
 		for _, u := range r.Unprobed {

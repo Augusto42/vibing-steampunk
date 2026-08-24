@@ -138,79 +138,11 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 
 	// Mode 3: Package-level analysis — read all objects in package
 	if pkg != "" && s.adtClient != nil {
-		// Get package contents
-		pkgContent, err := s.adtClient.GetPackage(ctx, pkg)
-		if err != nil {
-			return newToolResultError(fmt.Sprintf("Failed to list package %s: %v", pkg, err)), nil
+		scan, perr := s.packageGraph(ctx, pkg, depth)
+		if perr != nil {
+			return newToolResultError(perr.Error()), nil
 		}
-
-		maxObjects := 50
-		if depth > 1 {
-			maxObjects = 20
-		}
-		count := 0
-		var unreadable []adt.Unsearched
-		truncated := 0
-
-		for _, obj := range pkgContent.Objects {
-			// The package listing carries SAP's own two-part code — CLAS/OC,
-			// PROG/P, INTF/OI — and this compared it against the bare kind, so
-			// every object was skipped before anything was read. An empty graph
-			// then has no boundary to cross, and the answer was "Total
-			// dependencies: 0, CLEAN" for a package the CLI finds three
-			// crossings in. Nothing reported a failure because nothing was
-			// attempted.
-			objType := strings.ToUpper(obj.Type)
-			if i := strings.Index(objType, "/"); i > 0 {
-				objType = objType[:i]
-			}
-			if objType != "CLAS" && objType != "PROG" && objType != "FUGR" && objType != "INTF" {
-				continue
-			}
-
-			if count >= maxObjects {
-				// The cap is counted rather than broken on, because "we stopped
-				// at 50 of 130" and "the package has 50 objects" are different
-				// answers and the report cannot otherwise tell them apart.
-				truncated++
-				continue
-			}
-
-			// The type is passed, not omitted. GetSource switches on it and has
-			// no branch for the empty string, so asking without one failed for
-			// every object in the package — and an object that contributes no
-			// edges is indistinguishable from a clean one, which is how this
-			// answered "Total dependencies: 0, CLEAN" for a package the CLI
-			// finds three boundary crossings in.
-			source, err := s.adtClient.GetSource(ctx, objType, obj.Name, nil)
-			if err != nil {
-				// An object we could not read contributes no edges, and no
-				// edges is what a clean object looks like. Record it or the
-				// verdict below is about code nobody opened.
-				unreadable = append(unreadable, adt.Unsearched{Object: objType + " " + obj.Name, Reason: err.Error()})
-				continue
-			}
-
-			nodeID := graph.NodeID(objType, obj.Name)
-			g.AddNode(&graph.Node{
-				ID:      nodeID,
-				Name:    obj.Name,
-				Type:    objType,
-				Package: strings.ToUpper(pkg),
-			})
-
-			edges := graph.ExtractDepsFromSource(source, nodeID)
-			dynEdges := graph.ExtractDynamicCalls(source, nodeID)
-			for _, e := range append(edges, dynEdges...) {
-				g.AddEdge(e)
-				g.AddNode(&graph.Node{
-					ID:   e.To,
-					Name: strings.SplitN(e.To, ":", 2)[1],
-					Type: strings.SplitN(e.To, ":", 2)[0],
-				})
-			}
-			count++
-		}
+		g, unreadable, truncated, count := scan.Graph, scan.Unreadable, scan.Truncated, scan.Read
 
 		// Resolve packages for all nodes
 		missed := s.resolvePackages(ctx, g)
@@ -248,7 +180,7 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 		}
 		if truncated > 0 {
 			notes = append(notes, fmt.Sprintf("only the first %d source-bearing objects of %s were analysed; %d more were not looked at, so this verdict does not cover them.",
-				maxObjects, strings.ToUpper(pkg), truncated))
+				scan.Cap, strings.ToUpper(pkg), truncated))
 		}
 		notes = append(notes, unresolvedPackageNote(missed))
 
@@ -256,6 +188,112 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 	}
 
 	return newToolResultError("SAP connection required for online analysis. Provide 'source' for offline mode."), nil
+}
+
+// packageGraph reads every source-bearing object in a package and builds the
+// dependency graph they describe.
+//
+// Extracted rather than copied: check_boundaries and graph_stats were about to
+// answer the same question about the same package by two different routes, and
+// the last time that happened one of the routes read no objects at all and
+// called the package clean. Everything this got right — the two-part object
+// codes in the listing, the object type the source read needs, the objects it
+// could not open, the cap it stopped at — is got right once.
+//
+// Returns the graph, what could not be read, and how many objects were left
+// beyond the cap. A caller that ignores the second and third is claiming
+// something about code it never opened.
+type packageScan struct {
+	// Graph is what the objects that could be read describe.
+	Graph *graph.Graph
+	// Read is how many objects contributed to it.
+	Read int
+	// Unreadable is every object that could not be opened, with the reason. An
+	// object that contributes no edges looks exactly like a clean one.
+	Unreadable []adt.Unsearched
+	// Truncated is how many source-bearing objects were left beyond the cap,
+	// and Cap is where it stopped. "We stopped at 50 of 130" and "the package
+	// has 50 objects" are different answers and the report cannot otherwise
+	// tell them apart.
+	Truncated, Cap int
+}
+
+func (s *Server) packageGraph(ctx context.Context, pkg string, depth int) (*packageScan, error) {
+	g := graph.New()
+	// Get package contents
+	pkgContent, err := s.adtClient.GetPackage(ctx, pkg)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to list package %s: %v", pkg, err)
+	}
+
+	maxObjects := 50
+	if depth > 1 {
+		maxObjects = 20
+	}
+	count := 0
+	var unreadable []adt.Unsearched
+	truncated := 0
+
+	for _, obj := range pkgContent.Objects {
+		// The package listing carries SAP's own two-part code — CLAS/OC,
+		// PROG/P, INTF/OI — and this compared it against the bare kind, so
+		// every object was skipped before anything was read. An empty graph
+		// then has no boundary to cross, and the answer was "Total
+		// dependencies: 0, CLEAN" for a package the CLI finds three
+		// crossings in. Nothing reported a failure because nothing was
+		// attempted.
+		objType := strings.ToUpper(obj.Type)
+		if i := strings.Index(objType, "/"); i > 0 {
+			objType = objType[:i]
+		}
+		if objType != "CLAS" && objType != "PROG" && objType != "FUGR" && objType != "INTF" {
+			continue
+		}
+
+		if count >= maxObjects {
+			// The cap is counted rather than broken on, because "we stopped
+			// at 50 of 130" and "the package has 50 objects" are different
+			// answers and the report cannot otherwise tell them apart.
+			truncated++
+			continue
+		}
+
+		// The type is passed, not omitted. GetSource switches on it and has
+		// no branch for the empty string, so asking without one failed for
+		// every object in the package — and an object that contributes no
+		// edges is indistinguishable from a clean one, which is how this
+		// answered "Total dependencies: 0, CLEAN" for a package the CLI
+		// finds three boundary crossings in.
+		source, err := s.adtClient.GetSource(ctx, objType, obj.Name, nil)
+		if err != nil {
+			// An object we could not read contributes no edges, and no
+			// edges is what a clean object looks like. Record it or the
+			// verdict below is about code nobody opened.
+			unreadable = append(unreadable, adt.Unsearched{Object: objType + " " + obj.Name, Reason: err.Error()})
+			continue
+		}
+
+		nodeID := graph.NodeID(objType, obj.Name)
+		g.AddNode(&graph.Node{
+			ID:      nodeID,
+			Name:    obj.Name,
+			Type:    objType,
+			Package: strings.ToUpper(pkg),
+		})
+
+		edges := graph.ExtractDepsFromSource(source, nodeID)
+		dynEdges := graph.ExtractDynamicCalls(source, nodeID)
+		for _, e := range append(edges, dynEdges...) {
+			g.AddEdge(e)
+			g.AddNode(&graph.Node{
+				ID:   e.To,
+				Name: strings.SplitN(e.To, ":", 2)[1],
+				Type: strings.SplitN(e.To, ":", 2)[0],
+			})
+		}
+		count++
+	}
+	return &packageScan{Graph: g, Read: count, Unreadable: unreadable, Truncated: truncated, Cap: maxObjects}, nil
 }
 
 // resolvePackages queries TADIR to fill in missing package info and correct
@@ -445,21 +483,81 @@ func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string
 }
 
 // handleGraphStats returns statistics about the current in-memory graph.
+// handleGraphStats counts what a dependency graph contains.
+//
+// It used to take source and nothing else — "for now", said the comment, for
+// long enough that nobody found out. The name promises statistics about a
+// graph, and a reader who has an object in front of them has no reason to
+// expect they must paste its source first. Widened rather than renamed: the
+// sibling in this file already accepts source, an object, or a package, so the
+// restriction was an accident of the order things were written, not a design.
+//
+// The package route goes through the same scanner check_boundaries uses, which
+// means it inherits what that got right — including saying which objects it
+// could not read. Statistics over a package nobody opened are the same untruth
+// as a clean verdict over one.
 func (s *Server) handleGraphStats(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// For now, build a fresh graph from provided source
 	args := request.GetArguments()
 	sourceCode := getStringParam(args, "source")
+	objType := strings.ToUpper(getStringParam(args, "object_type"))
+	objName := strings.ToUpper(getStringParam(args, "object_name"))
+	pkg := strings.ToUpper(getStringParam(args, "package"))
 
-	if sourceCode == "" {
-		return newToolResultError("Provide 'source' parameter with ABAP source code"), nil
+	var notes []string
+
+	switch {
+	case sourceCode != "":
+		// Offline: whatever was handed over, named as itself.
+		name := objName
+		if name == "" {
+			name = "SOURCE"
+		}
+		g := graphFromSource(sourceCode, "PROG", name)
+		return graphStatsResult(g, notes)
+
+	case pkg != "" && s.adtClient != nil:
+		scan, err := s.packageGraph(ctx, pkg, 1)
+		if err != nil {
+			return newToolResultError(err.Error()), nil
+		}
+		if scan.Read == 0 {
+			// Counting an empty graph is not a statistic about the package, it
+			// is a statistic about having read nothing.
+			return newToolResultError(fmt.Sprintf(
+				"%s was not analysed: none of its source-bearing objects could be read, so there is nothing to count.%s",
+				pkg, noteOrEmpty(adt.UnsearchedNote(scan.Unreadable, len(scan.Unreadable), "object")))), nil
+		}
+		if n := adt.UnsearchedNote(scan.Unreadable, scan.Read+len(scan.Unreadable), "object"); n != "" {
+			notes = append(notes, "these counts are of the objects that could be read, not of the package.\n"+n)
+		}
+		if scan.Truncated > 0 {
+			notes = append(notes, fmt.Sprintf("only the first %d source-bearing objects of %s were read; %d more were not, and are absent from these counts.",
+				scan.Cap, pkg, scan.Truncated))
+		}
+		return graphStatsResult(scan.Graph, notes)
+
+	case objType != "" && objName != "" && s.adtClient != nil:
+		src, err := s.adtClient.GetSource(ctx, objType, objName, nil)
+		if err != nil {
+			return newToolResultError(fmt.Sprintf("Failed to read %s %s: %v", objType, objName, err)), nil
+		}
+		return graphStatsResult(graphFromSource(src, objType, objName), notes)
 	}
 
-	g := graph.New()
-	nodeID := graph.NodeID("PROG", "SOURCE")
-	g.AddNode(&graph.Node{ID: nodeID, Name: "SOURCE", Type: "PROG"})
+	if s.adtClient == nil && (pkg != "" || objName != "") {
+		return newToolResultError("SAP connection required to read an object or a package; provide 'source' for offline analysis"), nil
+	}
+	return newToolResultError("Provide 'source', or 'object_type' and 'object_name', or 'package'"), nil
+}
 
-	edges := graph.ExtractDepsFromSource(sourceCode, nodeID)
-	dynEdges := graph.ExtractDynamicCalls(sourceCode, nodeID)
+// graphFromSource builds the one-object graph the parser can see in a source.
+func graphFromSource(source, objType, objName string) *graph.Graph {
+	g := graph.New()
+	nodeID := graph.NodeID(objType, objName)
+	g.AddNode(&graph.Node{ID: nodeID, Name: objName, Type: objType})
+
+	edges := graph.ExtractDepsFromSource(source, nodeID)
+	dynEdges := graph.ExtractDynamicCalls(source, nodeID)
 	for _, e := range append(edges, dynEdges...) {
 		g.AddEdge(e)
 		g.AddNode(&graph.Node{
@@ -468,10 +566,27 @@ func (s *Server) handleGraphStats(ctx context.Context, request mcp.CallToolReque
 			Type: strings.SplitN(e.To, ":", 2)[0],
 		})
 	}
+	return g
+}
 
-	stats := g.Stats()
-	result, _ := json.MarshalIndent(stats, "", "  ")
-	return mcp.NewToolResultText(string(result)), nil
+func graphStatsResult(g *graph.Graph, notes []string) (*mcp.CallToolResult, error) {
+	answer := struct {
+		graph.GraphStats
+		Notes []string `json:"notes,omitempty"`
+	}{GraphStats: g.Stats()}
+	for _, n := range notes {
+		if strings.TrimSpace(n) != "" {
+			answer.Notes = append(answer.Notes, n)
+		}
+	}
+	return newToolResultJSON(answer), nil
+}
+
+func noteOrEmpty(n string) string {
+	if n == "" {
+		return ""
+	}
+	return "\n" + n
 }
 
 // handleCoChange performs transport-based co-change analysis.
