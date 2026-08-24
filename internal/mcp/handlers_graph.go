@@ -1836,3 +1836,101 @@ func formatBoundaryResult(report *graph.BoundaryReport, format string, notes ...
 		return mcp.NewToolResultText(text), nil
 	}
 }
+
+// handleLoads answers what a compiled unit pulls in, and what pulls it in.
+//
+// It is the only capability here built on D010INC, and the only one that
+// answers a question about loading rather than about naming. That difference is
+// the point: a program split across includes is one compiled unit and the split
+// appears in no cross-reference table, so an include that nothing references
+// can still be load-critical — and an include that nothing loads is dead in a
+// way no where-used list will show, because nothing references an include, it
+// is included.
+//
+// Both directions are offered because they are different questions and neither
+// can be derived from the other by a caller holding one answer.
+func (s *Server) handleLoads(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	objName := strings.ToUpper(getStringParam(args, "object_name"))
+	if objName == "" {
+		return newToolResultError("object_name is required. Example: SAP(action=\"analyze\", " +
+			"params={\"type\": \"loads\", \"object_name\": \"ZCL_DEMO_ORDER\"})"), nil
+	}
+	if s.adtClient == nil {
+		return newToolResultError("SAP connection required: the load graph is read from D010INC"), nil
+	}
+
+	direction := strings.ToLower(strings.TrimSpace(getStringParam(args, "direction")))
+	if direction == "" {
+		direction = "loads"
+	}
+
+	answer := map[string]any{
+		"object":    objName,
+		"direction": direction,
+		"source": "D010INC, the compile-time load table. These are loads, not calls: what must be " +
+			"present for this to run, which is not the same as what it names.",
+	}
+	var gaps []adt.Unsearched
+
+	collect := func(rows []adt.LoadRow, g []adt.Unsearched, key string) {
+		gaps = append(gaps, g...)
+		graphOf := graph.BuildD010INCGraph(loadRowsToGraphRows(rows))
+		edges := graphOf.Edges()
+		out := make([]map[string]any, 0, len(edges))
+		for _, e := range edges {
+			out = append(out, map[string]any{
+				"from": e.From, "to": e.To, "detail": e.RefDetail,
+			})
+		}
+		answer[key] = out
+		answer[key+"_total"] = len(out)
+		if len(rows) > 0 && len(out) == 0 {
+			// Every row was the object loading its own parts, or kernel
+			// machinery. That is a real answer and reads as nothing found.
+			answer[key+"_note"] = "rows exist but none is a dependency between objects: a compiled unit " +
+				"loading its own includes is containment, and <SYSINI> is machinery."
+		}
+	}
+
+	if direction == "loads" || direction == "both" {
+		rows, g, err := s.adtClient.Loads(ctx, objName)
+		if err != nil {
+			return newToolResultError(err.Error()), nil
+		}
+		collect(rows, g, "loads")
+	}
+	if direction == "loaded_by" || direction == "both" {
+		rows, g, err := s.adtClient.LoadedBy(ctx, objName)
+		if err != nil {
+			return newToolResultError(err.Error()), nil
+		}
+		collect(rows, g, "loaded_by")
+	}
+	if direction != "loads" && direction != "loaded_by" && direction != "both" {
+		return newToolResultError(fmt.Sprintf("direction %q is not one this can answer: "+
+			"\"loads\" (what this pulls in), \"loaded_by\" (what pulls this in), or \"both\"", direction)), nil
+	}
+
+	if len(gaps) > 0 {
+		answer["unsearched"] = gaps
+		answer["gap"] = adt.UnsearchedNote(gaps, len(gaps), "table")
+	}
+	return newToolResultJSON(answer), nil
+}
+
+// loadRowsToGraphRows converts what the client read into what the builder takes.
+// Two structs rather than one because the client speaks in table columns and the
+// graph speaks in edges, and collapsing them would put SQL vocabulary in the
+// graph package.
+func loadRowsToGraphRows(rows []adt.LoadRow) []graph.D010INCRow {
+	out := make([]graph.D010INCRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, graph.D010INCRow{
+			Master:            r.Master,
+			Include:           r.Include,
+			ObsoleteInVersion: r.ObsoleteInVersion,
+		})
+	}
+	return out
+}

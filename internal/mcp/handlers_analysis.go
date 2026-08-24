@@ -42,6 +42,7 @@ func (s *Server) analysisTypes() map[string]server.ToolHandlerFunc {
 		"compare_call_graphs": s.handleCompareCallGraphs,
 		"trace_execution":     s.handleTraceExecution,
 		"check_boundaries":    s.handleCheckBoundaries,
+		"loads":               s.handleLoads,
 		"graph_stats":         s.handleGraphStats,
 		"co_change":           s.handleCoChange,
 		"impact":              s.handleImpact,
