@@ -1576,6 +1576,13 @@ type TraceExecutionResult struct {
 	// Statistics
 	StaticStats *CallGraphStats `json:"static_stats,omitempty"`
 
+	// Unsearched names the steps that did not run. Every field above is
+	// omitempty, so a run where nothing worked marshals to almost nothing and
+	// reads as "there was nothing to report". Comparison is the point of this
+	// call, and it is absent both when static and actual agree and when the
+	// trace never arrived.
+	Unsearched []Unsearched `json:"unsearched,omitempty"`
+
 	// Execution info
 	ExecutedTests []string `json:"executed_tests,omitempty"`
 	ExecutionTime int64    `json:"execution_time_us,omitempty"`
@@ -1614,8 +1621,12 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 			MaxResults: 500,
 		})
 		if err != nil {
-			// Non-fatal: continue without static graph
+			// Non-fatal for the run, but not for the reader: without the static
+			// half there is nothing to compare the trace against, and the
+			// comparison is simply absent rather than wrong.
 			result.StaticGraph = nil
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "static call graph", Reason: err.Error()})
 		} else {
 			result.StaticGraph = staticGraph
 			result.StaticStats = AnalyzeCallGraph(staticGraph)
@@ -1625,7 +1636,13 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 	// Step 2: Run unit tests if requested (to trigger execution)
 	if opts.RunTests && opts.TestObjectURI != "" {
 		testResult, err := c.RunUnitTests(ctx, opts.TestObjectURI, nil)
-		if err == nil && testResult != nil {
+		if err != nil || testResult == nil {
+			// The tests were asked for in order to make something run. If they
+			// did not, the trace below is of whatever else happened to execute,
+			// which is not what the caller asked to see.
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "unit tests " + opts.TestObjectURI, Reason: errOrEmpty(err, "no test result came back")})
+		} else {
 			// Collect test names that ran
 			for _, tc := range testResult.Classes {
 				for _, tm := range tc.TestMethods {
@@ -1647,13 +1664,23 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 		User:       traceUser,
 		MaxResults: 5,
 	})
-	if err == nil && len(traces) > 0 {
+	if err != nil || len(traces) == 0 {
+		// No trace means no actual edges, so the comparison cannot be made.
+		// Saying so is the difference between "the code ran as predicted" and
+		// "nobody looked".
+		result.Unsearched = append(result.Unsearched, Unsearched{
+			Object: "runtime trace for " + traceUser,
+			Reason: errOrEmpty(err, "no trace was recorded for this user; the code under trace may not have run")})
+	} else {
 		// Get the most recent trace
 		latestTrace := traces[0]
 
 		// Get hitlist analysis
 		analysis, err := c.GetTrace(ctx, latestTrace.ID, "hitlist")
-		if err == nil {
+		if err != nil {
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "trace " + latestTrace.ID, Reason: err.Error()})
+		} else {
 			result.Trace = analysis
 			result.ExecutionTime = analysis.TotalTime
 
