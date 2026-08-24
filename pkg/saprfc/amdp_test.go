@@ -371,3 +371,58 @@ func TestAStopWithNoVariablesIsNotAnError(t *testing.T) {
 		t.Fatalf("that stop carries no variables, got %+v", vars)
 	}
 }
+
+const amdpStopWithStack = `<amdpdbg:mainResponseList xmlns:amdpdbg="http://www.sap.com/adt/amdp/debugger">` +
+	`<amdpdbg:mainResponse amdpdbg:kind="ON_BREAK" amdpdbg:debuggeeId="d"><amdpdbg:value>` +
+	`<amdpdbg:callstack><amdpdbg:callstackEntry amdpdbg:index="1" amdpdbg:language="sql" ` +
+	`amdpdbg:type="line" amdpdbg:isDebugCompiled="true">` +
+	`<amdpdbg:abapPosition amdpdbg:procedureName="ZCL_DEMO=&gt;CALC" ` +
+	`adtcore:uri="/sap/bc/adt/oo/classes/zcl_demo/source/main#start=45" xmlns:adtcore="x"/>` +
+	`<amdpdbg:nativePosition amdpdbg:procedureName="ZCL_DEMO=&gt;CALC" ` +
+	`amdpdbg:schemaName="SAPDEMO" amdpdbg:line="23"/>` +
+	`</amdpdbg:callstackEntry></amdpdbg:callstack></amdpdbg:value></amdpdbg:mainResponse></amdpdbg:mainResponseList>`
+
+// One statement has two positions and both are needed: the ABAP line is where
+// a person wrote it, the native line is where HANA generated it, and they
+// differ — 45 against 23 for the same stop.
+func TestAFrameCarriesBothPositions(t *testing.T) {
+	frames := AMDPCallStack([]byte(amdpStopWithStack))
+	if len(frames) != 1 {
+		t.Fatalf("expected one frame, got %d", len(frames))
+	}
+	f := frames[0]
+	if f.Line != 45 {
+		t.Fatalf("the ABAP line rides in the URI fragment; got %d", f.Line)
+	}
+	if f.NativeLine != 23 || f.Schema != "SAPDEMO" {
+		t.Fatalf("native position read as %s:%d", f.Schema, f.NativeLine)
+	}
+	if !f.DebugCompiled {
+		t.Fatal("this frame was debug-compiled")
+	}
+}
+
+// A procedure built without debug information is one where a breakpoint can
+// never be reached, and that is indistinguishable from a breakpoint that does
+// not work — so it is said outright.
+func TestAFrameWithoutDebugInfoSaysSo(t *testing.T) {
+	plain := AMDPFrame{Index: 1, Procedure: "ZCL_DEMO=>CALC", Line: 45, DebugCompiled: false}
+	if got := FormatAMDPFrame(plain); !strings.Contains(got, "not debug-compiled") {
+		t.Fatalf("got %q", got)
+	}
+	compiled := AMDPFrame{Index: 1, Procedure: "ZCL_DEMO=>CALC", Line: 45, DebugCompiled: true}
+	if got := FormatAMDPFrame(compiled); strings.Contains(got, "debug-compiled") {
+		t.Fatalf("a normal frame carries no note, got %q", got)
+	}
+}
+
+// The schema is not decoration: the data preview resource asks for it by name,
+// and the stop is the only place it is handed over.
+func TestTheSchemaIsAvailableFromTheStop(t *testing.T) {
+	if got := AMDPSchemaAtStop([]byte(amdpStopWithStack)); got != "SAPDEMO" {
+		t.Fatalf("got %q", got)
+	}
+	if got := AMDPSchemaAtStop([]byte(amdpBreakDocument)); got != "" {
+		t.Fatalf("a stop with no stack names no schema, got %q", got)
+	}
+}

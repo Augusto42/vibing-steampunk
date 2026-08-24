@@ -67,6 +67,7 @@ semicolon-separated script and exits. Commands:
   aresume [MAX]      wait for the AMDP debuggee to stop, skipping acknowledgements
   astep [over|continue] step the stopped AMDP debuggee
   atrace [MAX]       walk the stopped AMDP program, one JSON object per line
+  astack             the stopped procedure's call stack, ABAP and native lines
   alocals [all]      everything in scope at the stop, from the stop itself
   avar <NAME>        read a variable of the stopped SQLScript
   astop              end the AMDP session
@@ -587,6 +588,19 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 			fmt.Println(saprfc.FormatAMDPScalar(v))
 		}
 		return nil
+	case "astack":
+		if amdpStopBody == nil {
+			return fmt.Errorf("nothing has stopped yet, so there is no stack to show")
+		}
+		frames := saprfc.AMDPCallStack(amdpStopBody)
+		if len(frames) == 0 {
+			fmt.Fprintln(os.Stderr, "the stop carried no call stack")
+			return nil
+		}
+		for _, f := range frames {
+			fmt.Println(saprfc.FormatAMDPFrame(f))
+		}
+		return nil
 	case "alocals":
 		// Everything in scope, from the stop itself: no request, because the
 		// stop already said it.
@@ -610,7 +624,8 @@ func runDebugCommand(ctx context.Context, dbg *saprfc.Debugger, line string) err
 		if arg(1) == "" {
 			return fmt.Errorf("usage: atable <NAME> [ROWS] — a table-valued variable of the stopped SQLScript")
 		}
-		res, aerr := dbg.AMDPTableRows(ctx, amdpSession, amdpDebuggee, arg(1), num(2))
+		res, aerr := dbg.AMDPTableRows(ctx, amdpSession, amdpDebuggee, arg(1),
+			saprfc.AMDPSchemaAtStop(amdpStopBody), num(2))
 		if aerr != nil {
 			// Say that this is a known gap rather than letting it read as a
 			// fault in the caller's request: the address is right and the

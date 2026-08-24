@@ -661,11 +661,20 @@ func FormatAMDPScalar(s AMDPScalar) string {
 // (host:port:session:context:n), so "session" may mean something narrower or
 // wider than the id the start call returns.
 //
-// The next step is the factory, lif_provider_factory, which lives in the
-// class's own local includes and needs reading separately. Do that rather than
-// trying more combinations of the three ids; four times today the handler
-// answered in one request what probing did not answer in several.
-func (d *Debugger) AMDPTableRows(ctx context.Context, session *AMDPSession, debuggeeID, name string, rows int) (*ADTResponse, error) {
+// The factory has since been read: lif_provider_factory hands debuggerId and
+// sessionId to cl_amdp_dbg_data_preview, which for HDB ends in
+// db_req_init_access — an `init` command sent to the SQLScript debugger on the
+// HANA side with connection_type "general". So the refusal is HANA's, not
+// ADT's, and one of those two ids is not what HANA knows.
+//
+// Also tried and not the answer: passing `schema`, which the stop does hand
+// over (nativePosition/schemaName, see AMDPCallStack). Same INIT failure with
+// it as without.
+//
+// What is left untried is the tableHandle the stop reports for the variable —
+// it appears in no parameter of this resource, so it may belong to a different
+// route entirely rather than to this one.
+func (d *Debugger) AMDPTableRows(ctx context.Context, session *AMDPSession, debuggeeID, name, schema string, rows int) (*ADTResponse, error) {
 	if session == nil || session.MainID == "" {
 		return nil, fmt.Errorf("no AMDP debug session on this connection; start one first")
 	}
@@ -683,6 +692,9 @@ func (d *Debugger) AMDPTableRows(ctx context.Context, session *AMDPSession, debu
 	q.Set("variableName", strings.ToUpper(strings.TrimSpace(name)))
 	q.Set("rowNumber", strconv.Itoa(rows))
 	q.Set("colNumber", "100")
+	if schema != "" {
+		q.Set("schema", schema)
+	}
 
 	res, err := d.ADT(ctx, "GET", "/sap/bc/adt/datapreview/amdpdebugger?"+q.Encode(),
 		[]ADTHeader{{Name: "Accept", Value: acceptAnything}}, nil)
@@ -769,4 +781,102 @@ func FormatAMDPVariableInfo(v AMDPVariableInfo) string {
 		what += " = NULL"
 	}
 	return fmt.Sprintf("%-8s %-26s %s", v.Scope, v.Name, what)
+}
+
+// AMDPFrame is one entry of a stopped procedure's call stack.
+//
+// It carries two positions for the same statement, and both are worth having:
+// the ABAP one names the line in the class as a person wrote it, and the native
+// one names the line in the SQLScript procedure HANA actually generated. They
+// differ — line 41 of a class was line 19 of its procedure — so a caller
+// looking at HANA's own tooling and a caller looking at the source need
+// different numbers for the same stop.
+type AMDPFrame struct {
+	Index int    `json:"index"`
+	Kind  string `json:"kind,omitempty"`
+	// Procedure is the ABAP-facing name, CLASS=>METHOD.
+	Procedure string `json:"procedure"`
+	URI       string `json:"uri,omitempty"`
+	Line      int    `json:"line"`
+	// NativeLine is the line in the generated procedure, and Schema is where
+	// that procedure lives. The schema is not decoration: the data preview
+	// resource asks for it by name.
+	NativeLine int    `json:"nativeLine,omitempty"`
+	Schema     string `json:"schema,omitempty"`
+	// DebugCompiled is false when the procedure was built without debug
+	// information, which is why a breakpoint in it would never be reached.
+	DebugCompiled bool `json:"debugCompiled"`
+}
+
+// AMDPCallStack reads the call stack a stop event carries.
+func AMDPCallStack(body []byte) []AMDPFrame {
+	var doc struct {
+		Responses []struct {
+			Value struct {
+				Entries []struct {
+					Index         int    `xml:"index,attr"`
+					Language      string `xml:"language,attr"`
+					Type          string `xml:"type,attr"`
+					DebugCompiled string `xml:"isDebugCompiled,attr"`
+					Abap          struct {
+						Procedure string `xml:"procedureName,attr"`
+						URI       string `xml:"uri,attr"`
+					} `xml:"abapPosition"`
+					Native struct {
+						Procedure string `xml:"procedureName,attr"`
+						Schema    string `xml:"schemaName,attr"`
+						Line      int    `xml:"line,attr"`
+					} `xml:"nativePosition"`
+				} `xml:"callstack>callstackEntry"`
+			} `xml:"value"`
+		} `xml:"mainResponse"`
+	}
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+	var out []AMDPFrame
+	for _, r := range doc.Responses {
+		for _, e := range r.Value.Entries {
+			f := AMDPFrame{
+				Index:         e.Index,
+				Kind:          e.Type,
+				Procedure:     e.Abap.Procedure,
+				URI:           e.Abap.URI,
+				NativeLine:    e.Native.Line,
+				Schema:        e.Native.Schema,
+				DebugCompiled: strings.EqualFold(strings.TrimSpace(e.DebugCompiled), "true"),
+			}
+			if i := strings.LastIndex(f.URI, "#start="); i >= 0 {
+				fmt.Sscanf(f.URI[i+len("#start="):], "%d", &f.Line)
+			}
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// FormatAMDPFrame renders one stack entry.
+func FormatAMDPFrame(f AMDPFrame) string {
+	line := fmt.Sprintf("%3d %-44s :%d", f.Index, f.Procedure, f.Line)
+	if f.NativeLine > 0 {
+		line += fmt.Sprintf("   native %s:%d", orDash(f.Schema), f.NativeLine)
+	}
+	if !f.DebugCompiled {
+		// Worth saying outright: a frame built without debug information is one
+		// where a breakpoint would never be reached, and that looks exactly
+		// like a breakpoint that does not work.
+		line += "   (not debug-compiled)"
+	}
+	return line
+}
+
+// AMDPSchemaAtStop reports the schema of the stopped procedure, which the data
+// preview resource asks for by name.
+func AMDPSchemaAtStop(body []byte) string {
+	for _, f := range AMDPCallStack(body) {
+		if f.Schema != "" {
+			return f.Schema
+		}
+	}
+	return ""
 }
