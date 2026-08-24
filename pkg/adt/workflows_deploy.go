@@ -136,7 +136,7 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 	}
 
 	// 7. Write source (need source URL, not object URL)
-	sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName)
+	sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName, info.ParentName)
 	if err != nil {
 		return nil, err
 	}
@@ -240,8 +240,10 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	}
 	source := string(sourceBytes)
 
-	// 3. Build object URL (for class includes, this is the parent class URL)
-	objectURL, err := c.buildObjectURL(info.ObjectType, info.ObjectName)
+	// 3. Build object URL (for class includes, this is the parent class URL).
+	// The parent goes with it: DeployFromFile delegates here whenever the object
+	// already exists, so dropping it made every update of a function module fail.
+	objectURL, err := c.buildObjectURLWithParent(info.ObjectType, info.ObjectName, info.ParentName)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +330,7 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 		}
 	} else {
 		// Regular source update
-		sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName)
+		sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName, info.ParentName)
 		if err != nil {
 			return nil, err
 		}
@@ -518,9 +520,15 @@ func (c *Client) buildObjectURLWithParent(objType CreatableObjectType, name, par
 	}
 }
 
-// buildSourceURL constructs the source URL for an object (object URL + /source/main)
-func (c *Client) buildSourceURL(objType CreatableObjectType, name string) (string, error) {
-	objectURL, err := c.buildObjectURL(objType, name)
+// buildSourceURL constructs the source URL for an object (object URL + /source/main).
+//
+// The parent is not optional for every type: a function module lives under its
+// group and is addressable no other way. This used to drop it, so a module
+// parsed correctly out of {group}.fugr.{name}.func.abap — group and all —
+// failed with "function module requires parent function group name", the one
+// thing the filename had just supplied.
+func (c *Client) buildSourceURL(objType CreatableObjectType, name, parentName string) (string, error) {
+	objectURL, err := c.buildObjectURLWithParent(objType, name, parentName)
 	if err != nil {
 		return "", err
 	}

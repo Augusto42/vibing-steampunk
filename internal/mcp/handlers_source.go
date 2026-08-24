@@ -45,7 +45,7 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 	if action == "edit" {
 		// High-level WriteSource
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "FUNC", "DDLS", "BDEF", "SRVD", "MSAG":
+		case "CLAS", "PROG", "INTF", "FUNC", "DDLS", "BDEF", "SRVD", "MSAG", "TABL":
 			if src := getStringParam(params, "source"); src != "" {
 				args := map[string]any{
 					"object_type": objectType,

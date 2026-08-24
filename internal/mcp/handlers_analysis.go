@@ -13,6 +13,18 @@ import (
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
+// countExecutable counts the edges in a list that something could actually
+// have run. It exists so "untested paths" means paths.
+func countExecutable(edges []adt.CallGraphEdge) int {
+	n := 0
+	for _, e := range edges {
+		if adt.IsExecutableKind(e.CalleeKind) {
+			n++
+		}
+	}
+	return n
+}
+
 // analysisTypes is the routing table as data rather than as control flow.
 //
 // It is a map and not a switch so that the surface can be enumerated — `vsp
@@ -380,16 +392,20 @@ func (s *Server) handleCompareCallGraphs(ctx context.Context, request mcp.CallTo
 	comparison := adt.CompareCallGraphs(staticEdges, actualEdges)
 
 	output := map[string]interface{}{
-		"object_uri":     objectURI,
-		"static_edges":   len(staticEdges),
-		"actual_edges":   len(actualEdges),
-		"common_edges":   len(comparison.CommonEdges),
-		"untested_paths": len(comparison.StaticOnly),
-		"dynamic_calls":  len(comparison.ActualOnly),
-		"coverage_ratio": comparison.CoverageRatio,
-		"common":         comparison.CommonEdges,
-		"static_only":    comparison.StaticOnly,
-		"actual_only":    comparison.ActualOnly,
+		"object_uri":   objectURI,
+		"static_edges": len(staticEdges),
+		"actual_edges": len(actualEdges),
+		"common_edges": len(comparison.CommonEdges),
+		// Counted over invocations only. A type reference is not a path, and
+		// calling it untested inflated this figure with things nothing could
+		// ever have executed.
+		"untested_paths":   countExecutable(comparison.StaticOnly),
+		"executable_edges": comparison.ExecutableEdges,
+		"dynamic_calls":    len(comparison.ActualOnly),
+		"coverage_ratio":   comparison.CoverageRatio,
+		"common":           comparison.CommonEdges,
+		"static_only":      comparison.StaticOnly,
+		"actual_only":      comparison.ActualOnly,
 	}
 
 	result, _ := json.MarshalIndent(output, "", "  ")
@@ -454,12 +470,13 @@ func (s *Server) handleTraceExecution(ctx context.Context, request mcp.CallToolR
 
 	if result.Comparison != nil {
 		output["comparison"] = map[string]interface{}{
-			"common_edges":   len(result.Comparison.CommonEdges),
-			"untested_paths": len(result.Comparison.StaticOnly),
-			"dynamic_calls":  len(result.Comparison.ActualOnly),
-			"coverage_ratio": result.Comparison.CoverageRatio,
-			"static_only":    result.Comparison.StaticOnly,
-			"actual_only":    result.Comparison.ActualOnly,
+			"common_edges":     len(result.Comparison.CommonEdges),
+			"untested_paths":   countExecutable(result.Comparison.StaticOnly),
+			"executable_edges": result.Comparison.ExecutableEdges,
+			"dynamic_calls":    len(result.Comparison.ActualOnly),
+			"coverage_ratio":   result.Comparison.CoverageRatio,
+			"static_only":      result.Comparison.StaticOnly,
+			"actual_only":      result.Comparison.ActualOnly,
 		}
 	}
 

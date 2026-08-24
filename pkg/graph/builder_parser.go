@@ -91,7 +91,18 @@ func extractFromStatement(stmt abaplint.Statement, sourceNodeID string) []*Edge 
 func extractCallFunction(toks []abaplint.Token, from string) []*Edge {
 	for i, t := range toks {
 		if strings.EqualFold(t.Str, "FUNCTION") && i+1 < len(toks) {
-			name := unquote(toks[i+1].Str)
+			// Only a quoted literal names a function module here. A bare token
+			// is a variable holding the name at runtime, and taking it at face
+			// value invented a dependency on a module called after the variable
+			// — CALL FUNCTION lv_fm_name became a static edge to FUGR
+			// LV_FM_NAME, an object that does not exist. The dynamic extractor
+			// already tests for the quote; this side did not, so one statement
+			// produced both a real dynamic edge and an imaginary static one.
+			raw := toks[i+1].Str
+			if raw == "" || (raw[0] != '\'' && raw[0] != '`') {
+				return nil
+			}
+			name := unquote(raw)
 			if name != "" {
 				return []*Edge{{
 					From:      from,
@@ -436,6 +447,36 @@ func ExtractDynamicCalls(source string, sourceNodeID string) []*Edge {
 						})
 					}
 				}
+			}
+		case "Call":
+			// CALL METHOD (var)=>meth, or lo->(var): the name is decided at
+			// runtime. Classified but never extracted, so a dynamic method call
+			// appeared in no answer at all — neither as a dependency nor as a
+			// warning that one exists.
+			for i := 0; i+2 < len(toks); i++ {
+				if toks[i].Str != "(" || toks[i+2].Str != ")" {
+					continue
+				}
+				prev := ""
+				if i > 0 {
+					prev = strings.ToUpper(toks[i-1].Str)
+				}
+				// Only where a name belongs. Any other parenthesis in a CALL is
+				// an argument list, and reporting those would bury the real ones.
+				if prev != "METHOD" && prev != "->" && prev != "=>" {
+					continue
+				}
+				varName := toks[i+1].Str
+				if varName == "" || !isIdentifier(varName) {
+					continue
+				}
+				edges = append(edges, &Edge{
+					From:      sourceNodeID,
+					To:        "DYNAMIC:" + varName,
+					Kind:      EdgeDynamic,
+					Source:    SourceParser,
+					RefDetail: "DYNAMIC_METHOD:" + varName,
+				})
 			}
 		case "Submit":
 			// SUBMIT (variable) → dynamic

@@ -32,7 +32,22 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 		ObjectType: string(objType),
 	}
 
-	oldURL, err := c.buildObjectURL(objType, oldName)
+	// A function module is addressable only under its group, and unlike a
+	// deploy there is no filename to read it from — the caller passes a bare
+	// module name. It does not have to be asked for either: TFDIR maps the
+	// module to its group, which is what ResolveFunctionGroup reads. Without
+	// this both URLs below came back as "function module requires parent
+	// function group name", about a group nobody was ever going to type.
+	parentName := ""
+	if objType == ObjectTypeFunctionMod {
+		group, gerr := c.ResolveFunctionGroup(ctx, oldName)
+		if gerr != nil {
+			return nil, fmt.Errorf("resolving the function group of %s: %w", oldName, gerr)
+		}
+		parentName = group
+	}
+
+	oldURL, err := c.buildObjectURLWithParent(objType, oldName, parentName)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +102,13 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 		return result, nil
 	}
 
-	// 4. Write source to new object
-	newURL, _ := c.buildObjectURL(objType, newName)
+	// 4. Write source to new object. Renaming a module does not move it between
+	// groups, so the group resolved above is the new object's too.
+	newURL, urlErr := c.buildObjectURLWithParent(objType, newName, parentName)
+	if urlErr != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Failed to address the new object: %v", urlErr))
+		return result, nil
+	}
 	lockResult, err := c.LockObject(ctx, newURL, "MODIFY")
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to lock new object: %v", err))

@@ -1405,7 +1405,24 @@ type CallGraphEdge struct {
 	CallerName string `json:"caller_name"`
 	CalleeURI  string `json:"callee_uri"`
 	CalleeName string `json:"callee_name"`
+	// CalleeKind is what the cross-reference row said the callee is — method,
+	// function module, type, data. It decides whether an edge is something that
+	// could execute, which a coverage figure has to know: a reference to a type
+	// is not a path anything could take.
+	CalleeKind string `json:"callee_kind,omitempty"`
 	Line       int    `json:"line,omitempty"`
+}
+
+// IsExecutableKind reports whether a callee kind is something a run could
+// actually reach. The vocabulary is wbCrossKind's and crossKind's, kept in one
+// place so a coverage figure and a callee list cannot drift apart.
+func IsExecutableKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "method", "function module", "report", "transaction", "subroutine", "program", "dialog module":
+		return true
+	default:
+		return false
+	}
 }
 
 // FlattenCallGraph converts a hierarchical call graph to a flat list of edges.
@@ -1423,6 +1440,7 @@ func FlattenCallGraph(root *CallGraphNode) []CallGraphEdge {
 				CallerName: parent.Name,
 				CalleeURI:  child.URI,
 				CalleeName: child.Name,
+				CalleeKind: child.Type,
 				Line:       child.Line,
 			})
 			childCopy := child
@@ -1454,13 +1472,25 @@ func AnalyzeCallGraph(root *CallGraphNode) *CallGraphStats {
 	seen := make(map[string]bool)
 	var maxDepth int
 
+	// Keyed by identity, not by URI. The callee side builds children from
+	// cross-reference rows, which name an object but carry no ADT path, so every
+	// child arrived with URI "" — and a dedup on that key folded all of them
+	// into one. The result was a graph reporting two nodes beside its own list
+	// of twenty-seven edges, in an answer that showed both.
+	key := func(n *CallGraphNode) string {
+		if n.URI != "" {
+			return "uri:" + n.URI
+		}
+		return "name:" + n.Type + ":" + n.Name
+	}
+
 	var traverse func(node *CallGraphNode, depth int)
 	traverse = func(node *CallGraphNode, depth int) {
 		if depth > maxDepth {
 			maxDepth = depth
 		}
-		if !seen[node.URI] {
-			seen[node.URI] = true
+		if k := key(node); !seen[k] {
+			seen[k] = true
 			stats.TotalNodes++
 			stats.NodesByType[node.Type]++
 			stats.UniqueNodes = append(stats.UniqueNodes, node.Name)
@@ -1478,10 +1508,17 @@ func AnalyzeCallGraph(root *CallGraphNode) *CallGraphStats {
 
 // CallGraphComparison compares static and actual call graphs.
 type CallGraphComparison struct {
-	CommonEdges   []CallGraphEdge `json:"common_edges"`   // In both static and actual
-	StaticOnly    []CallGraphEdge `json:"static_only"`    // In static but not executed
-	ActualOnly    []CallGraphEdge `json:"actual_only"`    // Executed but not in static (dynamic calls)
-	CoverageRatio float64         `json:"coverage_ratio"` // Actual/Static ratio
+	CommonEdges []CallGraphEdge `json:"common_edges"` // In both static and actual
+	StaticOnly  []CallGraphEdge `json:"static_only"`  // In static but not executed
+	ActualOnly  []CallGraphEdge `json:"actual_only"`  // Executed but not in static (dynamic calls)
+	// CoverageRatio is executed invocations over recorded invocations, or -1
+	// when nothing callable was recorded at all — which is not the same as
+	// nothing having run.
+	CoverageRatio float64 `json:"coverage_ratio"`
+	// ExecutableEdges is how many of the static edges were invocations rather
+	// than type or data references. The denominator, stated so a reader can
+	// see what the ratio is of.
+	ExecutableEdges int `json:"executable_edges"`
 }
 
 // CompareCallGraphs compares a static call graph with an actual execution trace.
@@ -1518,8 +1555,29 @@ func CompareCallGraphs(staticEdges, actualEdges []CallGraphEdge) *CallGraphCompa
 	}
 
 	// Coverage ratio
-	if len(staticEdges) > 0 {
-		comp.CoverageRatio = float64(len(comp.CommonEdges)) / float64(len(staticEdges))
+	// Only the edges something could execute count towards coverage. Most of a
+	// class's static edges are type and data references — ABAP_BOOL, SYST,
+	// TADIR — and counting those as paths that were never taken produced
+	// figures like 0.037 for a run that exercised everything callable.
+	executable := 0
+	for _, e := range staticEdges {
+		if IsExecutableKind(e.CalleeKind) {
+			executable++
+		}
+	}
+	comp.ExecutableEdges = executable
+	commonExecutable := 0
+	for _, e := range comp.CommonEdges {
+		if IsExecutableKind(e.CalleeKind) {
+			commonExecutable++
+		}
+	}
+	if executable > 0 {
+		comp.CoverageRatio = float64(commonExecutable) / float64(executable)
+	} else if len(staticEdges) > 0 {
+		// Nothing callable was recorded, so there is no coverage to report. A
+		// zero here would read as "none of it ran".
+		comp.CoverageRatio = -1
 	}
 
 	return comp
@@ -1576,6 +1634,13 @@ type TraceExecutionResult struct {
 	// Statistics
 	StaticStats *CallGraphStats `json:"static_stats,omitempty"`
 
+	// Unsearched names the steps that did not run. Every field above is
+	// omitempty, so a run where nothing worked marshals to almost nothing and
+	// reads as "there was nothing to report". Comparison is the point of this
+	// call, and it is absent both when static and actual agree and when the
+	// trace never arrived.
+	Unsearched []Unsearched `json:"unsearched,omitempty"`
+
 	// Execution info
 	ExecutedTests []string `json:"executed_tests,omitempty"`
 	ExecutionTime int64    `json:"execution_time_us,omitempty"`
@@ -1614,8 +1679,12 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 			MaxResults: 500,
 		})
 		if err != nil {
-			// Non-fatal: continue without static graph
+			// Non-fatal for the run, but not for the reader: without the static
+			// half there is nothing to compare the trace against, and the
+			// comparison is simply absent rather than wrong.
 			result.StaticGraph = nil
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "static call graph", Reason: err.Error()})
 		} else {
 			result.StaticGraph = staticGraph
 			result.StaticStats = AnalyzeCallGraph(staticGraph)
@@ -1625,7 +1694,13 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 	// Step 2: Run unit tests if requested (to trigger execution)
 	if opts.RunTests && opts.TestObjectURI != "" {
 		testResult, err := c.RunUnitTests(ctx, opts.TestObjectURI, nil)
-		if err == nil && testResult != nil {
+		if err != nil || testResult == nil {
+			// The tests were asked for in order to make something run. If they
+			// did not, the trace below is of whatever else happened to execute,
+			// which is not what the caller asked to see.
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "unit tests " + opts.TestObjectURI, Reason: errOrEmpty(err, "no test result came back")})
+		} else {
 			// Collect test names that ran
 			for _, tc := range testResult.Classes {
 				for _, tm := range tc.TestMethods {
@@ -1647,13 +1722,23 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 		User:       traceUser,
 		MaxResults: 5,
 	})
-	if err == nil && len(traces) > 0 {
+	if err != nil || len(traces) == 0 {
+		// No trace means no actual edges, so the comparison cannot be made.
+		// Saying so is the difference between "the code ran as predicted" and
+		// "nobody looked".
+		result.Unsearched = append(result.Unsearched, Unsearched{
+			Object: "runtime trace for " + traceUser,
+			Reason: errOrEmpty(err, "no trace was recorded for this user; the code under trace may not have run")})
+	} else {
 		// Get the most recent trace
 		latestTrace := traces[0]
 
 		// Get hitlist analysis
 		analysis, err := c.GetTrace(ctx, latestTrace.ID, "hitlist")
-		if err == nil {
+		if err != nil {
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "trace " + latestTrace.ID, Reason: err.Error()})
+		} else {
 			result.Trace = analysis
 			result.ExecutionTime = analysis.TotalTime
 

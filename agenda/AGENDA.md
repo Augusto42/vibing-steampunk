@@ -4,14 +4,32 @@ The living board. One file, kept current — not a dated series. Dated analyses
 live beside it as `agenda/YYYY-MM-DD-NNN-topic.md`.
 
 Written for whoever picks the work up next, including the other agents working
-on this repo from other machines. Last updated 2026-08-24 by **wsl-claude**, after two days of work that the
-board had not caught up with.
+on this repo from other machines. Last updated 2026-08-24, merging the release
+session's board with **vsp-amdp-c1**'s — two sessions wrote it the same day from
+two worktrees, which is why it says so.
 
 > Sanitize policy applies here like anywhere else in the tree: no live
 > hostnames, usernames, transport IDs or customer packages. Operational detail
 > with real identifiers belongs under `.local/` or `.private/`.
 
 ---
+
+> **Start here for the graph:** [contexts/2026-08-24-graph-handoff.md](../contexts/2026-08-24-graph-handoff.md)
+> — state, direction and where to resume. This board carries the items; that
+> file carries the shape and the order.
+
+## Landed — 2026-08-24
+
+**`feat/graph-forward` is on `main`.** Twelve commits, merged by the release
+session. Two of them unblock the ABAP-IRC project, which was working around both
+by hand: `e58097d` (a function module could be created from a file but never
+updated) and `438c3d8` (`edit` accepts TABL). **ABAP-IRC should be told to drop
+its workarounds.**
+
+Merged with two conflicts, both in files two sessions edited the same day: this
+board, and `handlers_analysis.go`, where the routing switch became a map so
+`vsp sweep` can enumerate the analyze surface without calling SAP. The graph
+session's `countExecutable` sits above it, untouched.
 
 ## Where things stand — 2026-08-24
 
@@ -90,6 +108,109 @@ wrapper — the wrapper would have kept the defect reachable under the old name.
 There is no stated API stability promise; if one is wanted, now is the time.
 
 ## Needs a decision
+
+**Four gaps reported by a neighbouring project** (an IRC server on ABAP Push
+Channel, built against `$ZADT_VSP` as reference). Reproducible on a4h, reported
+2026-08-24, none blocking — workarounds exist for all but the last:
+
+1. `create TABL` adds the client field itself but does not reject a `MANDT` the
+   caller also passed, producing a table with two client fields that activates
+   and looks correct. An error is wanted, not silent precedence — a silent wrong
+   result is indistinguishable from a right one.
+2. ~~`edit` does not accept TABL~~ — **fixed**. It was exactly what the reporter
+   said: every piece of the route already existed and driving it by hand worked;
+   the type was simply not named in three switches and a URL helper. Creating a
+   table from source still is not supported, and now says so along with what
+   does work, instead of reading as "tables are unsupported".
+3. `create` does not know ABAP Channels (`SAPC`, `SAMC`, `DMON`). The recipe,
+   read out of abapGit's own object handlers: `CL_APC_APPLICATION_OBJ_DATA` /
+   `_OBJ_PERS` with structure `APC_APPLICATION_COMPLETE` and lock `E_APC_APPL`;
+   the AMC pair is the same shape. Sequence is `lock → corr_insert(package) →
+   set_data → save → unlock` through `IF_WB_OBJECT_PERSIST`. One implementation
+   closes the whole family.
+4. ~~`query` and `grep` unhandled on the MCP surface~~ — **withdrawn by the
+   reporter**: their server process started 2026-08-23 19:31 against a binary
+   rebuilt 2026-08-24 00:52, so they were calling yesterday's image. Not a bug.
+   Items 1–3 were observed on that same image and are worth re-observing on a
+   fresh one before anyone works them.
+
+**Item 2 above is fixed** (`edit`/deploy for function modules): a module is
+addressable only under its group, the abapGit filename carries both, and
+ParseABAPFile reads both correctly — but the deploy path dropped the group twice,
+in the object URL and again in the source URL. It failed on *update* and not on
+create, which is why it looked intermittent: DeployFromFile delegates to
+UpdateFromFile whenever the object already exists, so the first deploy of a
+module could succeed and every one after it could not.
+
+**A twin of the deploy defect, in rename** — reported and **fixed** the same
+night. `RenameObject` built both URLs through the parentless wrapper, so
+renaming a function module refused with the same sentence. Unlike deploy there
+is no filename to read the group from, but it never needed asking for: the ADT
+object search maps a module to its group and the client already reads it.
+
+Worth keeping from how it was fixed: the first test written for it **passed with
+the defect reintroduced**. Its fake answered a table query while the resolver
+uses the object search, so the resolution failed before the code under test was
+reached. A test that cannot fail is worse than no test, because it reports a
+guarantee nobody has. Every fix on this branch is mutation-checked for that
+reason, and this is the one that justified the habit.
+
+**A suggestion worth taking up:** the same reporter found a SAMC object silently
+filed in `$TMP` — the design-time handler ignored the package it was given —
+only because they exported the package and compared it against sources. The
+export found that *and* a wrong AMC activity left on the system in one pass.
+**A package export is not a backup, it is a test.** Somewhere in checks there
+should be an "export and diff against source" step; it catches a class nothing
+else here looks at.
+
+**Two findings from the same reporter, about SAP rather than about vsp:**
+
+- **An RFC session holds a loaded function group.** Edit a module, activate,
+  call it again in the same session, and the *old* code runs — activation
+  succeeds, the answer is well-formed, and it is simply the previous version.
+  The symptom is indistinguishable from "my edit was wrong", which is what makes
+  it expensive. Passing a destination override opens a fresh connection and
+  reloads. **Open for us:** should `edit` reopen the connection after activating
+  a FUGR, or at least say in its answer that a call on this session may return
+  the old code?
+- **AMC channels need program authorisations, and fail silently without them.**
+  Both send and bind simply do nothing. With a trap: binding an AMC channel to a
+  WebSocket connection is *not* covered by activity `R` even though the
+  connection only consumes — the APC bind manager checks `C`. Recorded here
+  because the next person into ABAP Channels loses an evening to it otherwise.
+
+**The graph surface, swept 2026-08-24** —
+[001-graph-surface-sweep](2026-08-24-001-graph-surface-sweep.md). All fifteen
+graph capabilities called against a live 7.58 system: **ten answer, five do
+not**. Worst is `check_boundaries`, which reports CLEAN with zero dependencies
+for a package the CLI finds three boundary crossings in — wrong in the
+reassuring direction. `analyze_call_graph` returns two nodes for twenty-seven
+edges; `references` returns 56,000 characters and cannot be used by the agent it
+is for. Two more (`object_structure`, `where_used_config`) failed against a
+server process older than the release and **must be rechecked before anything is
+spent on them**.
+
+Two findings outrank the defects. The previous inventory listed thirteen
+capabilities; the router dispatches fifteen, so a sweep of the list could not
+reach `trace_execution` or `compare_call_graphs` — and did not. And a sweep must
+name the build it exercised, because a long-lived server keeps the image it
+started with and the answer looks identical either way.
+
+**Status:** all five defects fixed the same night (`b3a3bbc`, `e678848`,
+`b1b4f29`, `84487ae`), plus two the sweep was not looking for (`62c4c8e`). The
+two failures marked for recheck were stale-process artefacts and needed no fix.
+`graph_stats` remains open as a scope question, not a bug: it analyses source
+handed to it and cannot be asked about a repository object, which its name does
+not suggest.
+
+**Ordered next steps** are in the handoff linked at the top; in short: land the
+branch, then one sentence in `edit` about function-group activation, then the
+sweep as a command, then describe the fifteen against it. The traversal layer is
+deliberately not next.
+
+**Open question:** build the sweep as a command (`vsp compat` already has the
+shape — checks, report, JSON, two-system comparison), so "does this work" is
+answered by a transcript instead of a belief?
 
 **The audit of 2026-08-22** — [002-truthfulness-sprint](2026-08-22-002-truthfulness-sprint.md).
 181 promises inventoried, 134 verified, 68 overstated or unverifiable. Tool

@@ -152,8 +152,17 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 		truncated := 0
 
 		for _, obj := range pkgContent.Objects {
-			// Only analyze source-bearing objects
+			// The package listing carries SAP's own two-part code — CLAS/OC,
+			// PROG/P, INTF/OI — and this compared it against the bare kind, so
+			// every object was skipped before anything was read. An empty graph
+			// then has no boundary to cross, and the answer was "Total
+			// dependencies: 0, CLEAN" for a package the CLI finds three
+			// crossings in. Nothing reported a failure because nothing was
+			// attempted.
 			objType := strings.ToUpper(obj.Type)
+			if i := strings.Index(objType, "/"); i > 0 {
+				objType = objType[:i]
+			}
 			if objType != "CLAS" && objType != "PROG" && objType != "FUGR" && objType != "INTF" {
 				continue
 			}
@@ -166,7 +175,13 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 				continue
 			}
 
-			source, err := s.adtClient.GetSource(ctx, "", obj.Name, nil)
+			// The type is passed, not omitted. GetSource switches on it and has
+			// no branch for the empty string, so asking without one failed for
+			// every object in the package — and an object that contributes no
+			// edges is indistinguishable from a clean one, which is how this
+			// answered "Total dependencies: 0, CLEAN" for a package the CLI
+			// finds three boundary crossings in.
+			source, err := s.adtClient.GetSource(ctx, objType, obj.Name, nil)
 			if err != nil {
 				// An object we could not read contributes no edges, and no
 				// edges is what a clean object looks like. Record it or the
@@ -204,6 +219,27 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 			IncludeDynamic:  true,
 			IncludeStandard: format == "full",
 		})
+
+		if count == 0 {
+			// Not a clean package — an unexamined one. CheckBoundaries on an
+			// empty graph finds no violation because there is nothing in it to
+			// violate anything, and reporting that as CLEAN is the reassuring
+			// direction of wrong: nobody re-reads a verdict that says fine.
+			reason := "no source-bearing objects were found in it"
+			if len(unreadable) > 0 {
+				reason = fmt.Sprintf("none of its %d source-bearing objects could be read", len(unreadable))
+			}
+			return newToolResultError(fmt.Sprintf(
+				"%s was not analysed: %s. There is no verdict to give — an empty graph has no boundary to cross, "+
+					"which is not the same as a package that crosses none.%s",
+				strings.ToUpper(pkg), reason,
+				func() string {
+					if n := adt.UnsearchedNote(unreadable, len(unreadable), "object"); n != "" {
+						return "\n" + n
+					}
+					return ""
+				}())), nil
+		}
 
 		var notes []string
 		if n := adt.UnsearchedNote(unreadable, count+len(unreadable), "object"); n != "" {
