@@ -61,6 +61,27 @@ create, which is why it looked intermittent: DeployFromFile delegates to
 UpdateFromFile whenever the object already exists, so the first deploy of a
 module could succeed and every one after it could not.
 
+**A twin of the deploy defect, in rename** — reported and **fixed** the same
+night. `RenameObject` built both URLs through the parentless wrapper, so
+renaming a function module refused with the same sentence. Unlike deploy there
+is no filename to read the group from, but it never needed asking for: the ADT
+object search maps a module to its group and the client already reads it.
+
+Worth keeping from how it was fixed: the first test written for it **passed with
+the defect reintroduced**. Its fake answered a table query while the resolver
+uses the object search, so the resolution failed before the code under test was
+reached. A test that cannot fail is worse than no test, because it reports a
+guarantee nobody has. Every fix on this branch is mutation-checked for that
+reason, and this is the one that justified the habit.
+
+**A suggestion worth taking up:** the same reporter found a SAMC object silently
+filed in `$TMP` — the design-time handler ignored the package it was given —
+only because they exported the package and compared it against sources. The
+export found that *and* a wrong AMC activity left on the system in one pass.
+**A package export is not a backup, it is a test.** Somewhere in checks there
+should be an "export and diff against source" step; it catches a class nothing
+else here looks at.
+
 **Two findings from the same reporter, about SAP rather than about vsp:**
 
 - **An RFC session holds a loaded function group.** Edit a module, activate,
