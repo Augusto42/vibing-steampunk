@@ -229,10 +229,10 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 
 	// Validate object type
 	switch objectType {
-	case "PROG", "CLAS", "INTF", "DDLS", "BDEF", "SRVD", "SRVB":
+	case "PROG", "CLAS", "INTF", "DDLS", "BDEF", "SRVD", "SRVB", "TABL":
 		// Supported types
 	default:
-		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, DDLS, BDEF, SRVD, SRVB)", objectType)
+		result.Message = fmt.Sprintf("Unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, DDLS, BDEF, SRVD, SRVB, TABL)", objectType)
 		return result, nil
 	}
 
@@ -261,6 +261,9 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 			objectExists = (err == nil)
 		case "SRVB":
 			_, err := c.GetSRVB(ctx, name)
+			objectExists = (err == nil)
+		case "TABL":
+			_, err := c.GetTable(ctx, name)
 			objectExists = (err == nil)
 		}
 	}
@@ -664,6 +667,16 @@ func (c *Client) writeSourceCreate(ctx context.Context, objectType, name, source
 		}
 		return result, nil
 
+	case "TABL":
+		// Update works and create does not, so say which rather than leaving the
+		// caller to conclude tables are unsupported outright. A DDIC table needs
+		// a create step this workflow has no equivalent of; writing DDL over an
+		// existing table is the part that maps cleanly.
+		result.Message = "A DDIC table cannot be created from source here — creating one needs a DDIC " +
+			"create step this workflow does not have. Editing an existing table does work: create it " +
+			"first (action=create, target=\"TABL <name>\"), then edit its DDL like any other source."
+		return result, nil
+
 	default:
 		result.Message = fmt.Sprintf("Unsupported object type for creation: %s", objectType)
 		return result, nil
@@ -834,7 +847,7 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 
 		return result, nil
 
-	case "DDLS", "BDEF", "SRVD":
+	case "DDLS", "BDEF", "SRVD", "TABL":
 		// Get object URL
 		var objectURL string
 		switch objectType {
@@ -844,6 +857,13 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 			objectURL = GetObjectURL(ObjectTypeBDEF, name, "")
 		case "SRVD":
 			objectURL = GetObjectURL(ObjectTypeSRVD, name, "")
+		case "TABL":
+			// A DDIC table takes the same route as the CDS types: lock, write
+			// the DDL, unlock, activate. The low-level path was already there
+			// and being driven by hand — LOCK, UPDATE_SOURCE on
+			// /ddic/tables/{name}/source/main, ACTIVATE, UNLOCK — so all that
+			// was missing was the type being named here.
+			objectURL = GetObjectURL(ObjectTypeTable, name, "")
 		}
 		result.ObjectURL = objectURL
 		sourceURL := objectURL + "/source/main"

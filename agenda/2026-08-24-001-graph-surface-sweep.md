@@ -19,6 +19,12 @@ That is the first finding, and it outranks the rest:
 > looks identical either way. This nearly went into the record as "the state of
 > the release".
 
+And the corollary, learned the same night from the other direction: **a stale
+image must not become the default explanation.** Two failures here were
+artefacts of one and needed no fix; a third, reported by a neighbouring project,
+looked like the same artefact and was a real defect that had been shipping since
+January. The rule cuts both ways — check the build, then check the code anyway.
+
 ## The second finding: the inventory was wrong
 
 The previous audit worked from a list of thirteen — four documented, nine not.

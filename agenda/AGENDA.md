@@ -22,9 +22,11 @@ Channel, built against `$ZADT_VSP` as reference). Reproducible on a4h, reported
    caller also passed, producing a table with two client fields that activates
    and looks correct. An error is wanted, not silent precedence — a silent wrong
    result is indistinguishable from a right one.
-2. `edit` does not accept TABL, though the low-level path exists and works:
-   LOCK → UPDATE_SOURCE on `/ddic/tables/<name>/source/main` → ACTIVATE → UNLOCK.
-   Registering the type in the high-level `edit` is the whole job.
+2. ~~`edit` does not accept TABL~~ — **fixed**. It was exactly what the reporter
+   said: every piece of the route already existed and driving it by hand worked;
+   the type was simply not named in three switches and a URL helper. Creating a
+   table from source still is not supported, and now says so along with what
+   does work, instead of reading as "tables are unsupported".
 3. `create` does not know ABAP Channels (`SAPC`, `SAMC`, `DMON`). The recipe,
    read out of abapGit's own object handlers: `CL_APC_APPLICATION_OBJ_DATA` /
    `_OBJ_PERS` with structure `APC_APPLICATION_COMPLETE` and lock `E_APC_APPL`;
