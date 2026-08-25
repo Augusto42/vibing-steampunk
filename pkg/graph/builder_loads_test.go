@@ -76,3 +76,29 @@ func TestTheLoadedPoolKindSurvivesInTheEdge(t *testing.T) {
 		t.Errorf("the raw include should be kept, got %q", edges[0].RefDetail)
 	}
 }
+
+// Found in the tool's own output, not by reading: a class's generated companion
+// is the *master* of some rows, so filtering only the include side let it
+// through as another object loading the class. Names of that shape are in
+// neither REPOSRC nor TADIR — nothing can look one up, transport it or break
+// it, which is what <SYSINI> is too.
+
+func TestAGeneratedCompanionIsNotAnotherObject(t *testing.T) {
+	g := BuildD010INCGraph([]D010INCRow{
+		{Master: "~CL_DEMO_ORDER===============HCZ", Include: "ZCL_DEMO_ORDER===============CU"},
+		{Master: "~CL_DEMO_ORDER===============HPZ", Include: "ZCL_DEMO_ORDER===============CCDEF"},
+	})
+	if n := len(g.Edges()); n != 0 {
+		t.Errorf("a generated companion is machinery on either side of the row, got %d edges: %v", n, edgeSet(g))
+	}
+}
+
+func TestARealMasterStillProducesAnEdge(t *testing.T) {
+	// The guard must not swallow the rows it exists beside.
+	g := BuildD010INCGraph([]D010INCRow{
+		{Master: "ZCL_DEMO_CALLER==============CP", Include: "ZCL_DEMO_ORDER===============CU"},
+	})
+	if n := len(g.Edges()); n != 1 {
+		t.Errorf("one object loading another is the whole point, got %d", n)
+	}
+}
