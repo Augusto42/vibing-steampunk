@@ -145,16 +145,49 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		addOrMerge(merged, d.name, d.kind, d.line, LayerParser)
 	}
 
-	// Mark false positives: found by regex but NOT by parser
-	for name, dep := range merged {
-		foundByRegex := containsLayer(dep.FoundBy, LayerRegex)
-		foundByParser := containsLayer(dep.FoundBy, LayerParser)
-		if foundByRegex && !foundByParser {
-			dep.InString = true // likely in string or comment
+	// A dependency found by one layer and not the other is not thereby false.
+	//
+	// The rule here used to be "found by regex, not by parser ⇒ it is in a
+	// string or a comment", which assumes the parser is a superset of the
+	// regex. It is not. The parser layer is the graph's edge extractor: it
+	// models calls and references it draws edges for. The regex layer reads
+	// declarations — INHERITING FROM, INTERFACES, TYPE REF TO, CREATE OBJECT.
+	// The two answer different questions, so their disagreement is not
+	// evidence about either one.
+	//
+	// What that rule produced, measured on this repo's own ABAP: in
+	// ZCL_VSP_APC_HANDLER, whose whole job is to dispatch to them, every one of
+	// ZCL_VSP_GIT_SERVICE, ZCL_VSP_DEBUG_SERVICE, ZCL_VSP_RFC_SERVICE,
+	// ZCL_VSP_AMDP_SERVICE and ZCL_VSP_REPORT_SERVICE was reported as a likely
+	// false positive at confidence 0.3 — along with its superclass and every
+	// interface it implements. Twenty such across thirteen files, and the names
+	// dismissed were in every case the most important ones in the file.
+	//
+	// So the claim is now made from evidence rather than from absence: a name is
+	// marked as being in a string or a comment when every occurrence of it in
+	// the source is, which is exactly what the field says.
+	for _, dep := range merged {
+		// A function module is named in a literal by construction — CALL
+		// FUNCTION 'SSFC_BASE64_DECODE' — so "it only ever appears in quotes"
+		// is true of every real one. Applying the check to them turned four
+		// genuine dependencies in this repo's own ABAP into false positives,
+		// which is the check making the same mistake as the rule it replaced,
+		// in the other direction.
+		if dep.Kind == KindFunction {
+			continue
+		}
+		if occursOnlyInStringsOrComments(source, dep.Name) {
+			dep.InComment = true
 			dep.Confidence = 0.3
 			result.FalsePositives++
+			continue
 		}
-		_ = name
+		// Corroboration still raises confidence — two layers seeing the same
+		// name is worth more than one — but its absence no longer lowers it
+		// below what a single layer's own evidence supports.
+		if len(dep.FoundBy) > 1 {
+			dep.Confidence = 0.95
+		}
 	}
 
 	// Layer 2: SCAN ABAP-SOURCE (if SAP connected)
@@ -184,11 +217,24 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		}
 	}
 
-	// Calculate confidence — parser is the authority, CROSS is supplementary
-	// Parser-confirmed = real. Regex-only = suspect. CROSS-only = stale but notable.
+	// Confidence: corroboration raises it, and no single layer's silence lowers
+	// it below what that layer's own evidence supports.
+	//
+	// The regex-only case used to end `dep.Confidence = 0.3; dep.InString =
+	// true` — the same inference as the false-positive pass above, written
+	// twice. It is wrong for the same reason: the parser layer is the graph's
+	// edge extractor and models calls, while the regex reads declarations, so
+	// "the parser did not see it" is a fact about what the parser looks for.
+	// An INHERITING FROM is not a suspected string literal.
 	for _, dep := range merged {
+		if dep.InString || dep.InComment {
+			continue // decided by the direct check, on evidence
+		}
 		if dep.Confidence > 0 {
-			continue // already set (e.g., false positive)
+			if dep.Confidence >= 0.5 {
+				result.TrueDeps++
+			}
+			continue
 		}
 
 		hasParser := containsLayer(dep.FoundBy, LayerParser)
@@ -198,21 +244,26 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 
 		switch {
 		case hasParser && (hasScan || hasCross):
-			dep.Confidence = 1.0 // confirmed by parser + SAP layer
+			dep.Confidence = 1.0 // parser plus a SAP-side layer
 		case hasParser && hasRegex:
-			dep.Confidence = 0.95 // confirmed by parser (regex agrees)
+			dep.Confidence = 0.95 // two independent readers agree
+		case hasScan && hasRegex:
+			dep.Confidence = 0.95 // the kernel tokenizer and the regex agree
 		case hasParser:
-			dep.Confidence = 0.9 // parser says yes (authoritative)
+			dep.Confidence = 0.9 // a call the parser resolved
 		case hasScan:
-			dep.Confidence = 0.85 // SAP kernel tokenizer says yes
+			dep.Confidence = 0.85 // the SAP kernel tokenizer saw it
 		case hasCross && hasRegex:
-			dep.Confidence = 0.8 // CROSS index + regex agree
-		case hasCross:
-			dep.Confidence = 0.6  // CROSS only — might be stale but notable
-			dep.InComment = false // not a false positive, just from index
+			dep.Confidence = 0.8 // the index and the source agree
 		case hasRegex:
-			dep.Confidence = 0.3 // regex only — likely false positive
-			dep.InString = true
+			// A declaration — INHERITING FROM, INTERFACES, TYPE REF TO,
+			// CREATE OBJECT. Only this layer reads them, so only this layer can
+			// report them, and that is evidence rather than the absence of it.
+			dep.Confidence = 0.8
+		case hasCross:
+			// The index says so and the source does not show it. Notable, and
+			// possibly stale — the one case where a single layer earns less.
+			dep.Confidence = 0.6
 		default:
 			dep.Confidence = 0.1
 		}
@@ -476,4 +527,85 @@ func extractFromScanTokens(tokens []ScanToken) []parsedDep {
 	}
 
 	return deps
+}
+
+// occursOnlyInStringsOrComments reports whether every occurrence of name in the
+// source is inside a comment or a string literal.
+//
+// This is the direct measurement of what InString and InComment claim, and it
+// replaces an inference from one layer not having seen the name. It is
+// deliberately conservative: a single occurrence in real code is enough to
+// treat the dependency as real, because dropping a genuine dependency from a
+// reader's context is worse than carrying an extra one.
+func occursOnlyInStringsOrComments(source, name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	found := false
+	for _, line := range strings.Split(source, "\n") {
+		upper := strings.ToUpper(line)
+		idx := strings.Index(upper, name)
+		if idx < 0 {
+			continue
+		}
+		found = true
+		if !occurrenceIsQuotedOrCommented(line, upper, name) {
+			return false
+		}
+	}
+	// A name that does not occur at all came from an index rather than from the
+	// text — CROSS or where-used — and says nothing about strings.
+	return found
+}
+
+// occurrenceIsQuotedOrCommented reports whether every occurrence of name on this
+// one line sits inside a comment or a string literal.
+func occurrenceIsQuotedOrCommented(line, upper, name string) bool {
+	// A full-line comment: '*' in the first column.
+	trimmed := strings.TrimLeft(line, " \t")
+	if strings.HasPrefix(line, "*") {
+		return true
+	}
+	_ = trimmed
+
+	for start := 0; ; {
+		idx := strings.Index(upper[start:], name)
+		if idx < 0 {
+			return true
+		}
+		at := start + idx
+		if !quotedOrCommentedAt(line, at) {
+			return false
+		}
+		start = at + len(name)
+	}
+}
+
+// quotedOrCommentedAt walks the line to the given offset, tracking whether it is
+// inside a string literal, and reports the state there.
+//
+// ABAP has two quoting characters and one of them doubles as the comment
+// marker: a double quote outside a string starts a comment that runs to the end
+// of the line, and a single quote delimits a literal in which ” is an escaped
+// quote.
+func quotedOrCommentedAt(line string, offset int) bool {
+	inLiteral := false
+	for i := 0; i < offset && i < len(line); i++ {
+		switch line[i] {
+		case '\'':
+			if inLiteral && i+1 < len(line) && line[i+1] == '\'' {
+				i++ // an escaped quote inside the literal
+				continue
+			}
+			inLiteral = !inLiteral
+		case '"':
+			if !inLiteral {
+				return true // everything from here is a comment
+			}
+		case '`':
+			inLiteral = !inLiteral
+		}
+	}
+	return inLiteral
 }
