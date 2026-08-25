@@ -125,6 +125,95 @@ Unit tests:
 ATC check:
   SAP(action="test", params={"type": "atc", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})`)
 
+	case "rfc":
+		return mcp.NewToolResultText(`SAP(action="rfc") - Classic RFC to the same system
+
+This is not ADT. It speaks SAP's classic Type-3 protocol to the gateway,
+in pure Go — no NetWeaver RFC SDK, no native library. A system reachable
+over HTTPS is not necessarily reachable here: the gateway is a different
+port and is often closed.
+
+  SAP(action="rfc", params={"op": "info"})            — who answers, and as whom
+  SAP(action="rfc", params={"op": "ping"})            — is the gateway there at all
+  SAP(action="rfc", target="STFC_CONNECTION")         — describe an FM as JSON Schema
+  SAP(action="rfc", target="Z_DOUBLE", params={"op": "call", "args": {"N": 21}})
+  SAP(action="rfc", params={"op": "search", "pattern": "BAPI_USER*"})
+  SAP(action="rfc", params={"op": "read_table", "table": "T000", "where": "MANDT = '001'"})
+
+Destination overrides, when the default is not the one wanted:
+  host, sysnr, port, user
+
+Only remote-enabled function modules can be called. A module that is not
+marked remote is unreachable by every transport, which is a property of
+the module and not of the connection.`)
+
+	case "i18n":
+		return mcp.NewToolResultText(`SAP(action="i18n") - Translation texts and language comparison
+
+Object texts in one language:
+  SAP(action="i18n", params={"op": "texts", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "language": "DE"})
+
+Data element labels (short, medium, long, heading):
+  SAP(action="i18n", params={"op": "data_element_labels", "name": "ZDE_ORDER_ID", "language": "DE"})
+  SAP(action="i18n", params={"op": "write_labels", "name": "ZDE_ORDER_ID", "language": "DE", "short": "...", "medium": "..."})
+
+Message class texts:
+  SAP(action="i18n", params={"op": "message_class_texts", "name": "ZVSP_GIT", "language": "EN"})
+  SAP(action="i18n", params={"op": "write_message_texts", "name": "ZVSP_GIT", "language": "DE", "messages": [...]})
+
+Selection texts and text symbols of a report:
+  SAP(action="i18n", params={"op": "text_pool", "name": "ZDEMO_REPORT", "language": "EN"})
+
+What differs between two languages:
+  SAP(action="i18n", params={"op": "compare_languages", "object_url": "...", "languages": "EN,DE"})
+
+write_labels and write_message_texts modify the system.`)
+
+	case "revisions", "history":
+		return mcp.NewToolResultText(`SAP(action="revisions") - Version history
+
+List versions (the default when no op is given):
+  SAP(action="revisions", params={"object_type": "CLAS", "object_name": "ZCL_DEMO"})
+
+Read one version's source:
+  SAP(action="revisions", params={"op": "source", "version_uri": "..."})
+
+Compare two versions:
+  SAP(action="revisions", params={"op": "compare", "object_type": "CLAS", "object_name": "ZCL_DEMO", "from": "...", "to": "..."})
+
+Version URIs come from the list; they are not constructable by hand.`)
+
+	case "lint":
+		return mcp.NewToolResultText(`SAP(action="lint") - Static analysis, offline
+
+  SAP(action="lint", params={"source": "REPORT zdemo.\nWRITE 'x'.\n"})
+  SAP(action="lint", params={"object_type": "CLAS", "object_name": "ZCL_DEMO"})
+
+Also reachable as analyze type=lint, because that is where somebody looks
+for static analysis first.
+
+Thirteen rules, eight of them on by default: empty catch blocks, over-broad
+exception catches, hardcoded credentials, magic numbers, unreachable code.
+Runs in this process — no ABAP is executed and no server is involved when
+source is supplied.`)
+
+	case "effects":
+		return mcp.NewToolResultText(`analyze type=effects - Side effects and LUW class
+
+  SAP(action="analyze", params={"type": "effects", "object_type": "CLAS", "name": "ZCL_DEMO"})
+  SAP(action="analyze", params={"type": "effects", "source": "METHOD m. COMMIT WORK. ENDMETHOD."})
+
+Reports what the unit does to the world, and classifies its transaction
+behaviour:
+
+  safe         neither commits nor defers — the caller's LUW is intact
+  participant  defers work the caller's COMMIT will run
+  owner        contains COMMIT WORK — ends its caller's transaction
+  unsafe       both, so part of what it queues is committed by each
+
+The analysis is local: it reads this source and nothing it calls, and the
+answer says so.`)
+
 	case "grep":
 		return mcp.NewToolResultText(`SAP(action="grep") - Search in source code
 
@@ -473,4 +562,19 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 	}
 
 	return sb.String()
+}
+
+// helpTopics lists what handleHelp answers specifically, for the test that
+// checks the documented set against the advertised one.
+//
+// A hand-kept list, and the comment says so: the durable fix is one registry
+// every router registers into, carrying its action, its handler and its help.
+// Until that exists, this list and the switch above can drift, and the test is
+// what makes the drift loud rather than silent.
+func helpTopics() []string {
+	return []string{
+		"read", "edit", "create", "delete", "search", "query", "grep",
+		"test", "analyze", "debug", "system", "rfc",
+		"i18n", "revisions", "history", "lint", "effects", "tips",
+	}
 }
