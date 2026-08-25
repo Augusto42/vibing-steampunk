@@ -1421,6 +1421,13 @@ type usageCallerCandidate struct {
 	Package string
 	IsTest  bool
 	Parent  string
+	// Section is the class include the reference was recorded against — CCAU,
+	// CCIMP — or empty for the main source. It has to travel with the candidate
+	// because a class is not one document: a call recorded against
+	// CL_FOO=========CCAU is in that class's test include and its main source
+	// does not contain it. Reading main answered cleanly, found nothing, and
+	// reported "0 of 15 callers" as though that were the answer.
+	Section string
 }
 
 func usageTargetFromArgs(args map[string]any) (graph.UsageTarget, error) {
@@ -1714,15 +1721,25 @@ func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.
 				continue // no source snippets from FUGR metadata in v1
 			}
 			nodeID := graph.NodeID(objType, objName)
-			if seen[nodeID] {
+			section := graph.SectionOfInclude(include)
+			// Keyed by the document that will be read, not by the object: a
+			// class calling the target from both its main source and its test
+			// include is two reads, and keeping only the first drops half the
+			// answer.
+			key := nodeID
+			if inc, own := adt.ClassIncludeForSection(section); own && objType == "CLAS" {
+				key = nodeID + "/" + string(inc)
+			}
+			if seen[key] {
 				continue
 			}
-			seen[nodeID] = true
+			seen[key] = true
 			out = append(out, usageCallerCandidate{
-				NodeID: nodeID,
-				Name:   objName,
-				Type:   objType,
-				IsTest: graph.IsTestCaller(objName, ""),
+				NodeID:  nodeID,
+				Name:    objName,
+				Type:    objType,
+				Section: section,
+				IsTest:  graph.IsTestCaller(objName, ""),
 			})
 			if len(out) >= maxCandidates {
 				return out, gaps, nil
@@ -1736,6 +1753,13 @@ func (s *Server) fetchUsageCandidatesFallback(ctx context.Context, target graph.
 func (s *Server) fetchUsageCandidateSource(ctx context.Context, cand usageCallerCandidate) (string, error) {
 	switch cand.Type {
 	case "CLAS", "PROG", "INTF":
+		// Four class sections have an address of their own. Everything else —
+		// CP, CU, CO, CI and every CM### — lives in the main source and must
+		// not be given a path by pattern: ADT answers 404 to an invented one,
+		// and the candidate is then filed as unreadable rather than read.
+		if inc, own := adt.ClassIncludeForSection(cand.Section); own && cand.Type == "CLAS" {
+			return s.adtClient.GetClassInclude(ctx, cand.Name, inc)
+		}
 		return s.adtClient.GetSource(ctx, cand.Type, cand.Name, nil)
 	case "FUNC":
 		if cand.Parent == "" {

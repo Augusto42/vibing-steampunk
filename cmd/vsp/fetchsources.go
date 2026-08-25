@@ -40,10 +40,33 @@ import (
 // command to introduce itself.
 const sourceFetchWorkers = 6
 
-// sourceRef names one object to read.
+// sourceRef names one object to read, and optionally which part of it.
+//
+// Section matters because a class is not one document. A call recorded against
+// CL_FOO=========CCAU is in that class's *test* include, and CL_FOO's main
+// source does not contain it — reading main answers cleanly, finds nothing, and
+// reports "0 of 15" as though that were the answer. Four sections have an
+// address of their own; everything else lives in the main source and must not
+// be given a path by pattern, because ADT answers 404 to an invented one and
+// the object is then filed as unreadable.
 type sourceRef struct {
 	Type string
 	Name string
+	// Section is a class include suffix — CCAU, CCIMP — or empty for the
+	// object's main source.
+	Section string
+}
+
+// Address returns a stable identity for what this ref will read, so a caller
+// can dedupe by document rather than by object. A class that calls the target
+// from both its main source and its test include is two reads, not one, and
+// keeping only the first drops half the answer.
+func (r sourceRef) Address() string {
+	inc, own := adt.ClassIncludeForSection(r.Section)
+	if r.Type == "CLAS" && own {
+		return "CLAS " + r.Name + " " + string(inc)
+	}
+	return r.Type + " " + r.Name
 }
 
 // sourceResult is what came back for one ref, in the position it was asked in.
@@ -78,7 +101,13 @@ func fetchSources(ctx context.Context, client *adt.Client, refs []sourceRef, lab
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			src, err := client.GetSource(ctx, ref.Type, ref.Name, nil)
+			var src string
+			var err error
+			if inc, own := adt.ClassIncludeForSection(ref.Section); own && ref.Type == "CLAS" {
+				src, err = client.GetClassInclude(ctx, ref.Name, inc)
+			} else {
+				src, err = client.GetSource(ctx, ref.Type, ref.Name, nil)
+			}
 			results[i] = sourceResult{Ref: ref, Source: src, Err: err}
 
 			n := atomic.AddInt64(&done, 1)
