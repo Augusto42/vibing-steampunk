@@ -322,6 +322,33 @@ func NodeID(objType, objName string) string {
 //	LZFUGR_U01            → FUGR:ZFUGR
 //	ZREPORT               → PROG:ZREPORT
 //	ZREPORT_F01           → PROG:ZREPORT (heuristic)
+//
+// SectionOfInclude returns the part of a padded include that says *which part
+// of the object* it is: CCAU for the test classes, CCIMP for the local
+// implementations, CM001 for one method, CU for the public section. Empty for
+// includes that are not a section of a class or interface pool.
+//
+// It exists because NormalizeInclude computes this and throws it away, and
+// throwing it away turned out to matter. A cross-reference row saying
+// CL_X===========CCAU means the reference is in that class's *test* include;
+// normalising it to "class CL_X" and then reading source/main looks up a
+// different part of the same object, finds nothing, and reports nothing found.
+// Measured on a live 7.58: of the callers of CL_ABAP_UNIT_ASSERT's
+// ASSERT_EQUALS, every single one is a CCAU row, and every single one read
+// clean and empty.
+//
+// So the name is not the address. A consumer that goes from a cross-reference
+// row to source has to carry the section with it or it is blind to test code
+// entirely — which is most of where a utility class is called from.
+func SectionOfInclude(include string) string {
+	inc := strings.TrimSpace(include)
+	idx := strings.Index(inc, "=")
+	if idx <= 0 {
+		return ""
+	}
+	return strings.TrimLeft(inc[idx:], "=")
+}
+
 func NormalizeInclude(include string) (nodeID string, objType string, objName string) {
 	inc := strings.TrimSpace(include)
 
