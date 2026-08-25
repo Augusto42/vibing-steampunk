@@ -979,6 +979,31 @@ const (
 	ClassIncludeTestClasses     ClassIncludeType = "testclasses"
 )
 
+// ClassIncludeForSection maps the suffix a cross-reference row carries to the
+// ADT address of that part of the class.
+//
+// The pairs are measured against a live 7.58, not inferred, and the set is
+// exactly this: includes/main, includes/localtypes and
+// includes/localimplementations do not answer — 404, 404 and 400 — so an
+// address cannot be invented from a suffix by pattern.
+//
+// The second return says whether the section has an address of its own at all.
+// CP, CU, CO, CI and the CM### method includes do not: their source is the main
+// source, and a caller must read that rather than guess a path.
+func ClassIncludeForSection(section string) (ClassIncludeType, bool) {
+	switch strings.ToUpper(strings.TrimSpace(section)) {
+	case "CCAU":
+		return ClassIncludeTestClasses, true
+	case "CCDEF":
+		return ClassIncludeDefinitions, true
+	case "CCIMP":
+		return ClassIncludeImplementations, true
+	case "CCMAC":
+		return ClassIncludeMacros, true
+	}
+	return ClassIncludeMain, false
+}
+
 // GetClassIncludeURL returns the URL for a class include.
 // Supports namespaced classes like /UI5/CL_REPOSITORY_LOAD.
 func GetClassIncludeURL(className string, includeType ClassIncludeType) string {
