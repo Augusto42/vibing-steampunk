@@ -100,7 +100,7 @@ func graphProbes() []Probe {
 			ID: "graph.callees", Capability: "analyze type=callees",
 			Why:    "the down direction, read from the cross-reference tables",
 			Action: "analyze", Needs: []string{"references"},
-			Params: map[string]any{"type": "callees", "object_name": "{references}", "object_type": "CLAS"},
+			Params: map[string]any{"type": "callees", "object_name": "{references}", "object_type": "{references_type}"},
 			Oracle: oracleParserDeps,
 		},
 		{
@@ -159,7 +159,7 @@ func graphProbes() []Probe {
 			ID: "graph.graph_stats.object", Capability: "analyze type=graph_stats (object)",
 			Why:    "the same counts asked about a repository object, which the type refused to do until 2026-08-25 while its name promised otherwise",
 			Action: "analyze", Needs: []string{"references"},
-			Params: map[string]any{"type": "graph_stats", "object_type": "CLAS", "object_name": "{references}"},
+			Params: map[string]any{"type": "graph_stats", "object_type": "{references_type}", "object_name": "{references}"},
 			// The object was chosen because the cross-reference tables have rows
 			// for it, so its source cannot be free of dependencies either.
 			Oracle: oracleCrossOrLongName,
@@ -209,7 +209,7 @@ func graphProbes() []Probe {
 			ID: "graph.analyze_call_graph", Capability: "analyze type=analyze_call_graph",
 			Why:    "the call graph with its statistics; the statistics counted two nodes for twenty-seven edges until 2026-08-24",
 			Action: "analyze", Needs: []string{"references"},
-			Params: map[string]any{"type": "analyze_call_graph", "object_type": "CLAS",
+			Params: map[string]any{"type": "analyze_call_graph", "object_type": "{references_type}",
 				"object_name": "{references}", "direction": "callees"},
 			Oracle:      oracleCrossOrLongName,
 			MustContain: "edges",
@@ -406,7 +406,13 @@ func oracleAlwaysSome(why string) Oracle {
 // oracleWhereUsed asks the where-used list, which is a different resource from
 // the graph handlers and answers on every release.
 func oracleWhereUsed(ctx context.Context, c *adt.Client, t SweepTargets) (int, string, error) {
-	uri := "/sap/bc/adt/oo/classes/" + strings.ToLower(t.Referenced)
+	// Built by the one helper that escapes, not by concatenation. The default
+	// target is a plain class name so this is latent, but a namespaced one —
+	// /BOBF/CL_X — pasted after a slash produces a path with an empty segment,
+	// and the object loses its name. That defect has been fixed twice in this
+	// repository already, in the handler and then in a probe, which is twice
+	// more than a rule needs to be worth following.
+	uri := adt.GetObjectURL(adt.ObjectTypeClass, t.Referenced, "")
 	callers, err := c.WhereUsed(ctx, uri)
 	if err != nil {
 		return 0, "the where-used list", err
