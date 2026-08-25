@@ -113,6 +113,18 @@ the shape of the week — a name from one catalogue used as an address into
 another. Needs its own measurement, starting with: print the 15 and grep one by
 hand.
 
+## Feature freeze — opened 2026-08-25
+
+**The surface stops moving until it is verified on three systems.** Fixes,
+tests and corrections are allowed; new capabilities are not, including small
+ones. The plan, what "clean" has to mean, and the one exception worth arguing
+about are in [2026-08-25-002](2026-08-25-002-feature-freeze.md).
+
+The hard rule it turns on: **nothing from d15 or ms1 enters the repository** —
+the tracked artefact is shaped counts and verdicts with the systems anonymised,
+and the raw reports stay under `.local/`. A three-way diff is exactly the thing
+that tempts an exception.
+
 ## Next sprint — analyzer, compressor, abaplint, LSP, graph
 
 **The finding that starts it.** The context appended to a source read — the
