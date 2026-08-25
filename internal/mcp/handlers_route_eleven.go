@@ -23,50 +23,87 @@ import (
 	"context"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
-// routeDeclared dispatches anything the registry claims.
-//
-// One function for every declared capability, because a per-action router is
-// another place the set of actions is written down. The registry is the set.
-func (s *Server) routeDeclared(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
-	// analyze type=lint is the one alias: static analysis is what a caller
-	// reaches for under "analyze", and finding nothing there is how a
-	// capability comes to look missing.
-	if action == "analyze" && firstParam(params, "type") == "lint" {
-		if c, ok := s.caps.Lookup("lint", ""); ok {
-			return s.callHandler(ctx, c.Handler, params)
-		}
+// i18nTypes are the translation operations, addressed as
+// SAP(action="i18n", params={"op": "..."}).
+func (s *Server) i18nTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"texts":               s.handleGetObjectTextsInLanguage,
+		"data_element_labels": s.handleGetDataElementLabels,
+		"message_class_texts": s.handleGetMessageClassTexts,
+		"text_pool":           s.handleGetTextPoolInLanguage,
+		"compare_languages":   s.handleCompareObjectLanguages,
+		"write_labels":        s.handleWriteDataElementLabels,
+		"write_message_texts": s.handleWriteMessageClassTexts,
 	}
-
-	ops := s.caps.Ops(action)
-	if len(ops) == 0 {
-		// No op-carrying capability; try the bare action.
-		if c, ok := s.caps.Lookup(action, ""); ok {
-			return s.callHandler(ctx, c.Handler, params)
-		}
-		return nil, false, nil
-	}
-
-	op := firstParam(params, "op", "type")
-	if op == "" && action == "revisions" {
-		op = "list" // the question somebody asking for history means first
-	}
-	if c, ok := s.caps.Lookup(action, op); ok {
-		return s.callHandler(ctx, c.Handler, params)
-	}
-
-	// The action is recognised, so it owns the answer. The list of operations
-	// comes from the registry, so it cannot name one that is not routed.
-	return needParams(action, params, ops, s.exampleFor(action)), true, nil
 }
 
-// exampleFor returns a working call for the action, taken from a declaration.
-func (s *Server) exampleFor(action string) string {
-	for _, c := range s.caps.All() {
-		if c.Action == action && len(c.Examples) > 0 {
-			return c.Examples[0]
-		}
+// revisionTypes are the version-history operations, addressed as
+// SAP(action="revisions", params={"op": "..."}).
+func (s *Server) revisionTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"list":    s.handleGetRevisions,
+		"source":  s.handleGetRevisionSource,
+		"compare": s.handleCompareVersions,
 	}
-	return ""
+}
+
+// routeI18nAction routes action="i18n".
+func (s *Server) routeI18nAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
+	if action != "i18n" {
+		return nil, false, nil
+	}
+	op := firstParam(params, "op", "type")
+	handler, known := s.i18nTypes()[op]
+	if !known {
+		// The action is recognised, so it owns the answer. Falling through
+		// would tell a caller that action="i18n" does not exist, which is the
+		// defect that made query and grep look missing.
+		return needParams("i18n", params, i18nOps(),
+			`SAP(action="i18n", params={"op": "texts", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "language": "DE"})
+  SAP(action="i18n", params={"op": "compare_languages", "object_url": "...", "languages": "EN,DE"})`), true, nil
+	}
+	return s.callHandler(ctx, handler, params)
+}
+
+// routeRevisionsAction routes action="revisions".
+func (s *Server) routeRevisionsAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
+	if action != "revisions" && action != "history" {
+		return nil, false, nil
+	}
+	op := firstParam(params, "op", "type")
+	if op == "" {
+		op = "list" // the question somebody asking for history means first
+	}
+	handler, known := s.revisionTypes()[op]
+	if !known {
+		return needParams("revisions", params, []string{"list", "source", "compare"},
+			`SAP(action="revisions", params={"op": "list", "object_type": "CLAS", "object_name": "ZCL_DEMO"})`), true, nil
+	}
+	return s.callHandler(ctx, handler, params)
+}
+
+// routeLintAction routes action="lint" to the offline ABAP analyser.
+//
+// It is also reachable as analyze type=lint, because a caller looking for
+// static analysis reaches for "analyze" first and finding nothing there is how
+// a capability comes to look missing.
+func (s *Server) routeLintAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
+	if action == "analyze" && firstParam(params, "type") == "lint" {
+		return s.callHandler(ctx, s.handleAnalyzeABAPCode, params)
+	}
+	if action != "lint" {
+		return nil, false, nil
+	}
+	return s.callHandler(ctx, s.handleAnalyzeABAPCode, params)
+}
+
+// i18nOps lists the operations, sorted, for the message a wrong one earns.
+func i18nOps() []string {
+	return []string{
+		"texts", "data_element_labels", "message_class_texts", "text_pool",
+		"compare_languages", "write_labels", "write_message_texts",
+	}
 }

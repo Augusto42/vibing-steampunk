@@ -64,7 +64,7 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 
 	// Help action
 	if action == "help" {
-		return s.handleHelpFor(target), nil
+		return handleHelp(target), nil
 	}
 
 	// Parse target into type and name
@@ -107,7 +107,9 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeServiceBindingAction,
 		// The last eleven capabilities that were registered as tools and
 		// reachable through no action. See handlers_route_eleven.go.
-		s.routeDeclared,
+		s.routeI18nAction,
+		s.routeRevisionsAction,
+		s.routeLintAction,
 	}
 
 	for _, route := range routes {

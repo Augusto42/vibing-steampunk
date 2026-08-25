@@ -10,31 +10,6 @@ import (
 )
 
 // handleHelp returns help documentation for the universal SAP tool.
-// handleHelpFor answers from the registry first, so a declared capability is
-// documented by existing rather than by somebody remembering to write a case.
-func (s *Server) handleHelpFor(topic string) *mcp.CallToolResult {
-	topic = strings.ToLower(strings.TrimSpace(topic))
-	if s != nil && s.caps != nil {
-		var declared []Capability
-		for _, c := range s.caps.All() {
-			if c.Action == topic {
-				declared = append(declared, c)
-			}
-		}
-		if len(declared) > 0 {
-			var b strings.Builder
-			for i, c := range declared {
-				if i > 0 {
-					b.WriteString("\n")
-				}
-				b.WriteString(c.Help())
-			}
-			return mcp.NewToolResultText(b.String())
-		}
-	}
-	return handleHelp(topic)
-}
-
 func handleHelp(topic string) *mcp.CallToolResult {
 	topic = strings.ToLower(strings.TrimSpace(topic))
 
@@ -149,45 +124,6 @@ Unit tests:
 
 ATC check:
   SAP(action="test", params={"type": "atc", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})`)
-
-	case "rfc":
-		return mcp.NewToolResultText(`SAP(action="rfc") - Classic RFC to the same system
-
-This is not ADT. It speaks SAP's classic Type-3 protocol to the gateway,
-in pure Go — no NetWeaver RFC SDK, no native library. A system reachable
-over HTTPS is not necessarily reachable here: the gateway is a different
-port and is often closed.
-
-  SAP(action="rfc", params={"op": "info"})            — who answers, and as whom
-  SAP(action="rfc", params={"op": "ping"})            — is the gateway there at all
-  SAP(action="rfc", target="STFC_CONNECTION")         — describe an FM as JSON Schema
-  SAP(action="rfc", target="Z_DOUBLE", params={"op": "call", "args": {"N": 21}})
-  SAP(action="rfc", params={"op": "search", "pattern": "BAPI_USER*"})
-  SAP(action="rfc", params={"op": "read_table", "table": "T000", "where": "MANDT = '001'"})
-
-Destination overrides, when the default is not the one wanted:
-  host, sysnr, port, user
-
-Only remote-enabled function modules can be called. A module that is not
-marked remote is unreachable by every transport, which is a property of
-the module and not of the connection.`)
-
-	case "effects":
-		return mcp.NewToolResultText(`analyze type=effects - Side effects and LUW class
-
-  SAP(action="analyze", params={"type": "effects", "object_type": "CLAS", "name": "ZCL_DEMO"})
-  SAP(action="analyze", params={"type": "effects", "source": "METHOD m. COMMIT WORK. ENDMETHOD."})
-
-Reports what the unit does to the world, and classifies its transaction
-behaviour:
-
-  safe         neither commits nor defers — the caller's LUW is intact
-  participant  defers work the caller's COMMIT will run
-  owner        contains COMMIT WORK — ends its caller's transaction
-  unsafe       both, so part of what it queues is committed by each
-
-The analysis is local: it reads this source and nothing it calls, and the
-answer says so.`)
 
 	case "grep":
 		return mcp.NewToolResultText(`SAP(action="grep") - Search in source code
@@ -537,22 +473,4 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 	}
 
 	return sb.String()
-}
-
-// helpTopics lists what handleHelp answers specifically, for the test that
-// checks the documented set against the advertised one.
-//
-// A hand-kept list of what the *switch* still answers, shrinking. The
-// registry answers for everything declared there, and those cases were
-// deleted from the switch when they were declared: a capability documented in
-// two places is a capability documented in one place and a copy.
-//
-// What remains here is the surface that predates the registry. Each action
-// migrated deletes a line from this list and a case above, and the test that
-// compares this against the advertised set is what keeps the shrinking honest.
-func helpTopics() []string {
-	return []string{
-		"read", "edit", "create", "delete", "search", "query", "grep",
-		"test", "analyze", "debug", "system", "rfc", "effects", "tips",
-	}
 }
