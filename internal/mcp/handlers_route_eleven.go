@@ -55,7 +55,7 @@ func (s *Server) routeI18nAction(ctx context.Context, action, objectType, object
 	if action != "i18n" {
 		return nil, false, nil
 	}
-	op := firstParam(params, "op", "type")
+	op := firstParam(params, "op")
 	handler, known := s.i18nTypes()[op]
 	if !known {
 		// The action is recognised, so it owns the answer. Falling through
@@ -73,9 +73,26 @@ func (s *Server) routeRevisionsAction(ctx context.Context, action, objectType, o
 	if action != "revisions" && action != "history" {
 		return nil, false, nil
 	}
-	op := firstParam(params, "op", "type")
+	// `op` only. Not `type`, which these handlers read as the *object* type —
+	// consuming it as the operation selector made the one call form the handler
+	// accepts unroutable, and the error then printed `type="CLAS"` back at the
+	// caller while demanding something else. `type` is the most overloaded key
+	// in this codebase; it must never double as a selector.
+	op := firstParam(params, "op")
 	if op == "" {
 		op = "list" // the question somebody asking for history means first
+	}
+	// `target="CLAS ZCL_DEMO"` is the form the tool description teaches for
+	// everything else, and these routes were throwing it away — a caller who
+	// followed the documentation got "type and name are required".
+	if objectType != "" && objectName != "" {
+		params = copyParams(params)
+		if firstParam(params, "type") == "" {
+			params["type"] = objectType
+		}
+		if firstParam(params, "name") == "" {
+			params["name"] = objectName
+		}
 	}
 	handler, known := s.revisionTypes()[op]
 	if !known {

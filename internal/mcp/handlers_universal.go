@@ -35,7 +35,7 @@ SAP(action="rfc", target="STFC_CONNECTION") — describe an FM interface (JSON S
 SAP(action="help") — full docs; SAP(action="help", target="tips") — best practices`),
 		mcp.WithString("action",
 			mcp.Required(),
-			mcp.Description("Action to perform: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, help"),
+			mcp.Description("Action to perform: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, help"),
 		),
 		mcp.WithString("target",
 			mcp.Description("Target object as 'TYPE NAME' (e.g. 'CLAS ZCL_TEST', 'PROG ZREPORT'). Some actions don't need a target."),

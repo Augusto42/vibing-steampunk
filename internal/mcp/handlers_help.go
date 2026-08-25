@@ -125,6 +125,77 @@ Unit tests:
 ATC check:
   SAP(action="test", params={"type": "atc", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})`)
 
+	case "rfc":
+		return mcp.NewToolResultText(`SAP(action="rfc") - Classic RFC to the same system
+
+Not ADT. This speaks SAP's classic Type-3 protocol to the gateway, in pure
+Go. A system reachable over HTTPS is not necessarily reachable here: the
+gateway is a different port and is often closed.
+
+  SAP(action="rfc", params={"op": "info"})
+  SAP(action="rfc", params={"op": "ping"})
+  SAP(action="rfc", target="STFC_CONNECTION")
+  SAP(action="rfc", target="Z_DOUBLE", params={"op": "call", "args": {"N": 21}})
+  SAP(action="rfc", params={"op": "search", "pattern": "BAPI_USER*"})
+  SAP(action="rfc", params={"op": "read_table", "table": "T000"})
+
+Only remote-enabled function modules can be called. A module that is not
+marked remote is unreachable by every transport — a property of the module,
+not of the connection.`)
+
+	case "i18n":
+		return mcp.NewToolResultText(`SAP(action="i18n") - Translation texts and language comparison
+
+Object texts in one language:
+  SAP(action="i18n", params={"op": "texts", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "language": "DE"})
+
+Data element labels — short, medium, long, heading:
+  SAP(action="i18n", params={"op": "data_element_labels", "name": "ZDE_ORDER_ID", "language": "DE"})
+
+Message class texts:
+  SAP(action="i18n", params={"op": "message_class_texts", "name": "ZVSP_GIT", "language": "EN"})
+
+A report's selection texts and text symbols — program_name here, not name:
+  SAP(action="i18n", params={"op": "text_pool", "program_name": "ZDEMO_REPORT", "language": "EN"})
+
+What differs between two languages — named separately, not as a list:
+  SAP(action="i18n", params={"op": "compare_languages", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "source_language": "EN", "target_language": "DE"})
+
+Writing needs a lock_handle from a lock taken first, and changes the system:
+  SAP(action="i18n", params={"op": "write_labels", "name": "ZDE_ORDER_ID", "language": "DE", "lock_handle": "...", "short": "Auftrag"})
+  SAP(action="i18n", params={"op": "write_message_texts", "name": "ZVSP_GIT", "language": "DE", "lock_handle": "...", "texts": []})`)
+
+	case "revisions", "history":
+		return mcp.NewToolResultText(`SAP(action="revisions") - Version history
+
+Name the object by type and name, or by target:
+  SAP(action="revisions", params={"type": "CLAS", "name": "ZCL_DEMO"})
+  SAP(action="revisions", target="CLAS ZCL_DEMO")
+
+Read one version's source. The URI comes from the list above and is not
+constructable by hand:
+  SAP(action="revisions", params={"op": "source", "version_uri": "..."})
+
+Compare two versions; version2_uri defaults to the current one:
+  SAP(action="revisions", params={"op": "compare", "type": "CLAS", "name": "ZCL_DEMO", "version1_uri": "..."})
+
+For a function module, name its group as parent.`)
+
+	case "lint":
+		return mcp.NewToolResultText(`SAP(action="lint") - Static analysis, offline
+
+Supply the source, or name an object to read it from. One or the other —
+neither is optional on its own:
+  SAP(action="lint", params={"source": "REPORT zdemo.\nWRITE 'x'.\n"})
+  SAP(action="lint", params={"object_type": "CLAS", "object_name": "ZCL_DEMO"})
+
+Also reachable as analyze type=lint, because that is where somebody looks
+for static analysis first.
+
+Thirteen rules, eight on by default: empty catch blocks, over-broad
+exception catches, hardcoded credentials, magic numbers, unreachable code.
+No ABAP is executed, and no server is involved when source is supplied.`)
+
 	case "grep":
 		return mcp.NewToolResultText(`SAP(action="grep") - Search in source code
 
@@ -294,6 +365,8 @@ Dependency graph & boundary analysis:
 
 Info:
   SAP(action="system", target="INFO")
+  SAP(action="revisions", target="CLAS ZCL_TEST")
+  SAP(action="lint", params={"object_type": "CLAS", "object_name": "ZCL_TEST"})
   SAP(action="system", target="COMPONENTS")
   SAP(action="system", target="CONNECTION")
   SAP(action="system", target="FEATURES")
@@ -387,6 +460,10 @@ Actions:
              them, application log, boundary analysis
   debug    - Breakpoints, stepping, variables, RFC calls, report execution
   system   - System info, transports, git, install tools, file operations
+  rfc      - Classic RFC to the same system, no gateway library
+  i18n     - Translation texts, language comparison
+  revisions- Version history, one version's source, two versions compared
+  lint     - Static analysis of ABAP source, offline
   help     - This help. Use SAP(action="help", target="<action>") for details.
 
 Quick examples:
@@ -408,7 +485,7 @@ Use SAP(action="help", target="tips") for best practices and workflow guides.`)
 // absent from the list, so a caller was told the feature did not exist, while
 // "system" and "analyze" were listed without their target or type and so looked
 // broken when they were merely under-specified.
-const validActionsLine = "Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, help\n"
+const validActionsLine = "Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, help\n"
 
 // actionsNeedingTarget are the actions the dispatcher can only route once it
 // knows what they are aimed at.
