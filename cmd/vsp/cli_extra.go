@@ -1853,9 +1853,15 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, "...")
 
 	// Query WBCROSSGT + CROSS for who references this object
+	// The section travels with the name because a caller found through a class's
+	// test include is not in that class's main source, and reading main is
+	// reading the wrong half of the object. Every one of the 186 callers of
+	// CL_ABAP_UNIT_ASSERT=>ASSERT_EQUALS is a CCAU row; the command returned
+	// zero examples and said "0 of 15" as though that were an answer.
 	var callerNames []struct {
 		name    string
 		objType string
+		section string
 	}
 	seen := make(map[string]bool)
 
@@ -1889,13 +1895,19 @@ func runExamples(cmd *cobra.Command, args []string) error {
 				if strings.EqualFold(cName, objName) {
 					continue
 				}
-				key := cType + ":" + cName
+				// Keyed by the document that will be read, not by the object:
+				// a class calling the target from both its main source and its
+				// test include is two reads, and keeping only the first drops
+				// half the answer.
+				section := graph.SectionOfInclude(include)
+				key := sourceRef{Type: cType, Name: cName, Section: section}.Address()
 				if !seen[key] {
 					seen[key] = true
 					callerNames = append(callerNames, struct {
 						name    string
 						objType string
-					}{cName, cType})
+						section string
+					}{cName, cType, section})
 				}
 			}
 		}
@@ -1913,13 +1925,19 @@ func runExamples(cmd *cobra.Command, args []string) error {
 				if cType == "FUGR" || strings.EqualFold(cName, objName) {
 					continue
 				}
-				key := cType + ":" + cName
+				// Keyed by the document that will be read, not by the object:
+				// a class calling the target from both its main source and its
+				// test include is two reads, and keeping only the first drops
+				// half the answer.
+				section := graph.SectionOfInclude(include)
+				key := sourceRef{Type: cType, Name: cName, Section: section}.Address()
 				if !seen[key] {
 					seen[key] = true
 					callerNames = append(callerNames, struct {
 						name    string
 						objType string
-					}{cName, cType})
+						section string
+					}{cName, cType, section})
 				}
 			}
 		}
@@ -1947,7 +1965,7 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	var unread []adt.Unsearched
 	refs := make([]sourceRef, 0, len(callerNames))
 	for _, c := range callerNames {
-		refs = append(refs, sourceRef{Type: c.objType, Name: c.name})
+		refs = append(refs, sourceRef{Type: c.objType, Name: c.name, Section: c.section})
 	}
 	for i, r := range fetchSources(ctx, client, refs, "") {
 		c := callerNames[i]
