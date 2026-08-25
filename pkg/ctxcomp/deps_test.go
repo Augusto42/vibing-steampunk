@@ -239,3 +239,93 @@ func TestInferKind(t *testing.T) {
 		}
 	}
 }
+
+// The context appended to a read is built from this reader, and it could see
+// NEW, CAST, TYPE REF TO and the functional static call while missing the
+// classic instantiation. A class written before 7.40 therefore got a thinner
+// dependency context than the same class written after it — silently, and on
+// exactly the older code where a reader most needs the help.
+func TestCreateObjectNamesItsClass(t *testing.T) {
+	const src = `CLASS zcl_probe IMPLEMENTATION.
+  METHOD run.
+    CREATE OBJECT lo_worker TYPE zcl_demo_worker.
+    CREATE OBJECT lo_other TYPE ZCL_DEMO_OTHER EXPORTING iv_x = 1.
+  ENDMETHOD.
+ENDCLASS.`
+	found := map[string]bool{}
+	for _, d := range ExtractDependencies(src) {
+		found[d.Name] = true
+	}
+	for _, want := range []string{"ZCL_DEMO_WORKER", "ZCL_DEMO_OTHER"} {
+		if !found[want] {
+			t.Errorf("CREATE OBJECT ... TYPE %s produced no dependency; found %v", want, keysOf(found))
+		}
+	}
+	// The receiving variable is not a dependency. Naming it would put an object
+	// that does not exist into the context, which is worse than a thin one.
+	for _, invented := range []string{"LO_WORKER", "LO_OTHER"} {
+		if found[invented] {
+			t.Errorf("the receiving variable %s was reported as a dependency", invented)
+		}
+	}
+}
+
+// The bare form names no class on the line — its type comes from the variable's
+// own declaration, which TYPE REF TO already covers. Inventing one would be the
+// worse failure.
+func TestBareCreateObjectInventsNothing(t *testing.T) {
+	const src = `CLASS zcl_probe IMPLEMENTATION.
+  METHOD run.
+    DATA lo_worker TYPE REF TO zcl_demo_worker.
+    CREATE OBJECT lo_worker.
+  ENDMETHOD.
+ENDCLASS.`
+	found := map[string]bool{}
+	for _, d := range ExtractDependencies(src) {
+		found[d.Name] = true
+	}
+	if !found["ZCL_DEMO_WORKER"] {
+		t.Errorf("the declaration's own type was lost; found %v", keysOf(found))
+	}
+	if found["LO_WORKER"] {
+		t.Error("the variable was reported as a dependency")
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// CREATE OBJECT lo_x TYPE (lv_class) takes its class from a variable at
+// runtime. The name in the parentheses is that variable, not a class, and
+// reporting it as a dependency would put an object that does not exist into the
+// context a reader is given — the invention class, which is worse than the gap
+// this pattern was added to close. It is common: a single standard package has
+// dozens of these lines.
+func TestDynamicCreateObjectInventsNoClass(t *testing.T) {
+	const src = `CLASS zcl_probe IMPLEMENTATION.
+  METHOD run.
+    CREATE OBJECT lo_expression TYPE (lv_class).
+    CREATE OBJECT mo_maintain TYPE (iv_class).
+    CREATE OBJECT lo_real TYPE zcl_demo_real.
+  ENDMETHOD.
+ENDCLASS.`
+	found := map[string]bool{}
+	for _, d := range ExtractDependencies(src) {
+		found[d.Name] = true
+	}
+	for _, invented := range []string{"LV_CLASS", "IV_CLASS"} {
+		if found[invented] {
+			t.Errorf("%s is a variable holding a class name at runtime; it was reported as a class", invented)
+		}
+	}
+	// And the static line beside them must still be found, so the guard is not
+	// a blanket refusal.
+	if !found["ZCL_DEMO_REAL"] {
+		t.Errorf("the static CREATE OBJECT was lost along with the dynamic ones; found %v", keysOf(found))
+	}
+}
