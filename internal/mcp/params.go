@@ -62,8 +62,19 @@ func hasAnyParam(params map[string]any, keys ...string) bool {
 // comparing two things in their head. And it ends in a call that works, because
 // an example is the shortest correct documentation there is.
 func needParams(action string, params map[string]any, accepted []string, example string) *mcp.CallToolResult {
+	// Keys *and* short values. A caller who mistyped the value — op:
+	// "no_such_operation" rather than op: "texts" — is told which keys arrived,
+	// which tells them nothing they did not already know. The value is the part
+	// they got wrong and the part they need to see.
+	//
+	// Short only: a params map can carry a whole ABAP source, and echoing it
+	// back turns an error message into a wall.
 	got := make([]string, 0, len(params))
-	for k := range params {
+	for k, v := range params {
+		if sv, ok := v.(string); ok && sv != "" && len(sv) <= 40 && !strings.ContainsAny(sv, "\n\r") {
+			got = append(got, fmt.Sprintf("%s=%q", k, sv))
+			continue
+		}
 		got = append(got, k)
 	}
 	sort.Strings(got)

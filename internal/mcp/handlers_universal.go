@@ -19,7 +19,7 @@ func (s *Server) registerUniversalTool() {
 		mcp.WithDescription(`SAP ABAP development: read/edit/create/test/analyze/debug objects on a live SAP system.
 
 common target types: CLAS, PROG, INTF, FUNC, FUGR, DDLS, TABL, DEVC, BDEF, SRVD
-actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, help
+actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, help
 some actions (analyze, test, debug, system, help) use params only — no target needed.
 
 SAP(action="read", target="CLAS ZCL_TEST")  — source + dependency context
@@ -105,6 +105,11 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeAnalysisAction,
 		s.routeContextAction,
 		s.routeServiceBindingAction,
+		// The last eleven capabilities that were registered as tools and
+		// reachable through no action. See handlers_route_eleven.go.
+		s.routeI18nAction,
+		s.routeRevisionsAction,
+		s.routeLintAction,
 	}
 
 	for _, route := range routes {
