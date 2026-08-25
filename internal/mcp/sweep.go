@@ -203,7 +203,11 @@ func (t SweepTargets) expand(s string) string {
 	for _, k := range []string{"class", "referenced", "references"} {
 		s = strings.ReplaceAll(s, "{"+k+"_uri}", classURI(t.get(k)))
 	}
-	for _, k := range []string{"class", "program", "package", "group", "table", "referenced", "references", "dump", "trace"} {
+	// Longer keys before the shorter ones they contain. {references_type} does
+	// not literally contain "{references}" — the closing brace is in the way —
+	// but relying on that is relying on a brace, and the next compound key may
+	// not be so lucky. Ordering costs nothing and removes the class.
+	for _, k := range []string{"references_type", "class", "program", "package", "group", "table", "referenced", "references", "dump", "trace"} {
 		s = strings.ReplaceAll(s, "{"+k+"}", t.get(k))
 	}
 	return s
