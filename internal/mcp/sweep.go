@@ -970,21 +970,36 @@ func (r *SweepReport) Text() string {
 	// and counting probes against advertised names produced "40 of 38", which
 	// is not a coverage figure at all.
 	fmt.Fprintf(&b, "  %d capabilities probed of %d advertised\n", r.probedCapabilities(), r.Advertised)
-	if len(r.Unprobed) > 0 {
-		fmt.Fprintf(&b, "  %d advertised and not probed by this sweep:\n", len(r.Unprobed))
-		// Why, next to which. "Not probed" on its own reads as an oversight,
-		// and for the writers it is a rule: every probe in this table is a
-		// read, so a capability that changes the system cannot be one. The
-		// distinction is between a gap somebody should close and a gap that is
-		// the design.
-		for _, u := range r.Unprobed {
-			if reason := unprobableReason(u); reason != "" {
-				fmt.Fprintf(&b, "    %s — %s\n", u, reason)
-				continue
-			}
+	// Two different absences, and merging them was making the report say
+	// something false about itself. A capability nobody has written a probe for
+	// is a gap somebody should close. A capability this sweep will never probe
+	// — because it writes, and every probe here is a read — is the design, and
+	// listing it as a shortfall invites exactly the fix that would ruin the
+	// command: probing writers, or counting a refusal as a pass.
+	var byDesign, unwritten []string
+	for _, u := range r.Unprobed {
+		if unprobableReason(u) != "" {
+			byDesign = append(byDesign, u)
+			continue
+		}
+		unwritten = append(unwritten, u)
+	}
+	if len(byDesign) > 0 {
+		fmt.Fprintf(&b, "  %d excluded by design — the sweep never writes:\n", len(byDesign))
+		for _, u := range byDesign {
+			fmt.Fprintf(&b, "    %s — %s\n", u, unprobableReason(u))
+		}
+	}
+	if len(unwritten) > 0 {
+		fmt.Fprintf(&b, "  %d advertised and not probed by this sweep:\n", len(unwritten))
+		for _, u := range unwritten {
 			fmt.Fprintf(&b, "    %s\n", u)
 		}
 		b.WriteString("  A clean result above is a statement about the probed ones only.\n")
+	} else if len(byDesign) > 0 {
+		// Said out loud, because "49 of 51" with nothing else on the line reads
+		// as two capabilities somebody forgot.
+		b.WriteString("  Everything else advertised was probed.\n")
 	}
 	r.writeBuild(&b)
 	b.WriteString("\nProbed against\n\n")
@@ -1058,9 +1073,9 @@ func (r *SweepReport) writeBuild(b *strings.Builder) {
 func unprobableReason(capability string) string {
 	switch capability {
 	case "action=i18n op=write_message_texts":
-		return "the sweep never writes; every probe here is a read"
+		return "built against the shape ADT serves, and unverified; checking it needs a scratch message class to write to"
 	case "action=i18n op=write_labels":
-		return "the sweep never writes — and this one refuses anyway; see WriteDataElementLabels"
+		return "not implemented and refuses; see WriteDataElementLabels for what a correct one has to do"
 	}
 	return ""
 }
