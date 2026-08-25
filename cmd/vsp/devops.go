@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	embedded "github.com/oisee/vibing-steampunk/embedded/abap"
@@ -172,25 +174,66 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 	// is then said about a package that was read in part.
 	var missed []adt.Unsearched
 	sourceBearing := 0
+	// The scan is dominated by round trips, not by parsing: 167 objects took
+	// 18.8 seconds against a live 7.58 system and the parse of all of them is
+	// milliseconds. Fetching them concurrently is the whole of the available
+	// win, and it is available without caching anything — which matters,
+	// because a cache here would need an invalidation signal this system does
+	// not appear to offer. See agenda/2026-08-25-001.
+	//
+	// Six, matching the worker count the transport audit settled on. More
+	// stops helping — the far side serialises — and it starts looking like
+	// something a basis administrator has to ask about.
+	type fetched struct {
+		obj    PackageObject
+		source string
+		err    error
+	}
+	var toFetch []PackageObject
 	for _, obj := range objects {
-		if !IsSourceBearing(obj.Type) {
+		if IsSourceBearing(obj.Type) {
+			toFetch = append(toFetch, obj)
+		}
+	}
+	sourceBearing = len(toFetch)
+
+	results := make([]fetched, len(toFetch))
+	var wg sync.WaitGroup
+	var done int64
+	sem := make(chan struct{}, 6)
+	for i, obj := range toFetch {
+		wg.Add(1)
+		go func(i int, obj PackageObject) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			src, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
+			results[i] = fetched{obj: obj, source: src, err: err}
+			n := atomic.AddInt64(&done, 1)
+			fmt.Fprintf(os.Stderr, "\r  [%d/%d] %s %-40s", n, len(toFetch), obj.Type, obj.Name)
+		}(i, obj)
+	}
+	wg.Wait()
+	fmt.Fprintln(os.Stderr)
+
+	// The graph is built after the fetches rather than inside them, in input
+	// order. Concurrency must not reach the result: a graph assembled in
+	// whatever order the network answered would differ run to run, and a report
+	// that changes without the system changing cannot be diffed or trusted.
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Fprintf(os.Stderr, "  WARN: %s %s: %v\n", r.obj.Type, r.obj.Name, r.err)
+			missed = append(missed, adt.Unsearched{Object: r.obj.Type + " " + r.obj.Name, Reason: r.err.Error()})
 			continue
 		}
-		sourceBearing++
-		fmt.Fprintf(os.Stderr, "\r  [%d] %s %-40s", count+1, obj.Type, obj.Name)
-		source, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n  WARN: %s %s: %v\n", obj.Type, obj.Name, err)
-			missed = append(missed, adt.Unsearched{Object: obj.Type + " " + obj.Name, Reason: err.Error()})
+		if r.source == "" {
 			continue
 		}
-		if source == "" {
-			continue
-		}
+		obj := r.obj
 		nodeID := graph.NodeID(obj.Type, obj.Name)
 		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: obj.Type, Package: obj.Package})
-		edges := graph.ExtractDepsFromSource(source, nodeID)
-		dynEdges := graph.ExtractDynamicCalls(source, nodeID)
+		edges := graph.ExtractDepsFromSource(r.source, nodeID)
+		dynEdges := graph.ExtractDynamicCalls(r.source, nodeID)
 		for _, e := range append(edges, dynEdges...) {
 			g.AddEdge(e)
 			parts := strings.SplitN(e.To, ":", 2)
@@ -200,9 +243,7 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 		}
 		count++
 	}
-	if count > 0 {
-		fmt.Fprintf(os.Stderr, "\n")
-	}
+
 	fmt.Fprintf(os.Stderr, "Resolving target packages...\n")
 	missed = append(missed, resolvePackagesCLI(ctx, client, g)...)
 

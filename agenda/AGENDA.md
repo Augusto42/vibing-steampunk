@@ -82,6 +82,17 @@ Worth more than the findings, and currently living only in reports:
    to hand it was wrong about the first case nobody tried: `'FU'` in a `C(1)`
    column, a section-prefix list covering `U01` and missing `U27`.
 
+## Landed — 2026-08-25
+
+**`boundaries` is 11× faster, and the cache is deliberately not built.**
+18.8 s → 1.6 s on a 222-object package by fetching sources concurrently,
+byte-identical output. The cache stays unwired because its invalidation signal
+does not survive measurement: `source/main`'s ETag and every repository
+timestamp disagree in both directions, and one class's ETag is a year later than
+any source record the system holds. Written up in
+[2026-08-25-001](2026-08-25-001-cache-invalidation.md) with the numbers, so the
+next person does not re-derive it. The parse was never the cost.
+
 ## Backlog — added 2026-08-24
 
 **`vsp document`** — generate documentation for an object or package and push it
