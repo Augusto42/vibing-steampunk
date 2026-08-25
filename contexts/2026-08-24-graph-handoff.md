@@ -1,5 +1,14 @@
 # Handoff: the graph, after the sweep
 
+> **Superseded 2026-08-25** by
+> [2026-08-25-freeze-handover.md](2026-08-25-freeze-handover.md). Everything in
+> "Where to resume" below is done, including the item marked *not yet* — the
+> sweep exists as a command, the fifteen are probed, and the traversal question
+> was answered by building the load graph instead. The findings and the two
+> lessons at the end still hold; the plan does not. Left in place rather than
+> edited, because what a plan looked like before the work is worth more than a
+> tidy record of it.
+
 Entry point for whoever picks this up — including me, later. Read `CLAUDE.md`
 first, then this. Everything else is linked from here rather than repeated.
 
