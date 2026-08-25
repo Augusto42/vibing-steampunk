@@ -102,6 +102,13 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeDumpsAction,
 		s.routeTracesAction,
 		s.routeSQLTraceAction,
+		// Before the analysis router, and this is the whole reason
+		// `analyze type=lint` did not work: routeAnalysisAction claims every
+		// action="analyze" and answers "no router claims this type" for one it
+		// does not know, so a router placed after it never sees the call. The
+		// lint router declines everything that is not lint, so sitting earlier
+		// costs the others nothing.
+		s.routeLintAction,
 		s.routeAnalysisAction,
 		s.routeContextAction,
 		s.routeServiceBindingAction,
@@ -109,7 +116,6 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		// reachable through no action. See handlers_route_eleven.go.
 		s.routeI18nAction,
 		s.routeRevisionsAction,
-		s.routeLintAction,
 	}
 
 	for _, route := range routes {

@@ -162,8 +162,12 @@ What differs between two languages — named separately, not as a list:
   SAP(action="i18n", params={"op": "compare_languages", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "source_language": "EN", "target_language": "DE"})
 
 Writing needs a lock_handle from a lock taken first, and changes the system:
-  SAP(action="i18n", params={"op": "write_labels", "name": "ZDE_ORDER_ID", "language": "DE", "lock_handle": "...", "short": "Auftrag"})
-  SAP(action="i18n", params={"op": "write_message_texts", "name": "ZVSP_GIT", "language": "DE", "lock_handle": "...", "texts": []})`)
+  SAP(action="i18n", params={"op": "write_message_texts", "name": "ZVSP_GIT", "language": "DE", "lock_handle": "...", "texts": []})
+
+write_labels is not implemented and refuses. What it used to send was a
+four-field document to a resource that takes the data element's whole
+representation, so it never worked; it now says so instead of failing
+opaquely. Use SE11.`)
 
 	case "revisions", "history":
 		return mcp.NewToolResultText(`SAP(action="revisions") - Version history

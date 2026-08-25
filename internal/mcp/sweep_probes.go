@@ -29,7 +29,136 @@ func SweepProbes() []Probe {
 	out = append(out, graphProbes()...)
 	out = append(out, postMortemProbes()...)
 	out = append(out, contextProbes()...)
+	out = append(out, i18nProbes()...)
+	out = append(out, revisionProbes()...)
+	out = append(out, lintProbes()...)
 	return out
+}
+
+// i18nProbes cover the translation surface.
+//
+// Every one of these can return nothing for a reason that is true — an object
+// genuinely has no German — so none of them may be probed with an arbitrary
+// input. The targets are resolved from the dictionary first: a data element
+// that has English labels, a message class that has texts, a program that has a
+// text pool. Then an empty answer is a failure and can be reported as one.
+func i18nProbes() []Probe {
+	return []Probe{
+		{
+			ID: "i18n.texts", Capability: "action=i18n op=texts",
+			Why:    "an object's own texts in one language",
+			Action: "i18n", Needs: []string{"class"},
+			Params: map[string]any{"op": "texts", "object_url": "{class_uri}", "language": "EN"},
+			// The answer is the object's own ADT representation, so its
+			// namespace has to be in it. An empty body and a logon page both
+			// fail this; "not empty" fails neither.
+			MustContain: "adtcore:",
+		},
+		{
+			ID: "i18n.data_element_labels", Capability: "action=i18n op=data_element_labels",
+			Why:    "the four labels a data element carries into every screen that uses it",
+			Action: "i18n", Needs: []string{"data_element"},
+			Params: map[string]any{"op": "data_element_labels", "name": "{data_element}", "language": "EN"},
+			Oracle: oracleAlwaysSome("the target was chosen because DD04T holds English labels for it"),
+		},
+		{
+			ID: "i18n.message_class_texts", Capability: "action=i18n op=message_class_texts",
+			Why:    "the texts behind MESSAGE statements",
+			Action: "i18n", Needs: []string{"message_class"},
+			Params: map[string]any{"op": "message_class_texts", "name": "{message_class}", "language": "EN"},
+			Oracle: oracleAlwaysSome("the target was chosen because T100 holds English texts for it"),
+		},
+		{
+			ID: "i18n.text_pool", Capability: "action=i18n op=text_pool",
+			Why: "selection texts and text symbols, which live outside the source",
+			// program_name, not name. The help said name for a year and the
+			// handler never read it.
+			Action: "i18n", Needs: []string{"text_pool_program"},
+			Params: map[string]any{"op": "text_pool", "program_name": "{text_pool_program}", "language": "EN"},
+			// One marshalled entry has a key. An empty pool marshals to null
+			// and carries none, which is the case this has to be able to fail
+			// on — a text pool read that silently returns nothing is how this
+			// capability spent its whole life.
+			MustContain: `"key"`,
+		},
+		{
+			ID: "i18n.compare_languages", Capability: "action=i18n op=compare_languages",
+			Why: "what a translation is missing",
+			// Two languages named separately. A stock system usually has no
+			// German at all, so the comparison legitimately reports everything
+			// as untranslated — which is an answer, and an empty one would not
+			// be.
+			Action: "i18n", Needs: []string{"class"},
+			Params: map[string]any{
+				"op": "compare_languages", "object_url": "{class_uri}",
+				"source_language": "EN", "target_language": "DE",
+			},
+			// Both languages named back in the answer. A comparison that ran
+			// and found nothing still says which two languages it compared;
+			// one that did not run says neither.
+			MustContain: `"targetLang"`,
+		},
+	}
+}
+
+// revisionProbes cover version history.
+//
+// The object is one the version directory has rows for, and the two URIs are
+// issued by the server: a version URI cannot be built by hand, which is exactly
+// why the two capabilities that consume one were never probed before.
+func revisionProbes() []Probe {
+	return []Probe{
+		{
+			ID: "rev.list", Capability: "action=revisions op=list",
+			Why:    "the version history of an object known to have one",
+			Action: "revisions", Needs: []string{"versioned", "versioned_type"},
+			Params: map[string]any{"op": "list", "type": "{versioned_type}", "name": "{versioned}"},
+			Oracle: oracleAlwaysSome("the target was chosen because VRSD holds versions for it"),
+		},
+		{
+			ID: "rev.source", Capability: "action=revisions op=source",
+			Why:    "the source as one past version had it",
+			Action: "revisions", Needs: []string{"version_uri"},
+			Params: map[string]any{"op": "source", "version_uri": "{version_uri}"},
+			Oracle: oracleAlwaysSome("the URI came from this system's own version feed, so that version exists and has source"),
+		},
+		{
+			ID: "rev.compare", Capability: "action=revisions op=compare",
+			Why:    "what changed between two versions",
+			Action: "revisions", Needs: []string{"versioned", "versioned_type", "version_uri", "version_uri2"},
+			Params: map[string]any{
+				"op": "compare", "type": "{versioned_type}", "name": "{versioned}",
+				"version1_uri": "{version_uri}", "version2_uri": "{version_uri2}",
+			},
+			Oracle: oracleAlwaysSome("both URIs came from this system's own version feed, and they are two different versions"),
+		},
+	}
+}
+
+// lintProbes cover the offline analyser, twice, because it is advertised twice.
+//
+// No system is involved and no target is resolved: the input is a fixed source
+// with two violations of rules that are on by default, so the expected answer
+// is known exactly rather than merely non-empty. That makes this the one probe
+// in the table whose oracle is the input itself.
+func lintProbes() []Probe {
+	const dirty = "REPORT zdemo_probe.\nDATA foo TYPE i.\nMOVE 1 TO foo.\nIF foo EQ 1.\nENDIF.\n"
+	return []Probe{
+		{
+			ID: "lint.action", Capability: "action=lint",
+			Why:         "static analysis of supplied source, with no server involved",
+			Action:      "lint",
+			Params:      map[string]any{"source": dirty},
+			MustContain: "obsolete_statement",
+		},
+		{
+			ID: "lint.analyze", Capability: "analyze type=lint",
+			Why:         "the same analyser under the name somebody looks for it by",
+			Action:      "analyze",
+			Params:      map[string]any{"type": "lint", "source": dirty},
+			MustContain: "obsolete_statement",
+		},
+	}
 }
 
 // coreActionProbes cover the surface every agent touches first. If any of

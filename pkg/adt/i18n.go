@@ -11,12 +11,40 @@ import (
 
 // --- i18n Types ---
 
-// DataElementLabels holds the text labels of a data element in a specific language.
+// DataElementLabels holds the text labels of a data element in a specific
+// language.
+//
+// The xml tags this carried — shortDescription, mediumDescription,
+// longDescription and heading, all as attributes of the root element —
+// described a response that does not exist. Checked against a live 7.58: the
+// labels are child elements of dtel:dataElement, named shortFieldLabel,
+// mediumFieldLabel, longFieldLabel and headingFieldLabel. Nothing had ever
+// matched, and nothing could: the request that would have carried the answer
+// was refused with 406 before any parsing happened.
+//
+// The tags are gone rather than corrected, because this is the type a caller
+// holds and the wire format is not its business. dataElementDoc below is the
+// wire format, and it is the only thing that knows the element names.
 type DataElementLabels struct {
-	Short   string `json:"short" xml:"shortDescription,attr"`
-	Medium  string `json:"medium" xml:"mediumDescription,attr"`
-	Long    string `json:"long" xml:"longDescription,attr"`
-	Heading string `json:"heading" xml:"heading,attr"`
+	Short   string `json:"short"`
+	Medium  string `json:"medium"`
+	Long    string `json:"long"`
+	Heading string `json:"heading"`
+}
+
+// dataElementDoc is the representation ADT actually serves for a data element.
+//
+// Only the four labels are mapped. The document also carries the domain, the
+// type, the field lengths and a dozen flags, and mapping those would be
+// inventing a feature under cover of a bug fix.
+type dataElementDoc struct {
+	XMLName     xml.Name `xml:"wbobj"`
+	DataElement struct {
+		Short   string `xml:"shortFieldLabel"`
+		Medium  string `xml:"mediumFieldLabel"`
+		Long    string `xml:"longFieldLabel"`
+		Heading string `xml:"headingFieldLabel"`
+	} `xml:"dataElement"`
 }
 
 // TextPoolEntry represents a single text pool entry (text element/symbol) of a program.
@@ -74,21 +102,35 @@ func (c *Client) GetDataElementLabels(ctx context.Context, name, lang string) (*
 
 	path := fmt.Sprintf("/sap/bc/adt/ddic/dataelements/%s", url.PathEscape(name))
 	resp, err := c.transport.Request(ctx, path, &RequestOptions{
-		Method:           http.MethodGet,
-		Accept:           "application/xml",
+		Method: http.MethodGet,
+		// The versioned vocabulary type, not application/xml. The generic one
+		// is refused with 406 "The message content is not acceptable" on every
+		// name, namespaced or not — so this call had never returned a label to
+		// anybody. Checked against 7.58 with both a plain and a namespaced
+		// element, because a 406 on one name and a 406 on all names are
+		// different bugs.
+		Accept:           "application/vnd.sap.adt.dataelements.v2+xml",
 		OverrideLanguage: lang,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get data element labels: %w", err)
 	}
 
-	// Parse the XML - data element labels are attributes on the root element
-	var labels DataElementLabels
-	if err := xml.Unmarshal(resp.Body, &labels); err != nil {
+	var doc dataElementDoc
+	if err := xml.Unmarshal(resp.Body, &doc); err != nil {
 		return nil, fmt.Errorf("parse data element labels: %w", err)
 	}
 
-	return &labels, nil
+	// An element with no translation in the requested language answers in its
+	// master language rather than empty, so a caller cannot read "these are the
+	// English labels" out of a successful call. That is ADT's behaviour and not
+	// something to paper over here.
+	return &DataElementLabels{
+		Short:   doc.DataElement.Short,
+		Medium:  doc.DataElement.Medium,
+		Long:    doc.DataElement.Long,
+		Heading: doc.DataElement.Heading,
+	}, nil
 }
 
 // GetMessageClassTexts retrieves all messages of a message class in a specific language.
@@ -191,31 +233,32 @@ func (c *Client) WriteDataElementLabels(ctx context.Context, name, lang string, 
 		return err
 	}
 
-	body, err := xml.Marshal(labels)
-	if err != nil {
-		return fmt.Errorf("marshal data element labels: %w", err)
-	}
-
-	path := fmt.Sprintf("/sap/bc/adt/ddic/dataelements/%s", url.PathEscape(name))
-
-	params := url.Values{}
-	params.Set("lockHandle", lockHandle)
-	if transport != "" {
-		params.Set("corrNr", transport)
-	}
-
-	_, err = c.transport.Request(ctx, path, &RequestOptions{
-		Method:           http.MethodPut,
-		Query:            params,
-		Body:             body,
-		ContentType:      "application/xml",
-		OverrideLanguage: lang,
-	})
-	if err != nil {
-		return fmt.Errorf("write data element labels: %w", err)
-	}
-
-	return nil
+	// This marshalled the read model straight to XML and PUT it as
+	// application/xml. Neither half of that is the resource: what ADT serves
+	// and takes at this address is a blue:wbobj document carrying the whole
+	// data element — domain, type, lengths, a dozen flags — with the labels as
+	// dtel:*FieldLabel children, under the versioned vocabulary type. A
+	// four-field document is not a subset of it; it is a different document,
+	// and a PUT of one would either be rejected or, worse, accepted as a
+	// replacement for everything the element has.
+	//
+	// The reader beside this was broken in exactly the same way and could be
+	// fixed, because reading is verifiable against a live system without
+	// changing it. This cannot: the only way to know what the resource accepts
+	// is to write, and a guess that turns out to be a whole-object replacement
+	// costs the object.
+	//
+	// So it refuses, and says what the fix is rather than pretending the fix is
+	// in. The correct implementation is read-modify-write — GET the current
+	// document, substitute the four labels, PUT it back under the same
+	// Content-Type — and it needs a scratch data element on a system somebody
+	// is willing to have written to.
+	_ = labels
+	_ = lockHandle
+	return fmt.Errorf("writing data element labels is not implemented: the request this used to send " +
+		"was a four-field document at a resource that takes the element's whole representation, so it " +
+		"could not have worked; use SE11 for now, or see WriteDataElementLabels for what a correct " +
+		"implementation has to do")
 }
 
 // GetTextPoolInLanguage retrieves the text pool (text elements/symbols) of a program in a specific language.
@@ -227,25 +270,82 @@ func (c *Client) GetTextPoolInLanguage(ctx context.Context, programName, lang st
 	programName = strings.ToUpper(programName)
 	lang = strings.ToUpper(lang)
 
-	path := fmt.Sprintf("/sap/bc/adt/programs/programs/%s/textelements", url.PathEscape(programName))
-	resp, err := c.transport.Request(ctx, path, &RequestOptions{
-		Method:           http.MethodGet,
-		Accept:           "application/xml",
-		OverrideLanguage: lang,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("get text pool: %w", err)
+	// The address was /programs/programs/{name}/textelements, which answers 404
+	// "No suitable resource found" on 7.58 — so this had never returned a text
+	// to anybody. The text pool is not a sub-resource of the program; it is its
+	// own resource, and it is a container of three:
+	//
+	//	/sap/bc/adt/textelements/programs/{name}/source/symbols
+	//	                                        /source/selections
+	//	                                        /source/headings
+	//
+	// Each answers plain text — `key=value` per line, with an @MaxLength
+	// directive at the top of the symbols one — under its own vocabulary type.
+	// Asking with */* gets an HTML rendering of the same thing, which parses to
+	// nothing and would read as an empty text pool.
+	var entries []TextPoolEntry
+	for _, sub := range []struct {
+		name string
+		// ID is the classic READ TEXTPOOL id, so a caller who knows ABAP reads
+		// these without a translation table: I for text symbols, S for
+		// selection texts, H for column and list headings.
+		id string
+	}{
+		{"symbols", "I"},
+		{"selections", "S"},
+		{"headings", "H"},
+	} {
+		path := fmt.Sprintf("/sap/bc/adt/textelements/programs/%s/source/%s",
+			url.PathEscape(programName), sub.name)
+		resp, err := c.transport.Request(ctx, path, &RequestOptions{
+			Method:           http.MethodGet,
+			Accept:           "application/vnd.sap.adt.textelements." + sub.name + ".v1",
+			OverrideLanguage: lang,
+		})
+		if err != nil {
+			// One missing kind is not a missing text pool: a report with no
+			// selection screen has no selection texts, and that is an answer.
+			// A caller that treated the first 404 as fatal would lose the two
+			// kinds that did answer.
+			if IsNotFoundError(err) {
+				continue
+			}
+			return nil, fmt.Errorf("get text pool (%s): %w", sub.name, err)
+		}
+		entries = append(entries, parseTextPoolSource(sub.id, string(resp.Body))...)
 	}
 
-	type textPool struct {
-		Entries []TextPoolEntry `xml:"entry"`
-	}
-	var tp textPool
-	if err := xml.Unmarshal(resp.Body, &tp); err != nil {
-		return nil, fmt.Errorf("parse text pool XML: %w", err)
-	}
+	return entries, nil
+}
 
-	return tp.Entries, nil
+// parseTextPoolSource turns one text-element document into entries.
+//
+// Empty values are kept. "columnHeader_1=" means the heading exists and is
+// untranslated, which is the single most useful thing a translation report can
+// say; dropping it would turn a gap into a silence.
+func parseTextPoolSource(id, body string) []TextPoolEntry {
+	var out []TextPoolEntry
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// @MaxLength:8 and friends are directives about the document, not
+		// entries in it.
+		if strings.HasPrefix(strings.TrimSpace(line), "@") {
+			continue
+		}
+		eq := strings.Index(line, "=")
+		if eq < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		if key == "" {
+			continue
+		}
+		out = append(out, TextPoolEntry{ID: id, Key: key, Text: line[eq+1:]})
+	}
+	return out
 }
 
 // CompareObjectLanguages compares the text content of an object in two languages.

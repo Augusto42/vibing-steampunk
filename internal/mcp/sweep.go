@@ -150,6 +150,27 @@ type SweepTargets struct {
 	Dump string
 	// Trace is the id of a recorded trace, for the same reason.
 	Trace string
+	// Versioned is an object the version directory demonstrably holds history
+	// for, and VersionedType is its type. Picking any class instead is the
+	// mistake this struct already documents twice: most objects on a stock
+	// system have never been changed, so an empty revision list is true and the
+	// probe proves nothing.
+	Versioned     string
+	VersionedType string
+	// VersionURI and VersionURI2 are two of that object's versions, resolved
+	// before the sweep runs because they cannot be constructed by hand — the
+	// URI is issued by the server. Reading one version and comparing two are
+	// separate capabilities and both need one.
+	VersionURI  string
+	VersionURI2 string
+	// DataElement is a data element that has labels in English, and
+	// MessageClass a message class that has texts. Both are read from the
+	// dictionary rather than assumed, because "the labels are empty" and "the
+	// capability returns nothing" look identical from the outside.
+	DataElement  string
+	MessageClass string
+	// TextPoolProgram is a program that has a text pool. Most do not.
+	TextPoolProgram string
 	// CRAttribute is the transport attribute this landscape groups change
 	// requests by. Without it the CR types cannot be asked anything, and say so
 	// — which is them working. A probe that reads that as a failure is wrong.
@@ -190,6 +211,20 @@ func (t SweepTargets) get(kind string) string {
 		return t.Trace
 	case "cr_attribute":
 		return t.CRAttribute
+	case "versioned":
+		return t.Versioned
+	case "versioned_type":
+		return t.VersionedType
+	case "version_uri":
+		return t.VersionURI
+	case "version_uri2":
+		return t.VersionURI2
+	case "data_element":
+		return t.DataElement
+	case "message_class":
+		return t.MessageClass
+	case "text_pool_program":
+		return t.TextPoolProgram
 	}
 	return ""
 }
@@ -213,7 +248,7 @@ func (t SweepTargets) expand(s string) string {
 	// not literally contain "{references}" — the closing brace is in the way —
 	// but relying on that is relying on a brace, and the next compound key may
 	// not be so lucky. Ordering costs nothing and removes the class.
-	for _, k := range []string{"references_type", "class", "program", "package", "group", "table", "referenced", "references", "dump", "trace"} {
+	for _, k := range []string{"references_type", "versioned_type", "version_uri2", "version_uri", "text_pool_program", "message_class", "data_element", "versioned", "class", "program", "package", "group", "table", "referenced", "references", "dump", "trace"} {
 		s = strings.ReplaceAll(s, "{"+k+"}", t.get(k))
 	}
 	return s
@@ -390,6 +425,7 @@ func (s *Server) AnalyzeTypes() []string {
 		toAny(s.traceAnalysisTypes()),
 		toAny(s.sqlTraceAnalysisTypes()),
 		toAny(s.contextAnalysisTypes()),
+		toAny(s.lintTypes()),
 	} {
 		for k := range table {
 			seen[k] = true
@@ -630,18 +666,21 @@ func (s *Server) advertisedCapabilities() []string {
 	// not named as unprobed, not counted. Arithmetically true and reading as
 	// complete, which is the shape this whole command exists to refuse.
 	//
-	// Taken from the routers' own tables where they have them, so the list
-	// cannot drift from what is dispatched. The lint router has no table and is
-	// named here by hand; the durable fix is one registry every router
-	// registers into, and that is a change for after the freeze.
+	// Taken from the routers' own tables, so the list cannot drift from what is
+	// dispatched. The lint router was the exception and was named here by hand,
+	// which is how `analyze type=lint` came to be advertised by this function,
+	// matched by hand in the router, and absent from AnalyzeTypes() all at
+	// once. It has a table now. The durable fix is still one registry every
+	// router registers into.
 	for t := range s.i18nTypes() {
 		seen["action=i18n op="+t] = true
 	}
 	for t := range s.revisionTypes() {
 		seen["action=revisions op="+t] = true
 	}
-	seen["action=lint"] = true
-	seen["analyze type=lint"] = true
+	for t := range s.lintTypes() {
+		seen["action="+t] = true
+	}
 	out := make([]string, 0, len(seen))
 	for c := range seen {
 		out = append(out, c)
@@ -933,7 +972,16 @@ func (r *SweepReport) Text() string {
 	fmt.Fprintf(&b, "  %d capabilities probed of %d advertised\n", r.probedCapabilities(), r.Advertised)
 	if len(r.Unprobed) > 0 {
 		fmt.Fprintf(&b, "  %d advertised and not probed by this sweep:\n", len(r.Unprobed))
+		// Why, next to which. "Not probed" on its own reads as an oversight,
+		// and for the writers it is a rule: every probe in this table is a
+		// read, so a capability that changes the system cannot be one. The
+		// distinction is between a gap somebody should close and a gap that is
+		// the design.
 		for _, u := range r.Unprobed {
+			if reason := unprobableReason(u); reason != "" {
+				fmt.Fprintf(&b, "    %s — %s\n", u, reason)
+				continue
+			}
 			fmt.Fprintf(&b, "    %s\n", u)
 		}
 		b.WriteString("  A clean result above is a statement about the probed ones only.\n")
@@ -970,13 +1018,17 @@ func (r *SweepReport) writeTargets(b *strings.Builder) {
 		{"package", r.Targets.Package}, {"table", r.Targets.Table},
 		{"referenced", r.Targets.Referenced},
 		{"references", r.Targets.References + " (" + r.Targets.ReferencesType + ")"},
+		{"versioned", r.Targets.Versioned + " (" + r.Targets.VersionedType + ")"},
+		{"data element", r.Targets.DataElement},
+		{"message class", r.Targets.MessageClass},
+		{"text pool", r.Targets.TextPoolProgram},
 	}
 	for _, p := range pairs {
 		if p[1] == "" {
-			fmt.Fprintf(b, "  %-11s (none found — probes needing it were skipped)\n", p[0])
+			fmt.Fprintf(b, "  %-13s (none found — probes needing it were skipped)\n", p[0])
 			continue
 		}
-		fmt.Fprintf(b, "  %-11s %s\n", p[0], p[1])
+		fmt.Fprintf(b, "  %-13s %s\n", p[0], p[1])
 	}
 }
 
@@ -996,4 +1048,19 @@ func (r *SweepReport) writeBuild(b *strings.Builder) {
 		// sentence, and a reader has to know which half is missing.
 		b.WriteString("  release: unknown — an absence here cannot be attributed to one\n")
 	}
+}
+
+// unprobableReason explains an advertised capability this sweep will never
+// probe, as opposed to one nobody has written a probe for yet.
+//
+// Keyed on the capability rather than carried on a probe, because the thing
+// being described is the absence of a probe.
+func unprobableReason(capability string) string {
+	switch capability {
+	case "action=i18n op=write_message_texts":
+		return "the sweep never writes; every probe here is a read"
+	case "action=i18n op=write_labels":
+		return "the sweep never writes — and this one refuses anyway; see WriteDataElementLabels"
+	}
+	return ""
 }

@@ -254,6 +254,67 @@ func fillSweepTargets(cmd *cobra.Command, client *adt.Client, targets *mcp.Sweep
 		}
 	}
 
+	// A data element the dictionary demonstrably holds English labels for.
+	// Asking about one with none returns four empty strings, which is a true
+	// answer and tells nobody whether the capability works.
+	if targets.DataElement == "" {
+		if name, err := dataElementWithLabels(ctx, client); err != nil {
+			missed = append(missed, adt.Unsearched{Object: "data element with labels", Reason: err.Error()})
+		} else {
+			targets.DataElement = name
+		}
+	}
+
+	// The same for a message class: T100 says which ones have English texts.
+	if targets.MessageClass == "" {
+		if name, err := messageClassWithTexts(ctx, client); err != nil {
+			missed = append(missed, adt.Unsearched{Object: "message class with texts", Reason: err.Error()})
+		} else {
+			targets.MessageClass = name
+		}
+	}
+
+	// A text pool is not in the source and most programs have none, so the
+	// program used for reading source is the wrong one to ask.
+	if targets.TextPoolProgram == "" {
+		if name, err := programWithTextPool(ctx, client); err != nil {
+			missed = append(missed, adt.Unsearched{Object: "program with a text pool", Reason: err.Error()})
+		} else {
+			targets.TextPoolProgram = name
+		}
+	}
+
+	// An object with version history, and two of its versions. The URIs are
+	// issued by the server and cannot be built by hand, which is why the two
+	// capabilities that consume one had never been probed: there was no way to
+	// write the input down in a static table.
+	if targets.Versioned == "" {
+		name, objType, err := objectWithVersionHistory(ctx, client)
+		switch {
+		case err != nil:
+			missed = append(missed, adt.Unsearched{Object: "object with version history", Reason: err.Error()})
+		default:
+			targets.Versioned, targets.VersionedType = name, objType
+			revisions, rerr := client.GetRevisions(ctx, objType, name, nil)
+			switch {
+			case rerr != nil:
+				missed = append(missed, adt.Unsearched{Object: "a version URI", Reason: rerr.Error()})
+			case len(revisions) < 2:
+				// One version is enough to read and not enough to compare, and
+				// saying so is better than probing compare with the same URI
+				// twice and calling an empty diff an answer.
+				missed = append(missed, adt.Unsearched{Object: "two version URIs",
+					Reason: fmt.Sprintf("%s %s has %d version(s) in the feed; comparing needs two", objType, name, len(revisions))})
+				if len(revisions) == 1 {
+					targets.VersionURI = revisions[0].URI
+				}
+			default:
+				targets.VersionURI = revisions[0].URI
+				targets.VersionURI2 = revisions[1].URI
+			}
+		}
+	}
+
 	// An object the cross-reference tables demonstrably have rows for. Only for
 	// such an object is an empty callee list impossible, which is the whole
 	// premise of that probe.
@@ -421,4 +482,94 @@ func rowCountOf(res *adt.TableContentsResult) int {
 		return 0
 	}
 	return len(res.Rows)
+}
+
+// dataElementWithLabels returns a data element the dictionary holds English
+// labels for.
+//
+// Read from DD04T rather than named as a constant. MANDT would work on every
+// system anybody has ever run this against, and that is the argument that put a
+// hardcoded package in the boundary probe and made it skip on the one landscape
+// that mattered.
+func dataElementWithLabels(ctx context.Context, client *adt.Client) (string, error) {
+	res, err := client.GetTableContents(ctx, "DD04T", 20,
+		"SELECT ROLLNAME FROM DD04T WHERE DDLANGUAGE = 'E' AND AS4LOCAL = 'A' AND DDTEXT <> ''")
+	if err != nil {
+		return "", err
+	}
+	for _, row := range res.Rows {
+		if name := strings.TrimSpace(rowStringOf(row, "ROLLNAME")); name != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("DD04T returned no data element with an English label")
+}
+
+// messageClassWithTexts returns a message class that has English texts.
+func messageClassWithTexts(ctx context.Context, client *adt.Client) (string, error) {
+	res, err := client.GetTableContents(ctx, "T100", 20,
+		"SELECT ARBGB FROM T100 WHERE SPRSL = 'E' AND TEXT <> ''")
+	if err != nil {
+		return "", err
+	}
+	for _, row := range res.Rows {
+		if name := strings.TrimSpace(rowStringOf(row, "ARBGB")); name != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("T100 returned no message class with an English text")
+}
+
+// programWithTextPool returns a program that has a text pool.
+//
+// TEXTPOOL itself is not readable through the data preview — it answers "Cannot
+// find 'TEXTPOOL'" — so the question is asked of the report source directory
+// instead: a program with selection texts is a program with a SELECT-OPTIONS or
+// PARAMETERS statement, and TRDIR does not record that. What it does record is
+// which programs are reports at all, and a report without a text pool returns an
+// empty one, so this is the weakest of the four resolutions and says so by
+// preferring a program the system generated texts for.
+func programWithTextPool(ctx context.Context, client *adt.Client) (string, error) {
+	res, err := client.GetTableContents(ctx, "TRDIRT", 20,
+		"SELECT NAME FROM TRDIRT WHERE SPRSL = 'E' AND TEXT <> ''")
+	if err != nil {
+		return "", err
+	}
+	for _, row := range res.Rows {
+		if name := strings.TrimSpace(rowStringOf(row, "NAME")); name != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("TRDIRT returned no program with an English title")
+}
+
+// objectWithVersionHistory returns an object the version directory holds more
+// than one version for, and its repository type.
+//
+// VRSD records versions per source unit, so a class appears under its include
+// names — CL_FOO========CPUB — and the repository object has to be recovered
+// from that. The same normalisation the cross-reference resolution uses, for
+// the same reason: an include name asked about at the object's address is a 404
+// that reads like a missing capability.
+func objectWithVersionHistory(ctx context.Context, client *adt.Client) (name, objType string, err error) {
+	res, err := client.GetTableContents(ctx, "VRSD", 200,
+		"SELECT OBJTYPE, OBJNAME, VERSNO FROM VRSD WHERE VERSNO > '00000'")
+	if err != nil {
+		return "", "", err
+	}
+	for _, row := range res.Rows {
+		raw := strings.TrimSpace(rowStringOf(row, "OBJNAME"))
+		if raw == "" {
+			continue
+		}
+		_, t, n := graph.NormalizeInclude(raw)
+		if t == "" || n == "" {
+			continue
+		}
+		if repositoryNameFromInclude(raw) == "" {
+			continue
+		}
+		return n, t, nil
+	}
+	return "", "", fmt.Errorf("VRSD returned no versioned source unit that names a repository object of a known type")
 }

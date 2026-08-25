@@ -108,13 +108,33 @@ func (s *Server) routeRevisionsAction(ctx context.Context, action, objectType, o
 // static analysis reaches for "analyze" first and finding nothing there is how
 // a capability comes to look missing.
 func (s *Server) routeLintAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
-	if action == "analyze" && firstParam(params, "type") == "lint" {
-		return s.callHandler(ctx, s.handleAnalyzeABAPCode, params)
+	types := s.lintTypes()
+	if action == "analyze" {
+		handler, ok := types[firstParam(params, "type")]
+		if !ok {
+			return nil, false, nil
+		}
+		return s.callHandler(ctx, handler, params)
 	}
-	if action != "lint" {
+	handler, ok := types[action]
+	if !ok {
 		return nil, false, nil
 	}
-	return s.callHandler(ctx, s.handleAnalyzeABAPCode, params)
+	return s.callHandler(ctx, handler, params)
+}
+
+// lintTypes is the lint router's table.
+//
+// It exists so that three things read from one place instead of three: the
+// router, the advertised analyze-type list, and the reach check. Before it,
+// `analyze type=lint` was written by hand into the advertised set, matched by
+// hand in the router, and absent from AnalyzeTypes() — so the sweep reported it
+// unreachable while the call worked, and the tool listed a surface its own
+// documentation contradicted.
+func (s *Server) lintTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"lint": s.handleAnalyzeABAPCode,
+	}
 }
 
 // i18nOps lists the operations, sorted, for the message a wrong one earns.
