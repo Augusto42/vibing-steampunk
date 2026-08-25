@@ -212,7 +212,11 @@ func loadsText(name, direction string, down, up []loadEdge, report map[string]an
 	var b strings.Builder
 	fmt.Fprintf(&b, "Load graph for %s — from D010INC, which records what must be present, not what is named.\n", name)
 
-	section := func(title, key string, edges []loadEdge) {
+	// Which end of the edge to name depends on the question. Asking what this
+	// loads, the answer is the other end; asking what loads this, the answer is
+	// the near end. Printing the same end for both showed the object as its own
+	// loader — a wrong name, not merely a useless one.
+	section := func(title, key string, edges []loadEdge, near bool) {
 		if len(edges) == 0 {
 			if note, ok := report[key+"_note"].(string); ok {
 				fmt.Fprintf(&b, "\n%s: none.\n  %s\n", title, note)
@@ -223,15 +227,22 @@ func loadsText(name, direction string, down, up []loadEdge, report map[string]an
 		}
 		fmt.Fprintf(&b, "\n%s (%d):\n", title, len(edges))
 		for _, e := range edges {
-			fmt.Fprintf(&b, "  %-40s %s\n", strings.TrimPrefix(e.To, "CLAS:"), e.Why)
+			end := e.To
+			if near {
+				end = e.From
+			}
+			if i := strings.Index(end, ":"); i > 0 {
+				end = end[i+1:]
+			}
+			fmt.Fprintf(&b, "  %-40s %s\n", end, e.Why)
 		}
 	}
 
 	if direction == "loads" || direction == "both" {
-		section("Loads", "loads", down)
+		section("Loads", "loads", down, false)
 	}
 	if direction == "loaded-by" || direction == "both" {
-		section("Loaded by", "loaded_by", up)
+		section("Loaded by", "loaded_by", up, true)
 	}
 	return b.String()
 }

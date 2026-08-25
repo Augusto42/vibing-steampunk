@@ -64,3 +64,25 @@ func TestContainmentAndMachineryDoNotReachTheCommand(t *testing.T) {
 		t.Errorf("the surviving edge should be the cross-object one, got %+v", edges[0])
 	}
 }
+
+// Which end of an edge answers the question depends on the question. Printing
+// the same end for both directions showed an object as its own loader, which is
+// a wrong name rather than a missing one.
+
+func TestEachDirectionNamesTheOtherParty(t *testing.T) {
+	edges := []loadEdge{{From: "CLAS:ZCL_DEMO_CALLER", To: "CLAS:ZCL_DEMO_ORDER", Why: "x"}}
+	report := map[string]any{}
+
+	down := loadsText("ZCL_DEMO_ORDER", "loads", edges, nil, report)
+	if !strings.Contains(down, "ZCL_DEMO_ORDER") {
+		t.Errorf("what this loads is the far end:\n%s", down)
+	}
+
+	up := loadsText("ZCL_DEMO_ORDER", "loaded-by", nil, edges, report)
+	if !strings.Contains(up, "ZCL_DEMO_CALLER") {
+		t.Errorf("what loads this is the near end:\n%s", up)
+	}
+	if strings.Count(up, "ZCL_DEMO_ORDER") > 1 {
+		t.Errorf("the object must not be listed as its own loader:\n%s", up)
+	}
+}
