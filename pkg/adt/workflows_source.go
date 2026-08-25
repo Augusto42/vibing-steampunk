@@ -239,32 +239,59 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 	// Determine if object exists (for upsert mode)
 	objectExists := false
 	if opts.Mode == WriteModeUpsert {
-		// Try to check if object exists
+		// Upsert has to decide between update and create, and the only honest
+		// input to that decision is a *definite* answer about existence.
+		//
+		// This read `objectExists = (err == nil)`, so a timeout, a 500 or an
+		// unresolvable host all came back as "the object is not there" and
+		// upsert switched to create. Editing an existing class during a
+		// network blip became an attempt to create one. It was invisible
+		// because create then refused for a second reason — "Package is
+		// required" — which is not a refusal a caller who supplies a package
+		// gets.
+		//
+		// 404 is the only error that means absent. Everything else means the
+		// question was not answered, and an unanswered question is not a no.
+		var probeErr error
+		probed := true
 		switch objectType {
 		case "PROG":
-			_, err := c.GetProgram(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetProgram(ctx, name)
 		case "CLAS":
-			_, err := c.GetClass(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetClass(ctx, name)
 		case "INTF":
-			_, err := c.GetInterface(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetInterface(ctx, name)
 		case "DDLS":
-			_, err := c.GetDDLS(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetDDLS(ctx, name)
 		case "BDEF":
-			_, err := c.GetBDEF(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetBDEF(ctx, name)
 		case "SRVD":
-			_, err := c.GetSRVD(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetSRVD(ctx, name)
 		case "SRVB":
-			_, err := c.GetSRVB(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetSRVB(ctx, name)
 		case "TABL":
-			_, err := c.GetTable(ctx, name)
-			objectExists = (err == nil)
+			_, probeErr = c.GetTable(ctx, name)
+		default:
+			// No existence probe is known for this type, so upsert has nothing
+			// to decide on. Leaving it at "does not exist" is how the previous
+			// version turned an unasked question into a create.
+			probed = false
+		}
+		switch {
+		case !probed:
+			result.Message = fmt.Sprintf(
+				"upsert cannot check whether %s %s exists; name mode=create or "+
+					"mode=update explicitly", objectType, name)
+			return result, nil
+		case probeErr == nil:
+			objectExists = true
+		case IsNotFoundError(probeErr):
+			objectExists = false
+		default:
+			result.Message = fmt.Sprintf(
+				"cannot tell whether %s %s exists, so upsert will not guess between "+
+					"update and create: %v", objectType, name, probeErr)
+			return result, nil
 		}
 	}
 
