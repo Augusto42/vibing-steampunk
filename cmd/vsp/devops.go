@@ -535,6 +535,7 @@ func init() {
 	sourceContextCmd.Flags().Int("max-deps", 20, "Maximum number of dependencies to resolve")
 	sourceContextCmd.Flags().Int("depth", 1, "Dependency expansion depth (1-3)")
 	contextCmd.Flags().Int("max-deps", 20, "Maximum number of dependencies to resolve")
+	contextCmd.Flags().Bool("callers", false, "Also summarise who calls this — the half the source cannot tell you")
 	contextCmd.Flags().Int("depth", 1, "Dependency expansion depth (1-3)")
 
 	// Test flags
@@ -1609,6 +1610,33 @@ func runSourceContext(cmd *cobra.Command, args []string) error {
 	depth, _ := cmd.Flags().GetInt("depth")
 
 	// Create adapter and compress
+	// Who calls this — the half a source cannot tell you. Opt-in, because a hub
+	// class has thousands of callers and takes four seconds to ask about, and a
+	// plain read should not pay that without being asked.
+	var upstream string
+	if callers, _ := cmd.Flags().GetBool("callers"); callers {
+		uri := adt.GetClassIncludeURL(strings.ToUpper(name), adt.ClassIncludeMain)
+		if strings.ToUpper(objType) != "CLAS" {
+			uri = ""
+		}
+		if uri != "" {
+			uri = strings.TrimSuffix(uri, "/source/main")
+			found, err := client.WhereUsed(ctx, uri)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  the caller list could not be read: %v\n", err)
+			} else {
+				list := make([]ctxcomp.Caller, 0, len(found))
+				for _, f := range found {
+					list = append(list, ctxcomp.Caller{
+						Name: f.Name, Type: f.Type, Component: f.Component,
+						Package: f.Package, IsTest: f.IsTest,
+					})
+				}
+				upstream = ctxcomp.SummariseCallers(list, 6).Text()
+			}
+		}
+	}
+
 	provider := ctxcomp.NewMultiSourceProvider("", &cliSourceAdapter{client: client})
 	compressor := ctxcomp.NewCompressor(provider, maxDeps).WithDepth(depth)
 	result, err := compressor.Compress(ctx, source, name, objType)
@@ -1617,6 +1645,10 @@ func runSourceContext(cmd *cobra.Command, args []string) error {
 	}
 
 	// Output: source with prologue
+	if upstream != "" {
+		fmt.Print(upstream)
+		fmt.Println()
+	}
 	if result.Prologue != "" {
 		fmt.Print(result.Prologue)
 		fmt.Println()
