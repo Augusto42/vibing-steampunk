@@ -347,6 +347,20 @@ type SweepReport struct {
 	// not. A reader who cannot see the target cannot tell which report they
 	// are holding.
 	Targets SweepTargets `json:"targets"`
+	// Release and Database name what the run was against, in terms that are
+	// facts about the software rather than about the installation.
+	//
+	// The record this feeds says things like "absent on C" — and "absent on a
+	// release" is a claim, while "absent on a system" is an anecdote. Without
+	// the number the sentence is half of one.
+	//
+	// SystemInfo also carries the system id and the host name, and they are
+	// deliberately not taken. The report already travels to places where
+	// identity must not go, and the release answers the question while the host
+	// only answers "whose". Adding them would make every consumer of this
+	// report responsible for stripping them.
+	Release  string `json:"release,omitempty"`
+	Database string `json:"database,omitempty"`
 	// Build names the binary that was exercised.
 	//
 	// This is not decoration. A sweep of fifteen capabilities was once run
@@ -540,11 +554,20 @@ type SweepOptions struct {
 
 // RunSweep asks the live pass and assembles the report.
 func (s *Server) RunSweep(ctx context.Context, system string, targets SweepTargets, opts SweepOptions) *SweepReport {
+
 	if opts.PerProbe <= 0 {
 		opts.PerProbe = 45 * time.Second
 	}
 	only := opts.Only
 	report := &SweepReport{System: system, Reach: SweepReach(), ReachChecked: ReachChecked(), Live: true}
+
+	// Asked first, so a report that fails halfway still says what it was
+	// talking to. A failure here is not fatal: the release is context for the
+	// verdicts, not a precondition for producing them.
+	if info, err := s.adtClient.GetSystemInfo(ctx); err == nil && info != nil {
+		report.Release = strings.TrimSpace(info.SAPRelease)
+		report.Database = strings.TrimSpace(info.DatabaseSystem)
+	}
 
 	probes := SweepProbes()
 	probed := map[string]bool{}
@@ -960,7 +983,17 @@ func (r *SweepReport) writeTargets(b *strings.Builder) {
 func (r *SweepReport) writeBuild(b *strings.Builder) {
 	if r.Build == "" {
 		b.WriteString("  build: unknown — this report cannot be dated against a fix\n")
-		return
+	} else {
+		fmt.Fprintf(b, "  build: %s\n", r.Build)
 	}
-	fmt.Fprintf(b, "  build: %s\n", r.Build)
+	switch {
+	case r.Release != "" && r.Database != "":
+		fmt.Fprintf(b, "  release: %s on %s\n", r.Release, r.Database)
+	case r.Release != "":
+		fmt.Fprintf(b, "  release: %s\n", r.Release)
+	case r.Live:
+		// Said rather than omitted: "absent" without a release is half a
+		// sentence, and a reader has to know which half is missing.
+		b.WriteString("  release: unknown — an absence here cannot be attributed to one\n")
+	}
 }
