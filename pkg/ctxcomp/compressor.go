@@ -50,6 +50,13 @@ func (c *Compressor) Compress(ctx context.Context, source, objectName, objectTyp
 		for i, src := range pendingSources {
 			deps := ExtractDependencies(src)
 			deps = filterSelf(deps, pendingNames[i])
+			// What this source calls on each of them, so the contract can be
+			// narrowed to it. Unknown for a dependency reached only through a
+			// declaration, and then the contract stays whole.
+			called := MethodsCalledOn(src)
+			for j := range deps {
+				deps[j].Methods = called[deps[j].Name]
+			}
 			// Filter already-seen
 			for _, d := range deps {
 				if !seen[d.Name] {
@@ -190,10 +197,13 @@ func (c *Compressor) fetchContractsWithSources(ctx context.Context, deps []Depen
 
 			fullSources[idx] = fullSource
 			compressed := ExtractContract(fullSource, d.Kind)
+			narrowed, total, shown := NarrowContract(compressed, d.Methods)
 			contracts[idx] = Contract{
-				Name:   d.Name,
-				Kind:   d.Kind,
-				Source: compressed,
+				Name:         d.Name,
+				Kind:         d.Kind,
+				Source:       narrowed,
+				MethodsTotal: total,
+				MethodsShown: shown,
 			}
 		}(i, dep)
 	}
@@ -262,11 +272,20 @@ func formatPrologue(objectName string, contracts []Contract) string {
 			kindLabel = "function module"
 		}
 
-		// Count methods in contract for info
-		methodCount := strings.Count(strings.ToUpper(c.Source), "METHODS ")
+		// The header carries what the narrowing dropped, as a number. That is
+		// the whole of what a reader is owed about the rest of the surface —
+		// the surface itself is one explicit request away, and padding every
+		// context with it is the opposite of compressing.
+		methodCount := c.MethodsTotal
+		if methodCount == 0 {
+			methodCount = strings.Count(strings.ToUpper(c.Source), "METHODS ")
+		}
 		info := kindLabel
 		if methodCount > 0 {
 			info = fmt.Sprintf("%s, %d methods", kindLabel, methodCount)
+			if c.MethodsShown > 0 && c.MethodsShown < c.MethodsTotal {
+				info += fmt.Sprintf("; %d called here", c.MethodsShown)
+			}
 		}
 
 		sb.WriteString(fmt.Sprintf("\n* --- %s (%s) ---\n", c.Name, info))
