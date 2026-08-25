@@ -8,8 +8,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	embedded "github.com/oisee/vibing-steampunk/embedded/abap"
@@ -174,66 +172,32 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 	// is then said about a package that was read in part.
 	var missed []adt.Unsearched
 	sourceBearing := 0
-	// The scan is dominated by round trips, not by parsing: 167 objects took
-	// 18.8 seconds against a live 7.58 system and the parse of all of them is
-	// milliseconds. Fetching them concurrently is the whole of the available
-	// win, and it is available without caching anything — which matters,
-	// because a cache here would need an invalidation signal this system does
-	// not appear to offer. See agenda/2026-08-25-001.
-	//
-	// Six, matching the worker count the transport audit settled on. More
-	// stops helping — the far side serialises — and it starts looking like
-	// something a basis administrator has to ask about.
-	type fetched struct {
-		obj    PackageObject
-		source string
-		err    error
-	}
+	// One implementation of the concurrent read, in fetchsources.go, used by
+	// every scan. See there for why results come back in input order.
 	var toFetch []PackageObject
+	var refs []sourceRef
 	for _, obj := range objects {
 		if IsSourceBearing(obj.Type) {
 			toFetch = append(toFetch, obj)
+			refs = append(refs, sourceRef{Type: obj.Type, Name: obj.Name})
 		}
 	}
-	sourceBearing = len(toFetch)
+	sourceBearing = len(refs)
 
-	results := make([]fetched, len(toFetch))
-	var wg sync.WaitGroup
-	var done int64
-	sem := make(chan struct{}, 6)
-	for i, obj := range toFetch {
-		wg.Add(1)
-		go func(i int, obj PackageObject) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			src, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
-			results[i] = fetched{obj: obj, source: src, err: err}
-			n := atomic.AddInt64(&done, 1)
-			fmt.Fprintf(os.Stderr, "\r  [%d/%d] %s %-40s", n, len(toFetch), obj.Type, obj.Name)
-		}(i, obj)
-	}
-	wg.Wait()
-	fmt.Fprintln(os.Stderr)
-
-	// The graph is built after the fetches rather than inside them, in input
-	// order. Concurrency must not reach the result: a graph assembled in
-	// whatever order the network answered would differ run to run, and a report
-	// that changes without the system changing cannot be diffed or trusted.
-	for _, r := range results {
-		if r.err != nil {
-			fmt.Fprintf(os.Stderr, "  WARN: %s %s: %v\n", r.obj.Type, r.obj.Name, r.err)
-			missed = append(missed, adt.Unsearched{Object: r.obj.Type + " " + r.obj.Name, Reason: r.err.Error()})
+	for i, r := range fetchSources(ctx, client, refs, "") {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "  WARN: %s %s: %v\n", r.Ref.Type, r.Ref.Name, r.Err)
+			missed = append(missed, adt.Unsearched{Object: r.Ref.Type + " " + r.Ref.Name, Reason: r.Err.Error()})
 			continue
 		}
-		if r.source == "" {
+		if r.Source == "" {
 			continue
 		}
-		obj := r.obj
+		obj := toFetch[i]
 		nodeID := graph.NodeID(obj.Type, obj.Name)
 		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: obj.Type, Package: obj.Package})
-		edges := graph.ExtractDepsFromSource(r.source, nodeID)
-		dynEdges := graph.ExtractDynamicCalls(r.source, nodeID)
+		edges := graph.ExtractDepsFromSource(r.Source, nodeID)
+		dynEdges := graph.ExtractDynamicCalls(r.Source, nodeID)
 		for _, e := range append(edges, dynEdges...) {
 			g.AddEdge(e)
 			parts := strings.SplitN(e.To, ":", 2)
@@ -1073,7 +1037,7 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 
 	// Step 2: Build dependency graph. Sort the object list so the analysis
 	// (and its stderr "Analyzing X..." trace) is stable across runs — makes
-	// the maxObjects=50 cap deterministic and diffing reports meaningful.
+	// the healthScanCap deterministic and diffing reports meaningful.
 	sortedObjs := make([]objKey, 0, len(objectSet))
 	for k := range objectSet {
 		sortedObjs = append(sortedObjs, k)
@@ -2195,31 +2159,46 @@ func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client
 	// "CLEAN".
 	var missed []adt.Unsearched
 	sourceBearing, attempted := 0, 0
+
+	// The cap used to be 50, and it was there because reading was serial: fifty
+	// objects at a round trip each is about six seconds, and a health signal
+	// nobody waits for is a health signal nobody runs. Reading six at a time
+	// took a 222-object package to 1.6 seconds, so the cap can rise to where it
+	// stops shaping the answer.
+	//
+	// It does not go away. A cap that is never reached costs nothing and is the
+	// only thing standing between this command and a customer package of four
+	// thousand objects — and when it *is* reached, the number is stated below
+	// rather than the sweep ending quietly.
+	var toRead []PackageObject
+	var refs []sourceRef
 	for _, obj := range objects {
 		if !IsSourceBearing(obj.Type) {
 			continue
 		}
 		sourceBearing++
-		if count >= 50 {
-			// Counted but not read: the loop keeps walking so the cap can be
-			// stated as a number instead of just ending the sweep quietly.
+		if len(refs) >= healthScanCap {
 			continue
 		}
-		attempted++
-		fmt.Fprintf(os.Stderr, "\r    [%d] %s %-40s", count+1, obj.Type, obj.Name)
-		source, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n    WARN: %s %s: %v\n", obj.Type, obj.Name, err)
-			missed = append(missed, adt.Unsearched{Object: obj.Type + " " + obj.Name, Reason: err.Error()})
+		toRead = append(toRead, obj)
+		refs = append(refs, sourceRef{Type: obj.Type, Name: obj.Name})
+	}
+	attempted = len(refs)
+
+	for i, r := range fetchSources(ctx, client, refs, "  ") {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "    WARN: %s %s: %v\n", r.Ref.Type, r.Ref.Name, r.Err)
+			missed = append(missed, adt.Unsearched{Object: r.Ref.Type + " " + r.Ref.Name, Reason: r.Err.Error()})
 			continue
 		}
-		if source == "" {
+		if r.Source == "" {
 			continue
 		}
+		obj := toRead[i]
 		nodeID := graph.NodeID(obj.Type, obj.Name)
 		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: obj.Type, Package: obj.Package})
-		edges := graph.ExtractDepsFromSource(source, nodeID)
-		dynEdges := graph.ExtractDynamicCalls(source, nodeID)
+		edges := graph.ExtractDepsFromSource(r.Source, nodeID)
+		dynEdges := graph.ExtractDynamicCalls(r.Source, nodeID)
 		for _, e := range append(edges, dynEdges...) {
 			g.AddEdge(e)
 			parts := strings.SplitN(e.To, ":", 2)
@@ -2242,7 +2221,7 @@ func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client
 	if capped := sourceBearing - attempted; capped > 0 {
 		missed = append(missed, adt.Unsearched{
 			Object: fmt.Sprintf("%d further object(s) in %s", capped, pkg),
-			Reason: "not read: this signal stops at 50 objects",
+			Reason: fmt.Sprintf("not read: this signal stops at %d objects", healthScanCap),
 		})
 	}
 
