@@ -5,14 +5,23 @@ because a verdict about a release is a statement and a verdict about a system is
 an anecdote — and because nothing that identifies a system belongs in a tracked
 file.
 
-| | release | probes |
-|---|---|---|
-| A | 758 | 42 |
-| B | 757 | 42 |
-| C | 750 | 42 |
+| | release | probes | build |
+|---|---|---|---|
+| A | 758 | 42 | `v2.50.0-19-g4e33a6c` |
+| B | 757 | 42 | `v2.50.0-17-g1e2f7eb` |
+| C | 750 | 42 | `v2.50.0-17-g1e2f7eb` |
 
-All three on one build. **No `broken` verdict on any system.** That is the
-headline: not one defect of ours survived into the release run.
+**No `broken` verdict on any system.** That is the headline: not one defect of
+ours survived into the release run.
+
+The two build strings differ by two commits and neither touches `.go` — checked
+with a diff rather than asserted, because "that commit was only documentation"
+is a rule that holds until somebody puts a help string a probe matches into a
+documentation commit. The runs are therefore comparable, and saying *why* they
+are is the part worth keeping: three of the four re-runs this record cost were
+caused by comparing across builds that were not.
+
+Cut as **v2.51.0**.
 
 ## The eight differences, and which of them are about us
 
