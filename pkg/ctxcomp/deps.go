@@ -18,8 +18,20 @@ var (
 	reInterfaces   = regexp.MustCompile(`(?i)\bINTERFACES\s+` + namePattern)
 	reCallFunction = regexp.MustCompile(`(?i)\bCALL\s+FUNCTION\s+'([^']+)'`)
 	reCast         = regexp.MustCompile(`(?i)\bCAST\s+` + namePattern + `\s*\(`)
+	// CREATE OBJECT lo_x TYPE zcl_thing. The classic instantiation, and the
+	// only common form this reader could not see: NEW, CAST, TYPE REF TO and
+	// the functional static call were all already covered, so a class written
+	// before 7.40 handed back a shorter dependency list than the same class
+	// written after it — and the context appended to a read was correspondingly
+	// thinner, silently, on exactly the older code where the reader most needs
+	// the help.
+	//
+	// The bare `CREATE OBJECT lo_x.` form names no class on the line: its type
+	// comes from the variable's own declaration, which reTypeRefTo already
+	// caught. Nothing to add there, and nothing missing.
+	reCreateObject = regexp.MustCompile(`(?i)\bCREATE\s+OBJECT\s+` + namePattern + `\s+TYPE\s+` + namePattern)
 	reRaising      = regexp.MustCompile(`(?i)\bRAISING\s+` + namePattern)
-	reExceptionRef = regexp.MustCompile(`(?i)\b(z[a-z]*cx_[a-z0-9_]+|ycx_[a-z0-9_]+)`)  // ZCX_*, ZFCX_*, YCX_* exception classes
+	reExceptionRef = regexp.MustCompile(`(?i)\b(z[a-z]*cx_[a-z0-9_]+|ycx_[a-z0-9_]+)`) // ZCX_*, ZFCX_*, YCX_* exception classes
 )
 
 // builtinTypes are ABAP built-in types that should never appear as dependencies.
@@ -93,6 +105,12 @@ func ExtractDependencies(source string) []Dependency {
 		// CAST <name>(
 		for _, m := range reCast.FindAllStringSubmatch(line, -1) {
 			addDep(seen, m[1], inferKind(m[1]), lineNum)
+		}
+
+		// CREATE OBJECT <var> TYPE <name>. The second capture is the class;
+		// the first is the receiving variable and is not a dependency.
+		for _, m := range reCreateObject.FindAllStringSubmatch(line, -1) {
+			addDep(seen, m[2], inferKind(m[2]), lineNum)
 		}
 
 		// RAISING <name> (same line)
