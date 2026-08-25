@@ -113,6 +113,45 @@ the shape of the week — a name from one catalogue used as an address into
 another. Needs its own measurement, starting with: print the 15 and grep one by
 hand.
 
+## Decided — the public surface is generated, not reflected
+
+**v3 is on hold.** Not paused for lack of a plan: the plan changed shape, and
+building the old one further would be work to undo.
+
+The shape it changed into: **one package that is the public surface**, whose
+functions forward to the real handlers with the same parameters, carrying
+annotations from which the MCP routing, the CLI routing, the help and the
+parameter documentation are all produced.
+
+**By static code generation, not by runtime reflection on struct tags.** The
+distinction decides the failure mode, and that is what makes it the right
+question:
+
+- Struct tags have **no moment at which they can fail**. `vsp:"language"`
+  either matches the `getStringParam(args, "language")` in the handler or it
+  does not, and the only way to find out is to call it. That is the defect
+  class this whole month was spent removing, reintroduced as its own fix.
+- Generation reads the parameter names **from the source, where they live**.
+  A name that does not exist is a compilation error rather than a silent
+  disagreement.
+
+Code generation has exactly one failure — a stale generated file, because
+somebody did not run `go:generate` — and it is known in advance and cheap to
+close: regenerate in CI and fail on a non-empty diff. A forgotten generate
+becomes a red build instead of documentation that has quietly stopped matching
+the code.
+
+**What is already built and what it is worth.** The registry in
+`internal/mcp/registry.go` declares the eleven and derives routing, help,
+parameter documentation and the advertised set from one place. It proved the
+shape works on real capabilities and it deleted three hand-kept lists. It is
+also the reflected version of the idea, and its params structs are documentation
+about a handler that still reads a map — so it is a prototype, and whether it
+survives the change to generation is an open question rather than a given.
+
+**Not to be extended before that is settled.** Migrating the remaining surface
+onto struct tags would be forty more capabilities to move twice.
+
 ## Feature freeze — opened 2026-08-25
 
 **The surface stops moving until it is verified on three systems.** Fixes,
