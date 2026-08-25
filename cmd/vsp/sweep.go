@@ -270,8 +270,16 @@ func fillSweepTargets(cmd *cobra.Command, client *adt.Client, targets *mcp.Sweep
 
 // packageWithSource returns a package that holds at least one class or program.
 func packageWithSource(ctx context.Context, client *adt.Client) (string, error) {
+	// Filtered server-side, so fifty rows are fifty candidates.
+	//
+	// The unfiltered query took whatever TADIR returned first and then skipped
+	// local packages here. On one system the first fifty classes were all in
+	// `$` packages, the loop found nothing, and four capabilities went
+	// unverified on the release where verification matters most — for want of a
+	// package that system has thousands of. A filter the client applies after
+	// the fact is a filter the row limit can starve.
 	res, err := client.GetTableContents(ctx, "TADIR", 50,
-		"SELECT * FROM TADIR WHERE OBJECT = 'CLAS' AND DELFLAG = ''")
+		"SELECT * FROM TADIR WHERE OBJECT = 'CLAS' AND DELFLAG = '' AND DEVCLASS NOT LIKE '$%'")
 	if err != nil {
 		return "", err
 	}
@@ -288,12 +296,25 @@ func packageWithSource(ctx context.Context, client *adt.Client) (string, error) 
 	// a plausible sentence rather than an error. It is the only such assertion
 	// left in the tree, which is why it survived.
 	for _, row := range res.Rows {
-		pkg := rowStringOf(row, "DEVCLASS")
-		if pkg != "" && !strings.HasPrefix(pkg, "$") {
+		if pkg := rowStringOf(row, "DEVCLASS"); pkg != "" {
 			return pkg, nil
 		}
 	}
-	return "", fmt.Errorf("TADIR returned %d rows and none of them named a transportable package", len(res.Rows))
+
+	// A local package is a worse probe target and a much better one than none:
+	// a boundary question about $TMP is still a boundary question, and skipping
+	// the probe answers nothing at all. Preference, not requirement.
+	local, lerr := client.GetTableContents(ctx, "TADIR", 20,
+		"SELECT * FROM TADIR WHERE OBJECT = 'CLAS' AND DELFLAG = ''")
+	if lerr == nil {
+		for _, row := range local.Rows {
+			if pkg := rowStringOf(row, "DEVCLASS"); pkg != "" {
+				return pkg, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("TADIR named no package holding a class, transportable or local (%d rows, then %d)",
+		len(res.Rows), rowCountOf(local))
 }
 
 // objectWithCrossReferences returns an object whose includes appear in
@@ -392,4 +413,12 @@ func repositoryNameFromInclude(include string) string {
 		}
 	}
 	return name
+}
+
+// rowCountOf is nil-safe, so an error path can still say how much it saw.
+func rowCountOf(res *adt.TableContentsResult) int {
+	if res == nil {
+		return 0
+	}
+	return len(res.Rows)
 }
