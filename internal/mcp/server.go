@@ -32,8 +32,11 @@ type AsyncTask struct {
 
 // Server wraps the MCP server with ADT client.
 type Server struct {
-	mcpServer     *server.MCPServer
-	adtClient     *adt.Client
+	mcpServer *server.MCPServer
+	adtClient *adt.Client
+	// caps is the declared capability set. Everything derived from it —
+	// routing, help, the advertised count — is derived rather than kept.
+	caps          *registry
 	amdpWSClient  *adt.AMDPWebSocketClient  // WebSocket-based AMDP client (ZADT_VSP)
 	debugWSClient *adt.DebugWebSocketClient // WebSocket-based debug client (ZADT_VSP)
 	config        *Config                   // Server configuration for session manager creation
@@ -234,6 +237,8 @@ func NewServerWithClient(cfg *Config, adtClient *adt.Client) *Server {
 		featureConfig: featureConfig,
 		asyncTasks:    make(map[string]*AsyncTask),
 	}
+
+	s.caps = newRegistry(s.registerEleven()...)
 
 	// Register tools based on mode, disabled groups, and granular tool config
 	s.registerTools(cfg.Mode, cfg.DisabledGroups, cfg.ToolsConfig)

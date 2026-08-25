@@ -630,18 +630,18 @@ func (s *Server) advertisedCapabilities() []string {
 	// not named as unprobed, not counted. Arithmetically true and reading as
 	// complete, which is the shape this whole command exists to refuse.
 	//
-	// Taken from the routers' own tables where they have them, so the list
-	// cannot drift from what is dispatched. The lint router has no table and is
-	// named here by hand; the durable fix is one registry every router
-	// registers into, and that is a change for after the freeze.
-	for t := range s.i18nTypes() {
-		seen["action=i18n op="+t] = true
+	// The fix for that was a second hand-kept list, which is the same defect
+	// deferred. Declared capabilities are counted from the registry, so this
+	// cannot fall behind what is dispatched: the two are one declaration.
+	for _, c := range s.caps.All() {
+		if c.Op == "" {
+			seen["action="+c.Action] = true
+			continue
+		}
+		seen["action="+c.Action+" op="+c.Op] = true
 	}
-	for t := range s.revisionTypes() {
-		seen["action=revisions op="+t] = true
-	}
-	seen["action=lint"] = true
-	seen["analyze type=lint"] = true
+	seen["analyze type=lint"] = true // the one alias, declared as such in routeDeclared
+
 	out := make([]string, 0, len(seen))
 	for c := range seen {
 		out = append(out, c)

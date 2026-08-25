@@ -10,6 +10,31 @@ import (
 )
 
 // handleHelp returns help documentation for the universal SAP tool.
+// handleHelpFor answers from the registry first, so a declared capability is
+// documented by existing rather than by somebody remembering to write a case.
+func (s *Server) handleHelpFor(topic string) *mcp.CallToolResult {
+	topic = strings.ToLower(strings.TrimSpace(topic))
+	if s != nil && s.caps != nil {
+		var declared []Capability
+		for _, c := range s.caps.All() {
+			if c.Action == topic {
+				declared = append(declared, c)
+			}
+		}
+		if len(declared) > 0 {
+			var b strings.Builder
+			for i, c := range declared {
+				if i > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(c.Help())
+			}
+			return mcp.NewToolResultText(b.String())
+		}
+	}
+	return handleHelp(topic)
+}
+
 func handleHelp(topic string) *mcp.CallToolResult {
 	topic = strings.ToLower(strings.TrimSpace(topic))
 
@@ -146,56 +171,6 @@ Destination overrides, when the default is not the one wanted:
 Only remote-enabled function modules can be called. A module that is not
 marked remote is unreachable by every transport, which is a property of
 the module and not of the connection.`)
-
-	case "i18n":
-		return mcp.NewToolResultText(`SAP(action="i18n") - Translation texts and language comparison
-
-Object texts in one language:
-  SAP(action="i18n", params={"op": "texts", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "language": "DE"})
-
-Data element labels (short, medium, long, heading):
-  SAP(action="i18n", params={"op": "data_element_labels", "name": "ZDE_ORDER_ID", "language": "DE"})
-  SAP(action="i18n", params={"op": "write_labels", "name": "ZDE_ORDER_ID", "language": "DE", "short": "...", "medium": "..."})
-
-Message class texts:
-  SAP(action="i18n", params={"op": "message_class_texts", "name": "ZVSP_GIT", "language": "EN"})
-  SAP(action="i18n", params={"op": "write_message_texts", "name": "ZVSP_GIT", "language": "DE", "messages": [...]})
-
-Selection texts and text symbols of a report:
-  SAP(action="i18n", params={"op": "text_pool", "name": "ZDEMO_REPORT", "language": "EN"})
-
-What differs between two languages:
-  SAP(action="i18n", params={"op": "compare_languages", "object_url": "...", "languages": "EN,DE"})
-
-write_labels and write_message_texts modify the system.`)
-
-	case "revisions", "history":
-		return mcp.NewToolResultText(`SAP(action="revisions") - Version history
-
-List versions (the default when no op is given):
-  SAP(action="revisions", params={"object_type": "CLAS", "object_name": "ZCL_DEMO"})
-
-Read one version's source:
-  SAP(action="revisions", params={"op": "source", "version_uri": "..."})
-
-Compare two versions:
-  SAP(action="revisions", params={"op": "compare", "object_type": "CLAS", "object_name": "ZCL_DEMO", "from": "...", "to": "..."})
-
-Version URIs come from the list; they are not constructable by hand.`)
-
-	case "lint":
-		return mcp.NewToolResultText(`SAP(action="lint") - Static analysis, offline
-
-  SAP(action="lint", params={"source": "REPORT zdemo.\nWRITE 'x'.\n"})
-  SAP(action="lint", params={"object_type": "CLAS", "object_name": "ZCL_DEMO"})
-
-Also reachable as analyze type=lint, because that is where somebody looks
-for static analysis first.
-
-Thirteen rules, eight of them on by default: empty catch blocks, over-broad
-exception catches, hardcoded credentials, magic numbers, unreachable code.
-Runs in this process — no ABAP is executed and no server is involved when
-source is supplied.`)
 
 	case "effects":
 		return mcp.NewToolResultText(`analyze type=effects - Side effects and LUW class
@@ -567,14 +542,17 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 // helpTopics lists what handleHelp answers specifically, for the test that
 // checks the documented set against the advertised one.
 //
-// A hand-kept list, and the comment says so: the durable fix is one registry
-// every router registers into, carrying its action, its handler and its help.
-// Until that exists, this list and the switch above can drift, and the test is
-// what makes the drift loud rather than silent.
+// A hand-kept list of what the *switch* still answers, shrinking. The
+// registry answers for everything declared there, and those cases were
+// deleted from the switch when they were declared: a capability documented in
+// two places is a capability documented in one place and a copy.
+//
+// What remains here is the surface that predates the registry. Each action
+// migrated deletes a line from this list and a case above, and the test that
+// compares this against the advertised set is what keeps the shrinking honest.
 func helpTopics() []string {
 	return []string{
 		"read", "edit", "create", "delete", "search", "query", "grep",
-		"test", "analyze", "debug", "system", "rfc",
-		"i18n", "revisions", "history", "lint", "effects", "tips",
+		"test", "analyze", "debug", "system", "rfc", "effects", "tips",
 	}
 }

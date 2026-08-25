@@ -45,13 +45,13 @@ func TestEveryAdvertisedActionIsDocumented(t *testing.T) {
 	// this test did exactly that and passed while `rfc` had no entry.
 	//
 	// Comparing against the fallback itself is the check that cannot be fooled.
-	fallback := resultText(handleHelp("__no_such_topic_exists__"))
+	fallback := resultText(srv.handleHelpFor("__no_such_topic_exists__"))
 	if fallback == "" {
 		t.Fatal("help has no fallback text, so this test cannot tell a documented action from an undocumented one")
 	}
 
 	for _, action := range actions {
-		text := resultText(handleHelp(action))
+		text := resultText(srv.handleHelpFor(action))
 		switch {
 		case text == "":
 			t.Errorf("action %q is advertised and help returns nothing for it", action)
@@ -79,6 +79,11 @@ func TestHelpDocumentsNothingUnrouted(t *testing.T) {
 	// deliberate rather than a hole.
 	subTopics := map[string]bool{"effects": true, "history": true}
 
+	for _, c := range srv.caps.All() {
+		if !advertised[c.Action] {
+			t.Errorf("the registry declares action %q and the tool description does not advertise it", c.Action)
+		}
+	}
 	for _, topic := range helpTopics() {
 		if advertised[topic] || subTopics[topic] {
 			continue
