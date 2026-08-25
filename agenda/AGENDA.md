@@ -113,6 +113,54 @@ the shape of the week — a name from one catalogue used as an address into
 another. Needs its own measurement, starting with: print the 15 and grep one by
 hand.
 
+## Next sprint — analyzer, compressor, abaplint, LSP, graph
+
+**The finding that starts it.** The context appended to a source read — the
+dependency contracts a reader gets "around" the code — is built by
+`ctxcomp.ExtractDependencies`, a set of nine regular expressions. The *analyzer*
+in the same package runs that regex layer **and** a real abaplint parse on top,
+merging them and marking confidence and false positives. `analyze_deps` uses the
+analyzer. `Compress` does not: it calls `ExtractDependencies` directly.
+
+So **two dependency readers in one package, and the better one does not feed the
+user-facing path.** This is the shape the whole week was spent removing, one
+level down.
+
+Measured, so the sprint starts from evidence:
+
+- The regex layer sees eight of nine forms probed — `NEW`, `CAST`, `TYPE REF TO`
+  in a signature and in a body, the functional static call `zcl_x=>m( )`, the
+  interface call, `CATCH`, `RAISING`, `CALL FUNCTION`. It missed `CREATE OBJECT
+  lo_x TYPE zcl_y`, now fixed and measured: `CL_RFC_SYSTEM_INFO1` goes from two
+  dependencies to three.
+- This week's parser fix — the layer named for the parser that was running the
+  regex a second time — improved the **analyzer** and left `vsp context`
+  untouched. Verified: four classes, identical dependency counts before and
+  after, 5/20/13/17.
+
+**A caution for whoever measures next.** An attempt to compare the two readers on
+standard classes returned zero dependencies from both, which is not a defect:
+`standardSkipPrefixes` drops `CL_ABAP_*`, `IF_ABAP_*` and the `CX_*` families, so
+a standard class that references only standard code has nothing left. Compare on
+custom code, or the measurement will say the two readers agree because both
+found nothing.
+
+### The questions, in order
+
+1. **Should `Compress` use the analyzer?** The analyzer is a superset — it runs
+   the regex first, then merges. So the gain is the parser's extra forms plus
+   the ability to *drop* false positives instead of fetching a contract for
+   something that is not a dependency. The cost is a parse per source and an
+   API change. Measure both before deciding.
+2. **What does the LSP layer add that neither has?** Inside the unit being read,
+   a parse gives the local structure — the graph can only ever bring signatures
+   of *adjacent* code units. These are different questions and the answer should
+   say which one it is answering.
+3. **Then the graph.** Contracts come from the dependency's own source today,
+   not from the graph at all. Whether the graph should serve them is a real
+   design question and not obviously yes: the source is authoritative and the
+   graph is derived.
+
 ## Backlog — added 2026-08-24
 
 **`vsp document`** — generate documentation for an object or package and push it
