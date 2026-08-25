@@ -1898,8 +1898,13 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Fetching source for %d callers...\n", len(callerNames))
 	var callers []graph.CallerSource
 	var unread []adt.Unsearched
+	refs := make([]sourceRef, 0, len(callerNames))
 	for _, c := range callerNames {
-		source, err := client.GetSource(ctx, c.objType, c.name, nil)
+		refs = append(refs, sourceRef{Type: c.objType, Name: c.name})
+	}
+	for i, r := range fetchSources(ctx, client, refs, "") {
+		c := callerNames[i]
+		source, err := r.Source, r.Err
 		if err != nil || source == "" {
 			// It still called the target; only the snippet is missing. Dropping
 			// it silently makes the example list look like the whole of the

@@ -95,6 +95,24 @@ includes and the answer was past the cut. Written up in
 [2026-08-25-001](2026-08-25-001-cache-invalidation.md) with the numbers, so the
 next person does not re-derive it. The parse was never the cost.
 
+## Found, not fixed — 2026-08-25
+
+**`vsp examples` answers nothing for the most-called method on the system.**
+`examples CLAS CL_ABAP_UNIT_ASSERT --method ASSERT_EQUALS` finds 186 callers,
+reads 15, and produces **0 examples** — printed as `(0 of 15 callers)` and "No
+usage examples found", with no caveat, because all 15 sources read cleanly.
+
+Not a regression: identical on the binary from before the concurrency change.
+Not the extractor's matcher either, as far as reading goes — it handles
+`=>`, `->` and `~`, and falls back to a literal grep for the name, which should
+match something in a real caller.
+
+So the suspicion is the **caller list**: 186 where-used hits become 15 names,
+and whatever those 15 are, their source does not contain the target. Which is
+the shape of the week — a name from one catalogue used as an address into
+another. Needs its own measurement, starting with: print the 15 and grep one by
+hand.
+
 ## Backlog — added 2026-08-24
 
 **`vsp document`** — generate documentation for an object or package and push it
