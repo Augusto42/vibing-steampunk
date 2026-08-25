@@ -60,7 +60,18 @@ on one system:
 > Each needed a second system to disagree with the first.
 
 That is the argument for the three-system run itself, and it is stronger than
-the argument the sprint was opened with.
+the argument the sprint was opened with. Sharpened by the release session into
+the form worth keeping:
+
+> **A second system is needed not for coverage but for disagreement.**
+
+The distinction is the actionable half. Coverage says "run it in more places and
+you will see more"; disagreement says *what kind* of defect only a second place
+can show — the ones that hold because one system happens to agree with itself. A
+probe asserting a target's type was right by luck. A resolver filtering after
+its query starved only where local packages happened to fill the limit. A report
+naming no release did no harm while there was nothing to compare it against.
+None of the three is visible from inside.
 
 ## Two things to hold on to
 
