@@ -145,6 +145,29 @@ a standard class that references only standard code has nothing left. Compare on
 custom code, or the measurement will say the two readers agree because both
 found nothing.
 
+### Decided — 2026-08-25: locals are named, not filtered
+
+The context lists nine names for `CL_ATO_CHANGELIST` that have no contract —
+`BOM`, `ITEM`, `ITEMS`, `MERGED`, `PREVIEW` and so on. They are **local types**,
+not repository objects, and a regex cannot tell the difference because telling
+it requires a symbol table.
+
+**They stay.** The one-line note already says what is true of them — referenced,
+and no contract here — and that is the whole of what a reader needs. Filtering
+them would mean an LSP-grade scope resolution, which is a large machine under a
+small question.
+
+Measured before deciding, because the objection to keeping them is cost: a
+failed fetch is one bounded, concurrent request, and `vsp context` on those
+classes runs in about two tenths of a second either way. There is nothing to
+buy.
+
+The interesting part is what the question answered on its way past. **This is
+the concrete thing an LSP layer would add**: not "a parser is more reliable" —
+the regex sees eight of nine dependency forms — but *scope*. It is the one
+question neither the regex nor the graph's edge extractor can answer, because
+neither knows what is local. Worth knowing, and not worth building for this.
+
 ### The questions, in order
 
 1. **Should `Compress` use the analyzer?** The analyzer is a superset — it runs
