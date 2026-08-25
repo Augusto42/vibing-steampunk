@@ -917,8 +917,21 @@ func runGraph(cmd *cobra.Command, args []string) error {
 func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objType string) error {
 	callees, gaps, err := client.Callees(ctx, objURI)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n\nFalling back to a plain table scan.\n\n", err)
-		return graphFromCross(ctx, client, name, objType, "callees")
+		// No fallback here, and the reason is worth stating because the code
+		// that used to be here looked like resilience.
+		//
+		// A fallback is only a fallback if it takes a different route. The
+		// callee reader is free SQL over CROSS and WBCROSSGT; the scan it fell
+		// back to is free SQL over CROSS and WBCROSSGT. It cannot succeed where
+		// the first failed — measured: with free SQL blocked, the first call
+		// returns a message naming both tables and the reason, and then the
+		// scan runs and fails identically with a worse one. Six object types in
+		// both directions never reached it at all.
+		//
+		// The caller path keeps its fallback and should: there the first route
+		// is the ADT where-used resource, so the tables really are a second
+		// opinion.
+		return err
 	}
 	if note := adt.UnsearchedNote(gaps, 2, "cross-reference table"); note != "" {
 		// Printed before the rows, not after: a reader who sees a plausible
@@ -1499,38 +1512,72 @@ func runRenamePreview(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	fmt.Fprintf(os.Stderr, "Scanning references to %s %s...\n", objType, oldName)
+	oldNameUpper := strings.ToUpper(strings.TrimSpace(oldName))
 
-	// Query WBCROSSGT: who references this object name?
+	// Who references this object name.
+	//
+	// This is not a report, it is the thing somebody reads before renaming, so
+	// every way it can be wrong is a way somebody breaks a system. The version
+	// this replaces could be wrong in three:
+	//
+	//   Both queries were guarded by `err == nil`, so two failed reads produced
+	//   an empty impact list — "nothing references this" — in front of a
+	//   destructive operation.
+	//
+	//   NAME LIKE 'ZCL_ORDER%' also matches ZCL_ORDER_ITEM, so a sibling's
+	//   callers were listed as this object's. That overstates, which is the
+	//   safer direction and still wrong.
+	//
+	//   A reference whose name does not fit WBCROSSGT's CHAR(120) is stored
+	//   under a SHA-1, so it matches no prefix of the real name and was absent
+	//   entirely. That understates, before a rename, which is the direction
+	//   that breaks things.
 	var allRefs []graph.RenameRefRow
+	var unread []adt.Unsearched
 
-	wbQuery := fmt.Sprintf("SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGT WHERE NAME LIKE '%s%%'", oldName)
-	wbResult, err := client.RunQuery(ctx, wbQuery, 2000)
-	if err == nil && wbResult != nil {
-		for _, row := range wbResult.Rows {
+	addRows := func(rows []map[string]interface{}, typeCol, source string) {
+		for _, row := range rows {
+			name := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["NAME"])))
+			// Exactly this object, or this object followed by the backslash
+			// that introduces a component. Never merely starting with it.
+			if name != oldNameUpper && !strings.HasPrefix(name, oldNameUpper+`\`) {
+				continue
+			}
 			allRefs = append(allRefs, graph.RenameRefRow{
 				CallerInclude: strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"])),
-				TargetName:    strings.TrimSpace(fmt.Sprintf("%v", row["NAME"])),
-				RefType:       strings.TrimSpace(fmt.Sprintf("%v", row["OTYPE"])),
-				Source:        "WBCROSSGT",
+				TargetName:    name,
+				RefType:       strings.TrimSpace(fmt.Sprintf("%v", row[typeCol])),
+				Source:        source,
 			})
 		}
 	}
 
-	// Query CROSS: procedural references
-	crossQuery := fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME LIKE '%s%%'", oldName)
-	crossResult, err := client.RunQuery(ctx, crossQuery, 2000)
-	if err == nil && crossResult != nil {
-		for _, row := range crossResult.Rows {
-			allRefs = append(allRefs, graph.RenameRefRow{
-				CallerInclude: strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"])),
-				TargetName:    strings.TrimSpace(fmt.Sprintf("%v", row["NAME"])),
-				RefType:       strings.TrimSpace(fmt.Sprintf("%v", row["TYPE"])),
-				Source:        "CROSS",
-			})
-		}
+	wbResult, wbErr := client.RunQuery(ctx,
+		fmt.Sprintf("SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGT WHERE NAME LIKE '%s%%'", oldName), 2000)
+	if wbErr != nil {
+		unread = append(unread, adt.Unsearched{Object: "WBCROSSGT", Reason: wbErr.Error()})
+	} else if wbResult != nil {
+		// Decode before matching: a hashed name matches no prefix, so without
+		// this the rows exist and the filter above drops every one of them.
+		_ = client.ResolveLongNames(ctx, wbResult.Rows)
+		addRows(wbResult.Rows, "OTYPE", "WBCROSSGT")
 	}
 
-	fmt.Fprintf(os.Stderr, "Found %d cross-references.\n", len(allRefs))
+	crossResult, crossErr := client.RunQuery(ctx,
+		fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME LIKE '%s%%'", oldName), 2000)
+	if crossErr != nil {
+		unread = append(unread, adt.Unsearched{Object: "CROSS", Reason: crossErr.Error()})
+	} else if crossResult != nil {
+		addRows(crossResult.Rows, "TYPE", "CROSS")
+	}
+
+	if len(unread) == 2 {
+		return fmt.Errorf("neither cross-reference table could be read, so this is not an impact "+
+			"assessment and must not be used as one: %s; %s", unread[0].Reason, unread[1].Reason)
+	}
+	if note := adt.UnsearchedNote(unread, 2, "cross-reference table"); note != "" {
+		fmt.Fprintf(os.Stderr, "%s\nReferences recorded only there are missing from the list below.\n\n", note)
+	}
 
 	// Compute preview
 	result := graph.ComputeRenamePreview(objType, oldName, newName, allRefs)
