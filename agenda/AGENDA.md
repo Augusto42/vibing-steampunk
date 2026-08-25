@@ -86,10 +86,12 @@ Worth more than the findings, and currently living only in reports:
 
 **`boundaries` is 11× faster, and the cache is deliberately not built.**
 18.8 s → 1.6 s on a 222-object package by fetching sources concurrently,
-byte-identical output. The cache stays unwired because its invalidation signal
-does not survive measurement: `source/main`'s ETag and every repository
-timestamp disagree in both directions, and one class's ETag is a year later than
-any source record the system holds. Written up in
+byte-identical output. The cache stays unwired, but **the signal it needs is now
+established**: a controlled experiment on a Z class created and changed for the
+purpose showed `ETag == max(REPOSRC includes, excluding the regenerated CS)`,
+exactly, on four changes. The first conclusion here — that no sound signal
+existed — was wrong, because the probe behind it read 40 rows of a class with 63
+includes and the answer was past the cut. Written up in
 [2026-08-25-001](2026-08-25-001-cache-invalidation.md) with the numbers, so the
 next person does not re-derive it. The parse was never the cost.
 

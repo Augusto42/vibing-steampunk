@@ -1,6 +1,7 @@
 package adt
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,5 +97,46 @@ func TestAnUnreadableStampIsZero(t *testing.T) {
 func TestStampKeyIsCaseAndSpaceInsensitive(t *testing.T) {
 	if StampKey("clas", " zcl_demo ") != StampKey("CLAS", "ZCL_DEMO") {
 		t.Error("the same object produced two different keys")
+	}
+}
+
+// CS is regenerated: on a live system several standard classes carry today's
+// date on it, hours after nobody edited them. Including it in the maximum makes
+// every object look changed on every run — a cache that never hits, and a scan
+// slower than no cache at all. Across ten standard classes, including CS drops
+// agreement with the ETag from eight to zero.
+func TestTheRegeneratedSectionIsExcluded(t *testing.T) {
+	const obj = "CL_HTTP_CLIENT"
+	pad := obj + "================" // padded to 30
+	cases := map[string]bool{
+		pad + "CS":    true,  // regenerated
+		pad + "CP":    false, // class pool — real
+		pad + "CU":    false, // public section — real
+		pad + "CM00Q": false, // a method — real, and the one that carried the answer
+		pad + "CCIMP": false,
+		pad + "CT":    false,
+	}
+	for include, want := range cases {
+		if got := isRegeneratedSection(obj, include); got != want {
+			t.Errorf("isRegeneratedSection(%q) = %v, want %v", include, got, want)
+		}
+	}
+}
+
+// A name that merely ends in CS is not the CS section. ZCL_DEMO_CS is an object
+// in its own right, and treating its includes as regenerated would drop the
+// only stamp it has — which reads as "unchanged" and serves stale source.
+func TestAnObjectWhoseNameEndsInCSIsNotASection(t *testing.T) {
+	const obj = "ZCL_DEMO_CS"
+	pad := obj + strings.Repeat("=", 30-len(obj))
+	if isRegeneratedSection(obj, pad+"CM001") {
+		t.Error("a method include of ZCL_DEMO_CS was taken for a regenerated section")
+	}
+	if !isRegeneratedSection(obj, pad+"CS") {
+		t.Error("the actual CS section of ZCL_DEMO_CS was not recognised")
+	}
+	// And an unrelated include must not be judged at all.
+	if isRegeneratedSection(obj, "ZCL_OTHER=====================CS") {
+		t.Error("another object's section was attributed to this one")
 	}
 }

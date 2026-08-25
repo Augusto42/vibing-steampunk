@@ -1,7 +1,9 @@
-# The cache: measured, and not built
+# The cache: the invalidation signal, settled
 
-**Status:** `boundaries` is 11× faster without one. The cache stays unwired, and
-this says why, so nobody re-derives it.
+**Status:** `boundaries` is 11× faster without a cache. The signal a cache needs
+is now **established and sound** — this document said the opposite for an hour,
+and the correction is kept in full below because how it went wrong is the more
+useful half.
 
 ## What was claimed
 
@@ -36,7 +38,7 @@ week removing. Three candidate signals, all probed:
 | `REPOSRC.UDAT`+`UTIME` | one query per object prefix, 0.4 s | **unsound — see below** |
 | `SEOCLASSDF.CHANGEDON` | one query, bulk | date only, and it agrees with REPOSRC, not with ADT |
 
-### Why REPOSRC is not the answer
+### First conclusion: REPOSRC is not the answer — **and it was wrong**
 
 The obvious construction is: one bulk query gives a change time per object,
 compare against the cache, fetch only what moved. It fails on measurement.
@@ -64,6 +66,53 @@ is the failure mode named four times in this month's reports.
 **A cross-run source cache is therefore not shipped.** Not "not yet worth it" —
 not soundly possible on a signal this system has been shown to offer.
 
+### The correction, from a controlled experiment
+
+The paragraph above is wrong, and it was wrong for an avoidable reason: **the
+probe that produced it read 40 rows of a class that has 63 includes.**
+`CL_HTTP_CLIENT================CM00Q` carries `20241010160847` — which is the
+ETag, exactly — and it was past the cut. A rule inferred from four unexplained
+examples, when a fifth row would have explained them.
+
+What settled it was creating a Z class and changing it, rather than inspecting
+standard objects whose history nobody can reconstruct. `ZCL_VSP_00_STAMP_TEST`
+in `$TMP`, created, method body changed twice, public section changed once, then
+deleted:
+
+| step | source sha | ETag | max REPOSRC | moved |
+|---|---|---|---|---|
+| create | e7107994 | …053314 | …053314 | all |
+| edit 1 | 96e5a49c | …053316 | …053316 | CM001, CS |
+| edit 2 | 8e429838 | …053318 | …053318 | CM001, CS |
+| signature | 62988786 | …053321 | …053321 | CM002, CU, CP, CS |
+
+Four changes, four distinct hashes, and the ETag equals the maximum every time.
+Note that `CU` does **not** move on a method-body change and `CM001` does: no
+single include is the signal, the maximum is.
+
+### The rule
+
+> **stamp = max(REPOSRC over the object's includes, excluding `CS`)**
+
+`CS` is regenerated. It moves without the source changing — several standard
+classes carry today's timestamp on it, hours after nobody edited them — and
+including it drops agreement across ten standard classes from **eight to zero**.
+
+Of those ten, eight match the ETag exactly and two are **later** than it:
+
+| class | ETag | max excluding CS | |
+|---|---|---|---|
+| CL_ABAP_TYPEDESCR | 20200316133949 | 20200316133949 | = |
+| CL_HTTP_CLIENT | 20241010160847 | 20241010160847 | = |
+| CL_GUI_FRONTEND_SERVICES | 20221209144808 | 20221209144808 | = |
+| CL_SALV_TABLE | 20230615133422 | 20241010160755 | later |
+| CL_ABAP_UNIT_ASSERT | 20230210142543 | 20230404131642 | later |
+
+Ten of ten are **≥ the ETag**, and that direction is the whole safety argument:
+a stamp never older than what ADT serves can invalidate too often and never too
+rarely. Over-invalidation costs a fetch. Under-invalidation serves code that is
+not there, under a verdict somebody acts on.
+
 ## What was shipped instead
 
 The fetches were serial. Six workers, results assembled **in input order** so
@@ -77,10 +126,18 @@ problem.
 
 ## What is left, for whoever picks it up
 
-- **Find what the ETag actually tracks.** If it is a per-object version the
-  repository records somewhere queryable in bulk, the cache becomes sound and
-  worth building. `CL_HTTP_CLIENT` is the case to explain: what happened to it
-  on 2024-10-10 that moved the ETag and no source record?
+- **The cache is now buildable, soundly.** `SourceStamps` implements the rule
+  and its tests pin the two things that break it: the `=` padding that separates
+  `ZCL_ORDER` from `ZCL_ORDER_ITEM`, and the `CS` exclusion. `pkg/cache` already
+  has the right model — `SourceHash`, `LastModifiedADT`, `Valid`.
+- **Whether it is worth building is now a different question.** `boundaries` is
+  1.6 s without one. The case for a cache is the *other* scans, repeat runs, and
+  large customer packages — not this command.
+- **One cost to measure first:** the stamp itself is one query per class,
+  because SAP freestyle rejects more than one LIKE per WHERE. For 137 classes
+  that is 137 queries, which is what the cache was meant to avoid. Either find a
+  bulk form, or accept that the cache pays off only when the sources are large
+  relative to the stamps.
 - **The other scans are still serial.** `health`, `slim`, `api-surface` and
   `cr-config-audit` all walk objects one at a time. The same six workers apply,
   and the same rule with them: assemble in input order.

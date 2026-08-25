@@ -24,6 +24,34 @@ package adt
 // could not be read is reported as absent, and a caller that treats absence as
 // "unchanged" serves stale source and analyses code that is not there. Every
 // path here is built so that the cheap wrong answer is unavailable.
+//
+// # What the stamp is, and why it is sound
+//
+// Settled by a controlled experiment rather than by inspecting standard
+// objects, whose history nobody can reconstruct: a class was created, its
+// method body changed twice and its public section changed once, on a live
+// 7.58 system. Four changes, four different source hashes, and at every step
+//
+//	ETag(source/main) == max(REPOSRC over this object's includes, excluding CS)
+//
+// exactly. Note that CU did not move on a method-body change and CM001 did, so
+// no single include is the signal; the maximum is.
+//
+// **CS has to be excluded.** It is regenerated, it moves without the source
+// changing — several standard classes carry today's timestamp on it — and
+// including it drops agreement across ten standard classes from eight to zero.
+//
+// Of those ten, eight match the ETag exactly and two are **later** than it. That
+// direction is the one that matters: a stamp never older than what ADT serves
+// can only invalidate too often, never too rarely. Over-invalidation costs a
+// fetch; under-invalidation serves code that is not there, under a verdict
+// somebody acts on.
+//
+// The earlier conclusion here was that no sound signal existed. It was wrong,
+// and it was wrong for an avoidable reason: the probe that produced it read 40
+// rows of a class with 63 includes, and the include that carried the answer was
+// past the cut. A rule inferred from four unexplained examples, when a fifth
+// would have explained them.
 
 import (
 	"context"
@@ -144,13 +172,25 @@ func (c *Client) SourceStamps(ctx context.Context, objects []StampRef) (map[stri
 			continue
 		}
 		var latest time.Time
-		for _, at := range rows {
+		counted := 0
+		for include, at := range rows {
+			if isRegeneratedSection(obj.Name, include) {
+				continue
+			}
+			counted++
 			if at.After(latest) {
 				latest = at
 			}
 		}
+		if counted == 0 {
+			unstamped = append(unstamped, Unsearched{
+				Object: obj.Type + " " + obj.Name,
+				Reason: "every source unit found for it is a regenerated section, which moves without the source changing",
+			})
+			continue
+		}
 		stamps[stampKey(obj.Type, obj.Name)] = SourceStamp{
-			Object: obj.Name, Type: strings.ToUpper(obj.Type), At: latest, Includes: len(rows),
+			Object: obj.Name, Type: strings.ToUpper(obj.Type), At: latest, Includes: counted,
 		}
 	}
 
@@ -254,4 +294,22 @@ func namedIn(list []Unsearched, object string) bool {
 		}
 	}
 	return false
+}
+
+// isRegeneratedSection reports whether an include is one the system rewrites on
+// its own, so its timestamp says nothing about the source.
+//
+// CS is the one that matters and it matters a lot: on a live system several
+// standard classes carry today's date on it, hours after nobody edited them.
+// Including it in the maximum makes every object look changed on every run,
+// which is a cache that never hits and a scan that is slower than no cache at
+// all.
+func isRegeneratedSection(object, include string) bool {
+	object = strings.ToUpper(strings.TrimSpace(object))
+	include = strings.ToUpper(strings.TrimSpace(include))
+	if !strings.HasPrefix(include, object) {
+		return false
+	}
+	section := strings.TrimLeft(include[len(object):], "=")
+	return section == "CS"
 }
