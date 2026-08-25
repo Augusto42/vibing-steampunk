@@ -325,3 +325,40 @@ func TestAdvertisedIsOneSetWithNoDuplicates(t *testing.T) {
 		t.Fatal("nothing is advertised, which would make every coverage figure vacuously complete")
 	}
 }
+
+// A budget exceeded is not a broken capability. On a large system the where-used
+// list of a class every other class references does not fit in thirty seconds,
+// while the same call against an ordinary class answers — so the resource is
+// alive and the target is heavy. Reporting that as a defect puts a working
+// capability on the list, in the run where that costs the most.
+func TestATimeoutIsNotADefect(t *testing.T) {
+	for _, text := range []string{
+		"find references failed: context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+		"Client.Timeout exceeded while awaiting headers",
+		"context canceled",
+	} {
+		got, _ := classifyError(text)
+		if got != VerdictTimedOut {
+			t.Errorf("classifyError(%.50q) = %s, want %s", text, got, VerdictTimedOut)
+		}
+		if got.Bad() {
+			t.Errorf("%s counts as a finding; a heavy target is not a defect", got)
+		}
+		if got.OurFault() {
+			t.Errorf("%s counts as the sweep's own gap; it is a fact about the system and the target", got)
+		}
+	}
+}
+
+// And a real failure must not be swallowed by the new class: only the words that
+// actually mean a budget.
+func TestARealFailureIsStillBroken(t *testing.T) {
+	for _, text := range []string{
+		"unmarshal: unexpected end of XML input",
+		"the response had no body",
+	} {
+		if got, _ := classifyError(text); got != VerdictBroken {
+			t.Errorf("classifyError(%q) = %s, want %s", text, got, VerdictBroken)
+		}
+	}
+}

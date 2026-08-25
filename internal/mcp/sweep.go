@@ -86,6 +86,12 @@ const (
 	// VerdictUnprobed — advertised, reachable, and this sweep has no probe for
 	// it. Counted and named, never quietly omitted.
 	VerdictUnprobed Verdict = "unprobed"
+	// VerdictTimedOut — the call did not finish inside the budget. Not a defect
+	// and not an absence: on a large system a heavy target can exceed thirty
+	// seconds while an ordinary one answers, which says the resource is alive
+	// and the target is expensive. It is reported separately so a freeze run
+	// does not put a working capability on the defect list.
+	VerdictTimedOut Verdict = "timed-out"
 	// VerdictMisprobed — the handler read the call and said what was missing
 	// from it. That is the capability working, and the probe calling it wrong.
 	//
@@ -642,6 +648,7 @@ func (s *Server) runProbe(ctx context.Context, p Probe, t SweepTargets) SweepFin
 		}
 		return f
 	}
+
 	text := resultText(result)
 	f.Evidence = firstLine(text)
 
@@ -693,6 +700,16 @@ func (s *Server) runProbe(ctx context.Context, p Probe, t SweepTargets) SweepFin
 func classifyError(text string) (Verdict, string) {
 	low := strings.ToLower(text)
 	switch {
+	// A budget exceeded is not a broken capability. On a large system the
+	// where-used list of a class every other class references does not fit in
+	// thirty seconds, while the same call on an ordinary class answers — so the
+	// resource is alive and this target is heavy. Reporting that as a defect
+	// puts a working capability on the list, and the freeze run is exactly
+	// where that costs somebody an afternoon.
+	case strings.Contains(low, "deadline exceeded"),
+		strings.Contains(low, "client.timeout exceeded"),
+		strings.Contains(low, "context canceled"):
+		return VerdictTimedOut, firstLine(text)
 	// A handler that names the parameter it wanted has read the call and
 	// answered it. Nothing is wrong with the capability; the probe asked
 	// badly, and saying so is what keeps the findings list worth reading.
@@ -845,7 +862,7 @@ func (r *SweepReport) Text() string {
 	}
 	for _, v := range []Verdict{
 		VerdictAnswered, VerdictDead, VerdictBroken, VerdictUnreachable,
-		VerdictEmpty, VerdictRefused, VerdictAbsent, VerdictSkipped, VerdictMisprobed,
+		VerdictEmpty, VerdictRefused, VerdictAbsent, VerdictTimedOut, VerdictSkipped, VerdictMisprobed,
 	} {
 		if counts[v] > 0 {
 			fmt.Fprintf(&b, "  %-11s %d\n", v, counts[v])

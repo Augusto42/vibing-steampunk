@@ -275,12 +275,25 @@ func packageWithSource(ctx context.Context, client *adt.Client) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	// rowStringOf, not a type assertion on any.
+	//
+	// This read `row["DEVCLASS"].(string)` with the ok discarded. A data-preview
+	// value that arrives as anything but a plain string then leaves pkg empty,
+	// the loop finds nothing, and the function reports "no package with a class
+	// was found in TADIR" — a claim about the system, manufactured by a type
+	// conversion. On 7.50 that is exactly what happened, and three probes were
+	// skipped for want of a package the system has thousands of.
+	//
+	// The shape is the one this project keeps finding: a failure that produces
+	// a plausible sentence rather than an error. It is the only such assertion
+	// left in the tree, which is why it survived.
 	for _, row := range res.Rows {
-		if pkg, _ := row["DEVCLASS"].(string); pkg != "" && !strings.HasPrefix(pkg, "$") {
+		pkg := rowStringOf(row, "DEVCLASS")
+		if pkg != "" && !strings.HasPrefix(pkg, "$") {
 			return pkg, nil
 		}
 	}
-	return "", fmt.Errorf("no package with a class was found in TADIR")
+	return "", fmt.Errorf("TADIR returned %d rows and none of them named a transportable package", len(res.Rows))
 }
 
 // objectWithCrossReferences returns an object whose includes appear in
