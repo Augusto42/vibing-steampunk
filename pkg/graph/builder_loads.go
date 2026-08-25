@@ -56,7 +56,10 @@ func BuildD010INCGraph(rows []D010INCRow) *Graph {
 		if master == "" || include == "" || row.ObsoleteInVersion != 0 {
 			continue
 		}
-		if isKernelInclude(include) {
+		// Both sides, not just the include. A generated companion appears as
+		// the *master* of a row and would otherwise be reported as another
+		// object loading this one.
+		if isGenerated(include) || isGenerated(master) {
 			continue
 		}
 
@@ -88,12 +91,30 @@ func BuildD010INCGraph(rows []D010INCRow) *Graph {
 	return g
 }
 
-// isKernelInclude reports whether an include is machinery rather than an
-// object. <SYSINI> stands on every row in the table and %_CABAP on most of
-// them; neither is anything a caller can look up, transport or break.
-func isKernelInclude(include string) bool {
-	if strings.HasPrefix(include, "<") {
+// isGenerated reports whether a name is machinery rather than an object.
+//
+// Three shapes, and the third was found in the tool's own output rather than by
+// reading. <SYSINI> stands on nearly every row and %_CABAP on most; neither is
+// anything a caller can look up.
+//
+// The third is a tilde prefix — ~CL_VSP_GIT_SERVICE===========HCZ appeared as
+// the *master* of a row, so a class's own generated companion was reported as
+// another object loading it. Checked rather than assumed: names of that shape
+// are in neither REPOSRC nor TADIR, so they are not programs with source and
+// not repository objects. Something exists at load time that nothing can look
+// up, transport or break, which is the same class of thing as <SYSINI>.
+//
+// What HCZ and HPZ stand for is not recorded here, because nothing consulted
+// says: the filter rests on the tilde and on the absence from both catalogues,
+// not on a reading of the suffix.
+func isGenerated(name string) bool {
+	switch {
+	case strings.HasPrefix(name, "<"):
+		return true
+	case strings.HasPrefix(name, "%_"):
+		return true
+	case strings.HasPrefix(name, "~"):
 		return true
 	}
-	return strings.HasPrefix(include, "%_")
+	return false
 }

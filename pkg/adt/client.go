@@ -292,10 +292,38 @@ func (c *Client) GetProgram(ctx context.Context, programName string) (string, er
 		Method: http.MethodGet,
 	})
 	if err != nil {
+		// TADIR calls an include a PROG, and ADT does not: an include lives at
+		// /programs/includes and answers 404 at /programs/programs. So a whole
+		// class of object listed in a package as a program cannot be read as
+		// one — 53 of them in SBRF on a stock 7.58, every one of which has
+		// source and is active, and every one of which was being reported as
+		// unreadable.
+		//
+		// Retrying rather than looking the type up first: REPOSRC.SUBC would
+		// answer authoritatively but costs a query for every program in a
+		// package to save one for the few that are includes. The 404 is the
+		// same information arriving later and for free.
+		if isNotFound(err) {
+			if src, incErr := c.GetInclude(ctx, programName); incErr == nil {
+				return src, nil
+			}
+		}
 		return "", fmt.Errorf("getting program source: %w", err)
 	}
 
 	return string(resp.Body), nil
+}
+
+// isNotFound reports whether an error is ADT saying the resource does not
+// exist, as against saying anything else. It matters that this is narrow: a
+// retry on an authorisation failure or a timeout would turn one clear error
+// into two vague ones.
+func isNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status 404") || strings.Contains(msg, "ExceptionResourceNotFound")
 }
 
 // --- Class Operations ---
