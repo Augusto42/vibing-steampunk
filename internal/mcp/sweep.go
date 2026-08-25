@@ -132,6 +132,11 @@ type SweepTargets struct {
 	// References is an object known to reference other code — the down
 	// direction of the same problem.
 	References string
+	// ReferencesType is that object's type, and it travels with the name
+	// because a probe that assumes one asks at the wrong address. A program
+	// include asked for at /oo/classes/ answers 404, and a 404 caused by us is
+	// indistinguishable from a capability the release does not have.
+	ReferencesType string
 	// Dump is the id of a runtime error that exists on this system. The
 	// post-mortem types default to "latest" and refuse when the feed is empty,
 	// which is correct and is not a defect — so a probe without one must be
@@ -171,6 +176,8 @@ func (t SweepTargets) get(kind string) string {
 		return t.Referenced
 	case "references":
 		return t.References
+	case "references_type":
+		return t.ReferencesType
 	case "dump":
 		return t.Dump
 	case "trace":
@@ -894,7 +901,8 @@ func (r *SweepReport) writeTargets(b *strings.Builder) {
 	pairs := [][2]string{
 		{"class", r.Targets.Class}, {"program", r.Targets.Program},
 		{"package", r.Targets.Package}, {"table", r.Targets.Table},
-		{"referenced", r.Targets.Referenced}, {"references", r.Targets.References},
+		{"referenced", r.Targets.Referenced},
+		{"references", r.Targets.References + " (" + r.Targets.ReferencesType + ")"},
 	}
 	for _, p := range pairs {
 		if p[1] == "" {

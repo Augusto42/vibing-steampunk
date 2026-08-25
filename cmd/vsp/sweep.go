@@ -22,6 +22,7 @@ import (
 
 	"github.com/oisee/vibing-steampunk/internal/mcp"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
+	"github.com/oisee/vibing-steampunk/pkg/graph"
 	"github.com/spf13/cobra"
 )
 
@@ -257,11 +258,11 @@ func fillSweepTargets(cmd *cobra.Command, client *adt.Client, targets *mcp.Sweep
 	// such an object is an empty callee list impossible, which is the whole
 	// premise of that probe.
 	if !cmd.Flags().Changed("references") {
-		if obj, err := objectWithCrossReferences(ctx, client); err != nil {
+		if obj, objType, err := objectWithCrossReferences(ctx, client); err != nil {
 			missed = append(missed, adt.Unsearched{Object: "object with cross-references", Reason: err.Error()})
-			targets.References = ""
+			targets.References, targets.ReferencesType = "", ""
 		} else if obj != "" {
-			targets.References = obj
+			targets.References, targets.ReferencesType = obj, objType
 		}
 	}
 	return missed
@@ -282,51 +283,54 @@ func packageWithSource(ctx context.Context, client *adt.Client) (string, error) 
 	return "", fmt.Errorf("no package with a class was found in TADIR")
 }
 
-// objectWithCrossReferences returns the name of an object whose includes appear
-// in WBCROSSGT, so that "this object references nothing" is known to be false
-// before the question is put.
-func objectWithCrossReferences(ctx context.Context, client *adt.Client) (string, error) {
+// objectWithCrossReferences returns an object whose includes appear in
+// WBCROSSGT — name **and type** — so that "this object references nothing" is
+// known to be false before the question is put.
+//
+// The type is not decoration. The first version returned a name alone and every
+// probe then asserted CLAS, which is right for a class pool and wrong for an
+// ordinary include: on one system the first WBCROSSGT row happened to be a
+// class and the sweep passed, on another it was a program include and the probe
+// asked for it at /oo/classes/…, got a 404, and reported the capability
+// **absent on that release**. A verdict about the release, produced by a
+// mistake of ours, in the tool whose whole job is telling those apart.
+//
+// NormalizeInclude has returned the type all along and this function was not
+// asking for it — the same silhouette as the include section and the edge line
+// number, both of which were computed and discarded.
+func objectWithCrossReferences(ctx context.Context, client *adt.Client) (name, objType string, err error) {
 	res, err := client.GetTableContents(ctx, "WBCROSSGT", 50, "")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, row := range res.Rows {
-		include, _ := row["INCLUDE"].(string)
-		if name := repositoryNameFromInclude(include); name != "" {
-			return name, nil
+		include := strings.TrimSpace(rowStringOf(row, "INCLUDE"))
+		if include == "" {
+			continue
 		}
+		_, t, n := graph.NormalizeInclude(include)
+		// A target whose type could not be established is not returned at all.
+		// Guessing one puts the probe at an address the object does not live
+		// at, and the 404 that follows is indistinguishable from a release
+		// difference.
+		if t == "" || n == "" {
+			continue
+		}
+		if repositoryNameFromInclude(include) == "" {
+			continue // generated or internal — not a repository object
+		}
+		return n, t, nil
 	}
-	return "", fmt.Errorf("WBCROSSGT returned no include that names a repository object")
+	return "", "", fmt.Errorf("WBCROSSGT returned no include that names a repository object of a known type")
 }
 
-// repositoryNameFromInclude recovers the object name from an include name, or
-// returns empty when the include does not name one.
-//
-// A class include is the class name padded with '=' and a two-letter section:
-// CL_FOO=========================CP. Cutting at the first '=' is the whole
-// trick. The first version trimmed the padding *and* the section letters from
-// the right, which also ate real characters off names ending in those letters
-// — and handed the sweep "%_CCRMB", a generated include, as an object to ask
-// about. The handler refused it correctly and the sweep reported that refusal
-// as a defect in the handler. Garbage in, and the report blames the wrong side.
-func repositoryNameFromInclude(include string) string {
-	name := strings.TrimSpace(strings.Split(include, "=")[0])
-	if len(name) < 4 {
+// rowStringOf reads a column from a data-preview row.
+func rowStringOf(row map[string]interface{}, column string) string {
+	v, ok := row[column]
+	if !ok || v == nil {
 		return ""
 	}
-	// Generated and internal includes are not repository objects: %_CCRMB,
-	// LZFOO$01, and anything the caller could not name in a query.
-	first := rune(name[0])
-	if first != '/' && !(first >= 'A' && first <= 'Z') {
-		return ""
-	}
-	for _, r := range name {
-		ok := (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '/'
-		if !ok {
-			return ""
-		}
-	}
-	return name
+	return strings.TrimSpace(fmt.Sprintf("%v", v))
 }
 
 // sweepConfig supplies the settings that shape registration, and nothing about
@@ -344,4 +348,35 @@ func sweepConfig() *mcp.Config {
 // sweepBuild names the binary being exercised, for the report to carry.
 func sweepBuild() string {
 	return fmt.Sprintf("%s (commit %s, built %s)", Version, Commit, BuildDate)
+}
+
+// repositoryNameFromInclude recovers the object name from an include name, or
+// returns empty when the include does not name one.
+//
+// Kept as a filter for generated and internal includes — %_CCRMB and the like —
+// which NormalizeInclude will happily turn into a plausible-looking name. The
+// type now comes from NormalizeInclude; this only answers "is this a repository
+// object at all".
+//
+// A class include is the class name padded with '=' and a two-letter section,
+// so cutting at the first '=' is the whole trick. An earlier version trimmed
+// padding and section letters from the right, which ate real characters and
+// handed the sweep "%_CCRMB" as an object to ask about; the handler refused it
+// correctly and the sweep filed the refusal as a defect in the handler.
+func repositoryNameFromInclude(include string) string {
+	name := strings.TrimSpace(strings.Split(include, "=")[0])
+	if len(name) < 4 {
+		return ""
+	}
+	first := rune(name[0])
+	if first != '/' && !(first >= 'A' && first <= 'Z') {
+		return ""
+	}
+	for _, r := range name {
+		ok := (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '/'
+		if !ok {
+			return ""
+		}
+	}
+	return name
 }
