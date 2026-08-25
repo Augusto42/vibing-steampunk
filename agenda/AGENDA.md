@@ -134,6 +134,20 @@ There is no stated API stability promise; if one is wanted, now is the time.
 
 ## Needs a decision
 
+**Address mismatches: measured, mostly closed** —
+[002-address-mismatches](2026-08-25-002-address-mismatches.md). `PROG` that is
+really an include was the only pair among what package scanners read, confirmed
+against a build with the retry removed so the check could have failed. One
+object across twelve packages is still unreadable and it is a 500 at both
+addresses, not a wrong address.
+
+**What that measurement cannot see, and somebody should:** local classes.
+`CCIMP`, `CCDEF` and the rest are in no catalogue, so nothing lists them, no
+scan can miss them, and no dependency reader asks for them. A missing object
+leaves a gap; an object nothing ever asks for leaves nothing. That is the shape
+of defect this week has been worst at finding.
+
+
 **The three graph decisions are taken** — branch `feat/graph-stats-and-loads`.
 
 - **`graph_stats` widened, not renamed.** The case was in the same file:
