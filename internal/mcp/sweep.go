@@ -596,6 +596,29 @@ func (s *Server) advertisedCapabilities() []string {
 	for _, p := range coreActionProbes() {
 		seen[baseCapability(p.Capability)] = true
 	}
+
+	// The routers outside analysisTypes() count too, or the figure overstates.
+	//
+	// When eleven capabilities were routed into the universal tool, three
+	// actions and one analyze type became reachable — and none of them entered
+	// this set, because it was built from the analyze tables and the core
+	// probes alone. The report would have printed "39 of 39 capabilities
+	// probed" with four capabilities outside the count entirely: not probed,
+	// not named as unprobed, not counted. Arithmetically true and reading as
+	// complete, which is the shape this whole command exists to refuse.
+	//
+	// Taken from the routers' own tables where they have them, so the list
+	// cannot drift from what is dispatched. The lint router has no table and is
+	// named here by hand; the durable fix is one registry every router
+	// registers into, and that is a change for after the freeze.
+	for t := range s.i18nTypes() {
+		seen["action=i18n op="+t] = true
+	}
+	for t := range s.revisionTypes() {
+		seen["action=revisions op="+t] = true
+	}
+	seen["action=lint"] = true
+	seen["analyze type=lint"] = true
 	out := make([]string, 0, len(seen))
 	for c := range seen {
 		out = append(out, c)
