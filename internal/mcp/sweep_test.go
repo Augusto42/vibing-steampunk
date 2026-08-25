@@ -362,3 +362,36 @@ func TestARealFailureIsStillBroken(t *testing.T) {
 		}
 	}
 }
+
+// "absent on this release" is a claim; "absent on this system" is an anecdote.
+// A report that cannot name the release cannot support the sentence its own
+// verdicts are written in, so it says which half is missing rather than
+// leaving the reader to assume there was nothing to say.
+func TestAReportWithoutAReleaseSaysSo(t *testing.T) {
+	r := &SweepReport{System: "example", Live: true, Advertised: 1,
+		Answer: []SweepFinding{{Capability: "x", Verdict: VerdictAbsent}}}
+	text := r.Text()
+	if !strings.Contains(text, "release: unknown") {
+		t.Errorf("a live report with no release does not say so:\n%s", text)
+	}
+	if !strings.Contains(text, "cannot be attributed") {
+		t.Errorf("it does not say what the missing release costs:\n%s", text)
+	}
+}
+
+func TestAReleaseAndDatabaseAreBothReported(t *testing.T) {
+	r := &SweepReport{System: "example", Live: true, Release: "758", Database: "HDB", Advertised: 1}
+	text := r.Text()
+	if !strings.Contains(text, "758") || !strings.Contains(text, "HDB") {
+		t.Errorf("the report drops the release or the database:\n%s", text)
+	}
+}
+
+// The offline pass talks to nothing, so it must not claim a release is missing
+// — there was never one to have.
+func TestTheOfflinePassClaimsNoRelease(t *testing.T) {
+	r := &SweepReport{System: "(no system)", ReachChecked: 10}
+	if strings.Contains(r.Text(), "release") {
+		t.Errorf("the offline pass mentions a release:\n%s", r.Text())
+	}
+}
