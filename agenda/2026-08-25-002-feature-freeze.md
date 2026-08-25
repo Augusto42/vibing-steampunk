@@ -25,12 +25,32 @@ corrects a claim. Making a capability reachable that was already advertised.
 surface of any kind — including "small" ones, because the whole point is that
 the surface stops moving long enough to be verified.
 
-**The one exception to argue about, not to assume.** `vsp sweep` cannot compare
-two systems; `vsp compat` can, and the whole sprint is a three-system
-comparison. Either the sweep gains `--against`, or the comparison is done by
-hand and by diffing JSON. That is tooling for the freeze rather than product
-capability, and it is the only thing worth breaking the rule for. Decide before
-starting, not halfway through.
+**The exception was argued and refused.** `vsp sweep` cannot compare two
+systems and the whole sprint is a three-system comparison, so `--against`
+looked like tooling rather than capability. Three arguments against it, and the
+third is the one that decides:
+
+1. Nothing is missing. `sweep --json` exists and its own flag help says "for
+   diffing or for a record". `--against` would add the join, which is the
+   cheapest part.
+2. It would be the only capability not covered by the run it was added for. A
+   comparison tool that is itself unverified is a report saying GOOD over a
+   check that did not run — the shape this very tool was built to catch.
+3. **`SweepReport` carries a `system` field.** A tool that by construction holds
+   two systems in one process makes anonymisation a step somebody has to
+   remember. A manual step makes it structural: the raw reports stay in
+   `.local/` and the tracked artefact is a separate, deliberate act. This
+   document says a three-way diff tempts an exception because the real names
+   read better — and then proposed giving the product the ability to put them
+   side by side.
+
+The replacement lives at `.local/freeze/compare-sweeps.py`, untracked. It eats
+what `sweep --json` already emits and is anonymised **by construction**: the
+`system` field is dropped at read time, once, so nothing downstream can print
+it; inputs are A, B, C by command-line order; the release comes from the
+report's own build line. If the comparison turns out to be needed permanently,
+it enters the product afterwards, with tests and a probe, and not as an
+exception.
 
 ## What "clean" has to mean
 
@@ -68,8 +88,7 @@ and it should be run rather than remembered.
 
 ## Order of work
 
-1. **Decide the `--against` question.** Ten minutes, and everything downstream
-   is shaped by it.
+1. ~~Decide the `--against` question.~~ **Refused — see above.**
 2. **Baseline on a4h.** The known-good, so a difference elsewhere has something
    to be a difference from.
 3. **Run d15 and ms1.** Expect absences: 7.50 has no dump detail resource, no
