@@ -18,6 +18,49 @@ two worktrees, which is why it says so.
 > — state, direction and where to resume. This board carries the items; that
 > file carries the shape and the order.
 
+## Landed — 2026-08-25 — v2.52.0
+
+**The v3 registry prototype is off `main` and on `feat/v3`.** Its central claim
+was false: six of the eleven declared examples did not work, because tag names
+were not handler keys. The revert put `main`'s Go code byte-identical to
+`v2.51.0`, and the decision recorded for v3 stands — **static code generation**,
+not reflection over struct tags. Do not extend the registry onto more
+capabilities.
+
+**The sweep was clean while looking at 39 of 51.** The twelve it skipped were
+exactly the routed ones — i18n, revisions, lint — so the release gate was not
+looking at the code that changed. Probes first, then the fixes they forced:
+
+| Capability | What was wrong |
+|---|---|
+| `analyze type=lint` | the analysis router claims every `action="analyze"`; the lint router sat after it and never saw the call |
+| `i18n data_element_labels` | `Accept: application/xml` → 406 on every name, *and* a parser reading attributes that are child elements |
+| `i18n text_pool` | wrong address entirely — the text pool is its own resource with three plain-text sub-documents |
+
+None had ever worked on any release. The unit tests for two of them asserted
+against responses nobody had ever received, so they were green for exactly as
+long as the capability was broken.
+
+**`WriteDataElementLabels` refuses instead of guessing.** It PUT a four-field
+document at a resource that takes the element's whole representation. Reading
+was fixable because reading is verifiable without changing anything; this is
+not, and a guess that turns out to be a whole-object replacement costs the
+object. The error says what a correct read-modify-write has to do.
+
+**`upsert` no longer reads a failure as an absence.** `objectExists = (err ==
+nil)` meant a timeout during an edit became an attempt to create. 404 is the
+only error that means absent.
+
+### Open, and named on purpose
+
+- **`i18n write_message_texts` is unverified.** Built against the shape ADT
+  serves, never exercised. Verifying it needs a scratch message class to write
+  to, and there is no MSAG creation path in the client.
+- **The sweep measures one surface.** 51 capabilities is what the universal
+  `SAP()` tool reaches. Expert mode's 147 tools and the ~60 CLI commands are
+  reach-checked only — registered and routed, never asked whether they answer.
+  That is the next real coverage project, and it is much larger than this one.
+
 ## Landed — 2026-08-24
 
 **`feat/graph-forward` is on `main`.** Twelve commits, merged by the release
