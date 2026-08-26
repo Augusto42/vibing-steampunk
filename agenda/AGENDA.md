@@ -18,6 +18,28 @@ two worktrees, which is why it says so.
 > — state, direction and where to resume. This board carries the items; that
 > file carries the shape and the order.
 
+## Landed — 2026-08-26 — v2.53.0
+
+**`SAP()` with no arguments answers instead of refusing.** It used to say
+`action is required` — correct, and the least useful correct answer available,
+because the caller sending nothing is the one who does not yet know what this is
+connected to. The card names the build, whether the session is authenticated,
+which system and client, and what to call next. When the session is dead it
+gives the diagnosis rather than five calls that will all fail, including that a
+401 must not be retried.
+
+The connection check is the CSRF token fetch — an expired SSO session answers
+200 with a logon page and only the missing token gives it away — reached through
+the new `Client.CheckSession` rather than reimplemented. Not `GetSystemInfo`,
+which runs free SQL and would report a usable connection dead under
+`--block-free-sql`.
+
+The instance number is derived from the port and says so. `pkg/saprfc` exports
+the derivation so there is one place to get the ICM ranges wrong.
+
+`info` is the 52nd advertised capability and has a probe. **50 of 52 on a4h,
+no dead capabilities.**
+
 ## Landed — 2026-08-25 — v2.52.0
 
 **The v3 registry prototype is off `main` and on `feat/v3`.** Its central claim
