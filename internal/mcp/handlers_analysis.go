@@ -158,7 +158,7 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 		return nil, err
 	}
 
-	limit := 200
+	limit := defaultRows
 	if max, ok := request.GetArguments()["max_results"].(float64); ok && max > 0 {
 		limit = int(max)
 	}
@@ -177,6 +177,10 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 		answer["source"] = sourceWhereUsed
 		answer["total"] = len(callers)
 		if len(callers) > limit {
+			// Said, not left to be inferred from comparing "total" against the
+			// length of the array. A reader who does not make that comparison
+			// reads a truncated where-used list as the whole one.
+			answer["truncated"] = truncationNote(limit, len(callers), "max_results")
 			callers = callers[:limit]
 		}
 		answer["callers"] = callerAnswers(callers)
@@ -200,6 +204,7 @@ func (s *Server) callGraphAnswer(ctx context.Context, request mcp.CallToolReques
 			answer["gap"] = adt.UnsearchedNote(gaps, 2, "cross-reference table")
 		}
 		if len(callees) > limit {
+			answer["truncated"] = truncationNote(limit, len(callees), "max_results")
 			callees = callees[:limit]
 		}
 		answer["callees"] = callees

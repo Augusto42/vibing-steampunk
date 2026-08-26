@@ -73,9 +73,26 @@ func (s *Server) handleListDumps(ctx context.Context, request mcp.CallToolReques
 	if err != nil {
 		return newToolResultError(err.Error()), nil
 	}
+	// The MCP default was whatever pkg/adt used for the CLI, which is a
+	// hundred. A hundred dump rows is ten thousand tokens that stay in the
+	// context for the rest of the session, and the question people actually ask
+	// this is "what broke recently".
+	//
+	// Asking for one more than we mean to show costs nothing — the feed is
+	// fetched and parsed whole either way — and it is what lets the answer tell
+	// "twenty, and that is all there are" from "twenty of more".
+	capped := filter.Limit == 0
+	if capped {
+		filter.Limit = defaultDumps + 1
+	}
 	dumps, err := s.adtClient.Dumps(ctx, filter)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to get dumps: %v", err)), nil
+	}
+	if capped && len(dumps) > defaultDumps {
+		dumps = dumps[:defaultDumps]
+		notes = append(notes, truncationNoteUnknownTotal(defaultDumps, "max_results",
+			"narrow the window with since/until"))
 	}
 	return newToolResultJSON(dumpListResult{Dumps: dumps, Count: len(dumps), Notes: notes}), nil
 }
