@@ -149,6 +149,15 @@ func OpenWithTimeout(ctx context.Context, p Params, timeout time.Duration) (*rfc
 // fromURL extracts the host and, where the port follows a standard AS ABAP
 // convention, the instance number: 80NN and 443NN (ICM HTTP/HTTPS) and 5NN00
 // (the port layout used by the ABAP developer editions).
+// SysnrFromURL derives the host and system number from an ADT base URL.
+//
+// Exported because two callers need the same derivation and the second one
+// nearly reimplemented it: the rule is a convention about ICM ports, not a
+// fact the system told us, and a second copy would be a second place to get
+// the ranges wrong. Callers that show the number to a person should say it was
+// derived.
+func SysnrFromURL(raw string) (host, sysnr string) { return fromURL(raw) }
+
 func fromURL(raw string) (host, sysnr string) {
 	if raw == "" {
 		return "", ""

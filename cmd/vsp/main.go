@@ -317,6 +317,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// The binary's own identity, so SAP() can say which build answered. An
+	// agent reporting a defect against "vsp" names nothing; against a commit it
+	// names something.
+	cfg.Build = sweepBuild()
+
 	// Create and start MCP server
 	srv := mcp.NewServer(cfg)
 

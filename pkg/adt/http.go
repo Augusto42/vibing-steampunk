@@ -611,6 +611,18 @@ func (t *Transport) Ping(ctx context.Context) error {
 	return t.fetchCSRFToken(ctx)
 }
 
+// CheckSession reports whether this client has a usable, authenticated ADT
+// session, and returns why not when it does not.
+//
+// It is the CSRF token fetch, deliberately, rather than a status code or a
+// query: a live ADT session always yields a token, and an expired SSO session
+// answers 200 with a logon page that carries none. The whole of that detection
+// already lives in fetchCSRFToken, and a second implementation beside it would
+// be a second thing to keep right.
+func (c *Client) CheckSession(ctx context.Context) error {
+	return c.transport.Ping(ctx)
+}
+
 // reauthCooldown prevents concurrent 401 handlers from triggering simultaneous
 // SAML dances. If a re-auth completed within this window, skip the duplicate.
 const reauthCooldown = 5 * time.Second

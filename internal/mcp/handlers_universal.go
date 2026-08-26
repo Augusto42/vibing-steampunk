@@ -19,7 +19,8 @@ func (s *Server) registerUniversalTool() {
 		mcp.WithDescription(`SAP ABAP development: read/edit/create/test/analyze/debug objects on a live SAP system.
 
 common target types: CLAS, PROG, INTF, FUNC, FUGR, DDLS, TABL, DEVC, BDEF, SRVD
-actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, help
+actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, info, help
+SAP() with no arguments — which build, whether the session is authenticated, which system, and what to call next
 some actions (analyze, test, debug, system, help) use params only — no target needed.
 
 SAP(action="read", target="CLAS ZCL_TEST")  — source + dependency context
@@ -35,7 +36,7 @@ SAP(action="rfc", target="STFC_CONNECTION") — describe an FM interface (JSON S
 SAP(action="help") — full docs; SAP(action="help", target="tips") — best practices`),
 		mcp.WithString("action",
 			mcp.Required(),
-			mcp.Description("Action to perform: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, help"),
+			mcp.Description("Action to perform: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, info, help. Call SAP() with no arguments for build, connection and system, plus what to call next."),
 		),
 		mcp.WithString("target",
 			mcp.Description("Target object as 'TYPE NAME' (e.g. 'CLAS ZCL_TEST', 'PROG ZREPORT'). Some actions don't need a target."),
@@ -49,10 +50,16 @@ SAP(action="help") — full docs; SAP(action="help", target="tips") — best pra
 // handleUniversalTool dispatches universal SAP(action, target, params) calls to domain-specific route functions.
 func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	action, _ := request.GetArguments()["action"].(string)
-	if action == "" {
-		return newToolResultError("action is required. Use SAP(action=\"help\") for documentation."), nil
+	action = strings.ToLower(strings.TrimSpace(action))
+
+	// An empty call is a question, not a mistake. It used to be answered with
+	// "action is required" and one thing to try, which is correct and is the
+	// least useful correct answer available: the caller sending no arguments is
+	// exactly the caller who does not yet know what this is connected to,
+	// whether the session works, or which build is answering.
+	if action == "" || action == "info" {
+		return s.handleInfo(ctx), nil
 	}
-	action = strings.ToLower(action)
 
 	target, _ := request.GetArguments()["target"].(string)
 

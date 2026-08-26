@@ -70,6 +70,13 @@ type Config struct {
 	// Cookie authentication (alternative to basic auth)
 	Cookies map[string]string
 
+	// Build names the binary, as "v2.52.0 (commit abc1234, built ...)".
+	//
+	// It is a string the caller composes rather than three fields, because the
+	// only thing this package does with it is print it, and three fields would
+	// be three chances for one of them to go unset.
+	Build string
+
 	// Verbose output
 	Verbose bool
 

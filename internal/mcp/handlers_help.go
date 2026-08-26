@@ -125,6 +125,28 @@ Unit tests:
 ATC check:
   SAP(action="test", params={"type": "atc", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})`)
 
+	case "info":
+		return mcp.NewToolResultText(`SAP(action="info") - What am I talking to?
+
+  SAP()
+  SAP(action="info")
+
+Both answer the same four things, in the order somebody needs them:
+
+  which build is answering — an agent reporting a defect against "vsp"
+    names nothing; against a commit it names something
+  whether the session is alive and authenticated, which decides whether
+    any other call is worth making
+  which system, so nobody acts on production believing it is a sandbox
+  what to call next
+
+The connection check is a CSRF token fetch, not a status code: an expired
+SSO session answers 200 with a logon page, and only the missing token
+gives it away.
+
+The instance number is derived from the port (80NN, 443NN, 5NN00), not
+read from the system, and the card says so.`)
+
 	case "rfc":
 		return mcp.NewToolResultText(`SAP(action="rfc") - Classic RFC to the same system
 
@@ -468,6 +490,8 @@ Actions:
   i18n     - Translation texts, language comparison
   revisions- Version history, one version's source, two versions compared
   lint     - Static analysis of ABAP source, offline
+  info     - Build, connection, system, and what to call next. Also SAP() with
+             no arguments at all.
   help     - This help. Use SAP(action="help", target="<action>") for details.
 
 Quick examples:
@@ -489,7 +513,7 @@ Use SAP(action="help", target="tips") for best practices and workflow guides.`)
 // absent from the list, so a caller was told the feature did not exist, while
 // "system" and "analyze" were listed without their target or type and so looked
 // broken when they were merely under-specified.
-const validActionsLine = "Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, help\n"
+const validActionsLine = "Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, info, help\n"
 
 // actionsNeedingTarget are the actions the dispatcher can only route once it
 // knows what they are aimed at.

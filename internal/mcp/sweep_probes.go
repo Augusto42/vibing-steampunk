@@ -172,6 +172,18 @@ func coreActionProbes() []Probe {
 			Action: "help", MustContain: "action",
 		},
 		{
+			ID: "core.info", Capability: "action=info",
+			Why: "the answer to an empty call: build, session, system, what next",
+			// Empty arguments are the case worth probing — an agent that knows
+			// to pass action="info" is not the one this exists for. The card
+			// must name the build whatever else fails, so that is the check.
+			Action: "info",
+			// The empty-argument route is checked by a unit test rather than
+			// here: this probe table dispatches on an action, and a probe with
+			// no action would be indistinguishable from a broken row.
+			MustContain: "Next call",
+		},
+		{
 			ID: "core.system", Capability: "action=system",
 			Why: "release and database, which every route decision depends on",
 			// The sub-operation goes in the target, not in params — which the
