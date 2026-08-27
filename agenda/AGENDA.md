@@ -18,6 +18,43 @@ two worktrees, which is why it says so.
 > — state, direction and where to resume. This board carries the items; that
 > file carries the shape and the order.
 
+## Landed — 2026-08-27 — v2.54.0
+
+**Defaults chosen for a terminal were being paid for in a context window.**
+Measured against a live 7.58: thirteen ordinary MCP calls returned 207,138
+bytes, and five of them were 92% of it — `callers` and `call_graph` at 52,305
+each (200 rows by default), `list_dumps` at 39,954 (no MCP default at all, so
+`pkg/adt`'s 100), `search` at 24,809.
+
+None of those was a bug. Each number was picked for a terminal, where a
+screenful costs nothing. In an MCP session the result stays in context for the
+rest of the conversation, and nobody had converted the price. Forty rows for
+lists, twenty for dumps; `max_results` still overrides every one.
+
+The same thirteen calls now return 79,253 bytes — **61.7% less**.
+
+Every cap says so. `callers` used to slice its list and leave the reader to
+notice that `total` disagreed with the array length. `search` and `list_dumps`
+cannot know their total without a second request, so they say "showing 40, and
+there are more" and name the way to ask a smaller question rather than
+inventing a figure — both ask for one row more than they show, which costs
+nothing and tells a full page from a page that is exactly the size of the
+limit.
+
+### Named for whoever measures next
+
+The figures above are **bytes**, because bytes are what the harness returned.
+The first version of this note reported tokens — 52,000 before, 19,800 after —
+which were bytes÷4, rounded, and written down as though counted. Four bytes a
+token probably undercounts this material: JSON repeats its keys and
+`/BOBF/CL_CONF_ACT_GEN_HTML` does not split the way prose does. The ratio
+holds; the absolutes were never measured.
+
+**`read CLAS` is now the largest single answer at 23,653 bytes** and was left
+alone: it is source plus dependency contracts, which is what the call is for.
+Making it smaller means making `pkg/ctxcomp` spend its budget better, not
+truncating it.
+
 ## Landed — 2026-08-26 — v2.53.0
 
 **`SAP()` with no arguments answers instead of refusing.** It used to say
