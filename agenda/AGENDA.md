@@ -18,6 +18,91 @@ two worktrees, which is why it says so.
 > — state, direction and where to resume. This board carries the items; that
 > file carries the shape and the order.
 
+## Raised — 2026-08-29 — from outside this repo
+
+Two bug reports and one feature request arrived from a session working in
+another repo (`docs/bugs/` there, both filed against v2.54.0 / `9b8789d`).
+Their identifiers are live, so they stay out of this file; the findings below
+are checked against our own code and named with synthetic objects.
+
+### Confirmed, reproducible without SAP
+
+**`ParseABAPFile` and `parseFromContent` recurse into each other forever.**
+`pkg/adt/fileparser.go` — the dispatcher falls to `ext == ".abap"` and calls
+the content detector, which on `CLASS … DEFINITION`, `REPORT`, `PROGRAM`,
+`INTERFACE`, `FUNCTION-POOL` or `FUNCTION` calls the dispatcher back with the
+same path. Nothing changes between iterations. Reproduced in an isolated test:
+`fatal error: stack overflow`, frames alternating `:131 ↔ :269`. Every bare
+`.abap` file the content branch exists to serve takes the binary down, so
+`vsp deploy` is gone for that whole class of input. The detector needs to
+carry the type it found instead of re-entering the dispatcher.
+
+### Reported as "the MCP tool lists an action it cannot dispatch" — it is worse than that
+
+`test` is dispatched (`handlers_devtools.go`), but only from
+`params.object_url`. It is the one action that ignores its `target`
+altogether, so `SAP(action="test", target="CLAS ZCL_DEMO_THING")` — the shape
+every other action takes — falls through the whole router chain and comes back
+`No handler found for action="test"` with `test` printed in the valid-actions
+line right below. So neither of the two remedies the report proposes is right:
+it is wired up, and it must not be dropped. It should build the URL from the
+target the way `buildObjectURL` does for the CLI, and join
+`actionsNeedingTarget` so the message names what is missing.
+
+### Unknown params are dropped in silence
+
+`params={"function_group": …}` where the documented key is `parent` reads back
+as empty, and the failure then says *give its group explicitly* to a caller who
+did. Rejecting unknown keys turns a misleading error into an obvious one.
+
+### `vsp test` on a function group: the client half, answered
+
+`buildObjectURL` (`cmd/vsp/devops.go`) sends `FUGR` to
+`/sap/bc/adt/functions/groups/{name}` — correct. But a function group's main
+program and its includes both go to `/sap/bc/adt/programs/programs/{name}`,
+which is the wrong resource kind for either: an include lives under
+`/sap/bc/adt/programs/includes/{name}`, and `INCL` is not a case in that switch
+at all. Two of the three addressing attempts in the report were never going to
+work regardless of what the backend does; only the `FUGR` one is evidence.
+
+Two things to try before blaming the server, both client-side:
+`<testDeterminationStrategy sameProgram="true" assignedTests="false"/>` is
+hardcoded in the run payload (`pkg/adt/devtools.go`), and
+`parseUnitTestResult` unmarshals into a struct keyed on `<program>` elements —
+any document without them yields zero classes and the CLI prints
+`No test classes found.` A rejected URI, an error body under 200, and an object
+with genuinely no tests are one sentence. That is our own instance of the thing
+the report is complaining about: a test that never ran reports what a passing
+test reports.
+
+Whether the backend finds a `FOR TESTING` class in a function group's own
+include is still open and needs a system.
+
+## Backlog — 2026-08-29 — `who-touches TABL`
+
+**Asked for:** before changing a table, the full perimeter of what touches it,
+split by access — read vs `INSERT`/`UPDATE`/`MODIFY`/`DELETE` — including AMDP
+bodies and CDS views layered over it. Grep finds the easy half and misses
+dynamic SQL, AMDP and views.
+
+**Today: nothing answers this, and the nearest command answers it wrongly.**
+`vsp graph <type> <name> --direction callers` has no `TABL` case; the `default`
+arm builds `/sap/bc/adt/oo/classes/{name}`, so a table name is asked for as a
+class of the same name. The where-used list then returns empty with a 200 and
+prints "nobody calls this — or the name does not exist", which is true of the
+class it asked about and says nothing about the table. Same failure family as
+the `FUNC` case fixed earlier in that switch. `effects` runs unit→world and
+`examples` takes FUNC/CLAS/INTF/PROG only.
+
+**The parts already exist**, which makes this small:
+`client.WhereUsed` posts to `/sap/bc/adt/repository/informationsystem/usageReferences`
+and takes any URI; `pkg/adt/crud.go` already forms `/sap/bc/adt/ddic/tables/{name}`;
+and `graph.ExtractEffects` returns `ReadsDB` / `WritesDB` per unit. Inverting
+those over a perimeter is the feature. Two notes: `WritesDB` lumps all four
+write statements together, so an R/I/U/D split means widening it; and
+`ExtractEffects` has had no caller since it was written — this would be its
+first.
+
 ## Landed — 2026-08-27 — v2.54.0
 
 **Defaults chosen for a terminal were being paid for in a context window.**
