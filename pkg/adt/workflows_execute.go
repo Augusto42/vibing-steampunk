@@ -174,6 +174,13 @@ func (c *Client) ExecuteABAP(ctx context.Context, code string, opts *ExecuteABAP
 		return result, nil
 	}
 
+	// The temp program lives in $TMP, and CreateObject only got that far
+	// because "$TMP" passed the package whitelist. Record it so neither the
+	// UpdateSource below nor the DeleteObject in the cleanup defer resolves the
+	// package again while holding a lock (issue #91). The defer reads this
+	// variable when it runs, so it sees the marked context too.
+	ctx = withMutationPackageChecked(ctx, objectURL)
+
 	// Ensure cleanup on any error (unless KeepProgram is set)
 	defer func() {
 		if !opts.KeepProgram {
