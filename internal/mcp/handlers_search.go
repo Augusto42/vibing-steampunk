@@ -33,6 +33,17 @@ func (s *Server) routeSearchAction(ctx context.Context, action, objectType, obje
 	if v, ok := getFloatParam(params, "max_results"); ok {
 		args["maxResults"] = v
 	}
+	if v, ok := getFloatParam(params, "max"); ok {
+		args["maxResults"] = v
+	}
+	// Pass object type for server-side filtering so max applies after the
+	// type filter (mirrors the CLI --type path).
+	if v := getStringParam(params, "type"); v != "" {
+		args["objectType"] = v
+	}
+	if v := getStringParam(params, "objectType"); v != "" {
+		args["objectType"] = v
+	}
 	return s.callHandler(ctx, s.handleSearchObject, args)
 }
 
@@ -49,11 +60,13 @@ func (s *Server) handleSearchObject(ctx context.Context, request mcp.CallToolReq
 		maxResults = int(mr)
 	}
 
+	objectType, _ := request.GetArguments()["objectType"].(string)
+
 	// One more than asked for, so a full page can be told from a page that
 	// happens to be exactly the size of the limit. Without it a search that
 	// returns forty of four thousand is indistinguishable from one that found
 	// forty and stopped, and the caller has no reason to look further.
-	results, err := s.adtClient.SearchObject(ctx, query, maxResults+1)
+	results, err := s.adtClient.SearchObjectByType(ctx, query, objectType, maxResults+1)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to search: %v", err)), nil
 	}
