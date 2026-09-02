@@ -2,7 +2,8 @@ name: CI
 
 # The point of this workflow is a cheap verdict on someone else's patch: does it
 # build, vet clean, and pass the tests. It deliberately stays small — the heavy
-# cross-platform work belongs to the release pipeline, and lint is advisory.
+# cross-platform work belongs to the release pipeline, and lint is advisory and
+# pull-request-only.
 # Nothing here talks to a SAP system: live tests sit behind the `integration` tag.
 on:
   push:
@@ -55,6 +56,10 @@ jobs:
 
   lint:
     name: lint (advisory)
+    # Pull requests only. On main the gate is build/vet/test; lint is here to
+    # tell a contributor what their own diff introduced, which is a question
+    # that only has a meaning on a PR.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # Advisory: a linter release built against an older Go than this module's
     # directive fails before it reads a line of code, and that must not block a
@@ -63,6 +68,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # only-new-issues needs the merge base to diff against.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -73,5 +81,15 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # Pinned, not `latest`. `latest` is what broke this job: v2 shipped,
+          # refused the v1 .golangci.yml, and failed in 67ms without reading a
+          # line of Go. Every run in the retained history failed that way, and
+          # because the job is advisory nobody had reason to look. A major
+          # version must move because someone moved it.
+          version: v2.13.2
+          # The repo carries 264 findings that predate this job ever running.
+          # Reporting them on every PR would bury whatever the PR itself
+          # introduced, which is the only part its author can act on. Raise the
+          # backlog separately; this flag keeps the signal.
+          only-new-issues: true
           args: --timeout=5m
