@@ -121,13 +121,13 @@ func BrowserLogin(ctx context.Context, sapURL string, insecure bool, timeout tim
 	adtURL.Path = "/sap/bc/adt/"
 	adtURL.RawQuery = ""
 	adtURL.Fragment = ""
-	// if a valid sap-Client is provided, add it as a query parameter to ensure cookies are set for the correct client. 
+	// if a valid sap-Client is provided, add it as a query parameter to ensure cookies are set for the correct client.
 	matched, _ := regexp.MatchString(`^[0-9]{3}$`, sapClient)
 	if matched {
 		q := adtURL.Query()
 		q.Set("sap-client", sapClient)
 		adtURL.RawQuery = q.Encode()
-	} 
+	}
 	targetURL := adtURL.String()
 
 	// Create a headed (non-headless) browser context
