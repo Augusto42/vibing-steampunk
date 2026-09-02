@@ -843,7 +843,11 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 			// (issue #144). Re-checks transportable-edit policy on the resolved request.
 			testTransport, resolveErr := c.resolveWriteTransport(opts.Transport, lock.CorrNr, "WriteSource(testclasses)")
 			if resolveErr != nil {
-				c.UnlockObject(ctx, objectURL, lock.LockHandle)
+				// The compensating unlock is the only place a leak can be
+				// observed, so its failure is reported rather than dropped.
+				if unlockErr := c.releaseLockAfterFailure(ctx, objectURL, lock.LockHandle); unlockErr != nil {
+					result.Message += fmt.Sprintf(" (%s)", strandedLockAdvice(objectURL, unlockErr))
+				}
 				result.Message += fmt.Sprintf(" (Warning: Transportable-edit check failed for test include: %v)", resolveErr)
 				return result, nil
 			}
