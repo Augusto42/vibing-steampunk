@@ -62,8 +62,8 @@ func DeploySource(ctx context.Context, client Client, objectType, name, source s
 	if err != nil {
 		return result, err
 	}
-	if err := adt.WriteSourceResultError(result); err != nil {
-		return result, err
+	if resultErr := adt.WriteSourceResultError(result); resultErr != nil {
+		return result, resultErr
 	}
 	for _, syntax := range result.SyntaxErrors {
 		severity := strings.ToUpper(strings.TrimSpace(syntax.Severity))
@@ -72,8 +72,8 @@ func DeploySource(ctx context.Context, client Client, objectType, name, source s
 		}
 	}
 	if result.Activation != nil {
-		if err := adt.ActivationResultError(result.Activation); err != nil {
-			return result, fmt.Errorf("WriteSource reported %w", err)
+		if activationErr := adt.ActivationResultError(result.Activation); activationErr != nil {
+			return result, fmt.Errorf("WriteSource reported %w", activationErr)
 		}
 	}
 	readBack, err := client.GetSource(ctx, objectType, name, nil)
