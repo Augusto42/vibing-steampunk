@@ -78,6 +78,12 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 		return nil, err
 	}
 
+	// CreateObject accepted packageName against the whitelist and SAP put the
+	// object there, so UpdateSource below need not resolve the same package
+	// again — which it would do from inside the lock, ending the session the
+	// lock handle belongs to (issue #91).
+	ctx = withMutationPackageChecked(ctx, objectURL)
+
 	// 5. Syntax check, before the lock and deliberately so. A syntax check does
 	// not need one, and it is a *stateless* request: sent while a lock is held it
 	// ends the stateful session the lock lives in, and the write that follows
@@ -244,6 +250,23 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	// The parent goes with it: DeployFromFile delegates here whenever the object
 	// already exists, so dropping it made every update of a function module fail.
 	objectURL, err := c.buildObjectURLWithParent(info.ObjectType, info.ObjectName, info.ParentName)
+	if err != nil {
+		return nil, err
+	}
+
+	// The full mutation gate for the object, run here — above the lock — for
+	// the same reason the syntax check moved above it: the package lookup it
+	// performs is a stateless request, and the write under the lock would
+	// otherwise trigger it mid-window and lose the handle (issue #91).
+	// UpdateFromFile previously only ran the op-type check, so this also
+	// closes the path's package check rather than leaving it to the inner
+	// mutator.
+	ctx, err = c.gateAndMark(ctx, MutationContext{
+		Op:        OpUpdate,
+		OpName:    "UpdateFromFile",
+		ObjectURL: objectURL,
+		Transport: transport,
+	})
 	if err != nil {
 		return nil, err
 	}

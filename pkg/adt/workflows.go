@@ -27,13 +27,16 @@ func (c *Client) WriteProgram(ctx context.Context, programName string, source st
 	objectURL := fmt.Sprintf("/sap/bc/adt/programs/programs/%s", url.PathEscape(programName))
 	sourceURL := objectURL + "/source/main"
 
-	// Unified mutation policy gate (op type + package + transport)
-	if err := c.checkMutation(ctx, MutationContext{
+	// Unified mutation policy gate (op type + package + transport). The
+	// returned context carries the mark that stops UpdateSource resolving the
+	// same package again from inside the lock window (issue #91).
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteProgram",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -122,13 +125,16 @@ func (c *Client) WriteClass(ctx context.Context, className string, source string
 	objectURL := fmt.Sprintf("/sap/bc/adt/oo/classes/%s", url.PathEscape(className))
 	sourceURL := objectURL + "/source/main"
 
-	// Unified mutation policy gate (op type + package + transport)
-	if err := c.checkMutation(ctx, MutationContext{
+	// Unified mutation policy gate (op type + package + transport). The
+	// returned context carries the mark that stops UpdateSource resolving the
+	// same package again from inside the lock window (issue #91).
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteClass",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -247,6 +253,12 @@ func (c *Client) CreateAndActivateProgram(ctx context.Context, programName strin
 		return result, nil
 	}
 
+	// The gate above accepted packageName, and CreateObject gated it a second
+	// time before asking SAP to put the program there — so the program's
+	// package is a package the whitelist allows. Record that for the object,
+	// or UpdateSource resolves it again from inside the lock (issue #91).
+	ctx = withMutationPackageChecked(ctx, objectURL)
+
 	// Step 2: Lock
 	lock, err := c.LockObject(ctx, objectURL, "MODIFY")
 	if err != nil {
@@ -339,6 +351,13 @@ func (c *Client) CreateClassWithTests(ctx context.Context, className string, des
 		result.Message = fmt.Sprintf("Failed to create class: %v", err)
 		return result, nil
 	}
+
+	// Same reasoning as CreateAndActivateProgram: packageName passed the gate
+	// twice and the class was created there, so the three mutators that run
+	// under the single lock below (UpdateSource, CreateTestInclude,
+	// UpdateClassInclude — all of which resolve to this class URL) need not
+	// each resolve the package again mid-window (issue #91).
+	ctx = withMutationPackageChecked(ctx, objectURL)
 
 	// Step 2: Lock
 	lock, err := c.LockObject(ctx, objectURL, "MODIFY")

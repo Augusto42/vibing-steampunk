@@ -92,12 +92,15 @@ func (c *Client) WriteFunctionModule(ctx context.Context, groupName, functionNam
 	}
 	objectURL := GetObjectURL(ObjectTypeFunctionMod, functionName, group)
 
-	if err := c.checkMutation(ctx, MutationContext{
+	// Marking here means writeFunctionModule's own gate — which sits above its
+	// lock — resolves nothing a second time (issue #91).
+	ctx, err = c.gateAndMark(ctx, MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteFunctionModule",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
