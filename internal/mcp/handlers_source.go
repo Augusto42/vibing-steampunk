@@ -249,6 +249,9 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("WriteSource failed: %v", err)), nil
 	}
+	if err := adt.WriteSourceResultError(result); err != nil {
+		return newToolResultError(err.Error()), nil
+	}
 
 	output, _ := json.MarshalIndent(result, "", "  ")
 	return mcp.NewToolResultText(string(output)), nil
