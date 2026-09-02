@@ -855,6 +855,10 @@ vsp -s a4h graph co-change CLAS ZCL_FOO           # transport-based co-change
 vsp -s a4h graph co-change PROG ZREPORT --format json
 vsp -s a4h graph where-used-config ZKEKEKE        # TVARVC readers (heuristic)
 vsp -s a4h graph where-used-config ZKEKEKE --format mermaid > config.mmd
+vsp -s a4h loads ZCL_FOO                           # D010INC: what must be loaded for this to run
+vsp -s a4h loads ZDEMO_GROUP --direction loaded-by # and what pulls this in
+vsp -s a4h examples FUNC Z_CALCULATE_TAX           # real call sites, ranked, from caller source
+vsp -s a4h examples CLAS ZCL_TRAVEL --method GET_DATA
 
 # Runtime errors and the application log
 vsp -s a4h dumps --since 2026-08-01                # newest first
@@ -886,6 +890,10 @@ vsp -s a4h transport get A4HK900094               # transport details
 # System management
 vsp systems                                       # list configured systems
 vsp config init                                   # create example configs
+
+# Self-check: which advertised capabilities actually answer
+vsp sweep --reach-only                            # offline; is everything registered and routed
+vsp -s a4h sweep --strict                         # read-only probes against a system, non-zero exit on findings
 
 # Start ABAP LSP server (for Claude Code / editors)
 vsp lsp --stdio
@@ -1213,7 +1221,7 @@ graph LR
 
 | Aspect | Focused | Expert | Hyperfocused (recommended) |
 |--------|:-:|:-:|:-:|
-| **Tools** | 101 essential | 146 complete | 1 universal `SAP()` |
+| **Tools** | 102 essential | 147 complete | 1 universal `SAP()` |
 | **Schema tokens** | ~14K | ~40K | **~200** |
 | **How AI calls it** | `GetSource(type, name)` | Same, + granular tools | `SAP(action, target, params)` |
 | **Documentation** | In tool schemas | In tool schemas | `SAP(action="help")` |
@@ -1222,7 +1230,7 @@ graph LR
 
 ```bash
 vsp --mode hyperfocused  # recommended — single SAP(action, target, params) tool
-vsp --mode focused       # 100 curated tools (individual tool names)
+vsp --mode focused       # 102 curated tools (individual tool names)
 vsp --mode expert        # all 147 tools individually
 ```
 
@@ -1439,7 +1447,7 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 
 ## Tools Reference
 
-**Focused Mode Tools (100):**
+**Focused Mode Tools (102):**
 - **Search:** SearchObject, GrepObjects, GrepPackages
 - **Read:** GetSource, GetTable, GetTableContents, RunQuery, GetPackage, GetFunctionGroup, GetCDSDependencies
 - **Debugger:** DebuggerListen, DebuggerAttach, DebuggerDetach, DebuggerStep, DebuggerGetStack, DebuggerGetVariables, SetBreakpoint, GetBreakpoints, DeleteBreakpoint
@@ -1571,7 +1579,7 @@ make build          # Current platform
 make build-all      # All 9 platforms
 
 # Test
-go test ./...                              # Unit tests (821)
+go test ./...                              # Unit tests (1203)
 go test -tags=integration -v ./pkg/adt/    # Integration tests (34+)
 ```
 
@@ -1599,8 +1607,8 @@ vibing-steampunk/
 
 | Metric | Value |
 |--------|-------|
-| **Tools** | 146 expert, 101 focused, 1 universal |
-| **Unit Tests** | 821 |
+| **Tools** | 147 expert, 102 focused, 1 universal |
+| **Unit Tests** | 1203 (`go test ./... -list '.*'`; integration tests excluded by build tag) |
 | **Platforms** | 9 (Linux, macOS, Windows × amd64/arm64/386) |
 
 <details>
@@ -1630,7 +1638,11 @@ vibing-steampunk/
 
 ### Parked (Needs Further Work)
 - [ ] **AMDP Debugger** - Experimental: Session works, breakpoint triggering under investigation ([Report](reports/2025-12-22-001-amdp-debugging-investigation.md))
-- [ ] **UI5/BSP Write** - ADT filestore is read-only, needs custom plugin via `/UI5/CL_REPOSITORY_LOAD`
+- [x] **UI5/BSP Write** - `UI5UploadFile`, `UI5DeleteFile`, `UI5CreateApp`, `UI5DeleteApp` (v2.10.0).
+  Shipped in the same release as UI5/BSP Read and sat here as parked for nine months.
+  The ADT filestore turned out to take PUT and DELETE; no `/UI5/CL_REPOSITORY_LOAD` plugin
+  was needed. Caveat: with `--allowed-packages` set these are refused outright, because
+  UI5 app→package resolution is unimplemented (`pkg/adt/mutation_gate.go:117`).
 - [x] **abapGit Export** - WebSocket integration complete (v2.16.0) - GitTypes, GitExport tools ([Report](reports/2025-12-23-002-abapgit-websocket-integration-complete.md))
 - [ ] **abapGit Import** - Requires `ZCL_ABAPGIT_OBJECTS=>deserialize` with virtual repository
 

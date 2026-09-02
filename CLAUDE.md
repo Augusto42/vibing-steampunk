@@ -8,19 +8,23 @@
 
 ## Current Priorities
 
-### 1. Graph Engine (`pkg/graph/`) — In Progress
-This section understated the package for four months; corrected 2026-08-24.
+### 1. Graph Engine (`pkg/graph/`) — Feature-complete
+This section understated the package for four months; corrected 2026-08-24. It
+then went stale again the other way — it listed D010INC and `ExtractEffects` as
+pending for a week after both shipped on 2026-08-25. Corrected 2026-09-02.
 - Done: core types, parser dep extraction, boundary analyzer, **SQL adapters
   (`builder_sql.go` — CROSS + WBCROSSGT + WBCROSSGTX long names)**,
   `builder_transport.go`, `builder_config.go`, and the `queries_*.go` surface
   behind slim / health / impact / api-surface / rename / examples.
-  45 files, 195 test functions.
-- Pending: **D010INC** — the compile-time *load* graph, which is the one novel
-  source in the original design and exists only as two constants (`EdgeLoads`,
-  `SourceD010INC`). Also: unify `cli_deps.go` + `cli_extra.go` +
-  `ctxcomp/analyzer.go`, which still do not import `pkg/graph`.
-- Not wired: `graph.ExtractEffects` (side effects / LUW) has **no caller** — no
-  CLI command, no MCP action. Library, not feature.
+  51 files, 218 test functions.
+- Done 2026-08-25: **D010INC**, the compile-time *load* graph — the one novel
+  source in the original design — is `builder_loads.go`, reachable as
+  `vsp loads`. And `graph.ExtractEffects` (side effects / LUW) has callers at
+  last: `cmd/vsp/effects.go:82` and `internal/mcp/handlers_effects.go:100`.
+  Both were described here as unwired for the four months they sat unused.
+- Pending: unify `cli_deps.go` + `cli_extra.go` + `ctxcomp/analyzer.go`. Two of
+  the three now import `pkg/graph` (`cli_extra.go:16`, `analyzer.go:9`); only
+  `cli_deps.go` still carries its own extraction.
 - Design: [002](reports/2026-04-05-002-graph-engine-design.md), [003](reports/2026-04-05-003-graph-engine-alignment-for-claude.md)
 
 ### 2. GUI Debugger (Issue #2) — Strategic
@@ -70,7 +74,7 @@ Key flags: `--mode focused|expert|hyperfocused`, `--read-only`, `--allowed-packa
 ## Codebase
 
 ```
-cmd/vsp/              CLI entry + 28 commands
+cmd/vsp/              CLI entry + 55 commands
 internal/mcp/
   handlers_*.go       Domain handlers (read, edit, debug, graph, ...)
   tools_register.go   Registration + mode logic
@@ -239,10 +243,10 @@ successors; do not add more.
 
 | Area | Risk | Notes |
 |------|------|-------|
-| `pkg/graph/` | New, incomplete | Only parser adapter; SQL/ADT adapters pending |
+| `pkg/graph/` | Large, moving | This row said "only parser adapter; SQL/ADT adapters pending" for four months while contradicting this file's own Current Priorities section. `builder_sql.go`, `builder_transport.go`, `builder_config.go` and `builder_loads.go` all exist with tests |
 | `handlers_debugger.go` | ADT over a held session | Breakpoints and the debug loop both go through `/sap/bc/adt/debugger*` on the session in `handlers_debug_session.go`. The old "REST breakpoints 403 on newer SAP" was the stateless client, not the release |
 | `handlers_amdp.go` | Experimental | Session works, breakpoints unreliable |
-| `pkg/adt/ui5.go` | Read-only | Write needs `/UI5/CL_REPOSITORY_LOAD` |
+| `pkg/adt/ui5.go` | Writes, ungated by package | Not read-only, and has not been since v2.10.0 (2025-12-05): `UI5UploadFile:273`, `UI5DeleteFile:312`, `UI5CreateApp:345`, `UI5DeleteApp:387`, all MCP-reachable via `handlers_ui5.go`. They go through the ADT filestore, not `/UI5/CL_REPOSITORY_LOAD`. The real hazard is `mutation_gate.go:117` — with `--allowed-packages` set, every UI5 mutation is refused outright because app→package resolution is unimplemented |
 | `pkg/llvm2abap/`, `pkg/wasmcomp/` | Research | Not production; don't treat as stable |
 | `pkg/adt/debugger.go` (REST) | Types and parsers only | Its *client* methods still assume a stateless session; the request builders and parsers are shared and exported via `debugger_parse.go` |
 | `docs/cli-agents/*` | Config drift | Codex TOML format may differ from Claude/Gemini JSON docs |

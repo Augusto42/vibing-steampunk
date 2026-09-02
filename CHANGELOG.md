@@ -4,6 +4,220 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.54.0] - 2026-08-27
+### Performance
+
+- **mcp:** Defaults chosen for a terminal, paid for in a context window ([`ffe2066`](https://github.com/oisee/vibing-steampunk/commit/ffe206692cc1335723348af55842b6f0eb08b740))
+
+
+
+## [2.53.0] - 2026-08-26
+### Features
+
+- **mcp:** An empty SAP() call answers "what am I talking to?" ([`5cbd757`](https://github.com/oisee/vibing-steampunk/commit/5cbd757cfa87532dc8583ce7e18a0be62e3f08a5))
+
+
+
+## [2.52.0] - 2026-08-25
+### Bug Fixes
+
+- **mcp:** Document the parameter names the handlers actually read ([`2937215`](https://github.com/oisee/vibing-steampunk/commit/2937215add0a87775a44dc243645a57d28c5a545))
+- **adt:** Upsert treats only a 404 as "the object is not there" ([`2883736`](https://github.com/oisee/vibing-steampunk/commit/2883736c9e39c9f6de6f54c7ce5a233c09fca428))
+- **i18n,sweep:** Probe the eleven, and fix the three the probes killed ([`b486833`](https://github.com/oisee/vibing-steampunk/commit/b486833acd0e131729ca3da3efa2f5d7a3cf1a3b))
+- **sweep:** Tell a gap in coverage apart from a rule about it ([`9173998`](https://github.com/oisee/vibing-steampunk/commit/91739985712d455689d07d6595c80fa73e834a34))
+
+
+### Features
+
+- **mcp:** One declaration per capability, and everything else derived ([`4674497`](https://github.com/oisee/vibing-steampunk/commit/4674497c567665980d7e107989cf10932f6ea8a3))
+
+
+
+## [2.51.0] - 2026-08-25
+### Bug Fixes
+
+- **sweep:** A target resolved without its type made every probe assert CLAS ([`4998964`](https://github.com/oisee/vibing-steampunk/commit/4998964ed048228a1cdd8a28a338db3ff9e918ef))
+- **sweep:** The probes asserted a type the sweep had resolved ([`036548a`](https://github.com/oisee/vibing-steampunk/commit/036548a968ec3e2a4416f5ef46de52cad8e1dd48))
+- **sweep:** The new target had a case and no substitution ([`9074682`](https://github.com/oisee/vibing-steampunk/commit/90746826d6eee53c1760683d0f9469d5a4a626f4))
+- **sweep:** A type assertion that manufactured a fact about the system ([`4305dba`](https://github.com/oisee/vibing-steampunk/commit/4305dbac160b1e75feddfed53976ec98a206ac71))
+- **sweep:** Four capabilities became reachable and none of them entered the denominator ([`96a004f`](https://github.com/oisee/vibing-steampunk/commit/96a004f593357f4698279728cf982c61b3af7fd6))
+- **sweep:** A client-side filter the row limit could starve ([`32a3cfa`](https://github.com/oisee/vibing-steampunk/commit/32a3cfae6969dee8703eb2a3d8bdef7457b466fd))
+- **sweep:** The report could not name the release its verdicts are about ([`449f20d`](https://github.com/oisee/vibing-steampunk/commit/449f20d4bb6baa8510b66fd078af211e876385ed))
+
+
+### Features
+
+- **mcp:** The last eleven capabilities are reachable from the universal tool ([`9a2e623`](https://github.com/oisee/vibing-steampunk/commit/9a2e623e0a7e4c39103c52ff5b4e013c7be502df))
+
+
+
+## [2.50.0] - 2026-08-25
+### Bug Fixes
+
+- **ctxcomp:** A dependency one layer did not look for is not a false positive ([`330d2ca`](https://github.com/oisee/vibing-steampunk/commit/330d2cafa80bb793dd86a9dc272b4bd152f9b3e1))
+
+
+### Features
+
+- **ctxcomp:** Rank candidates by what a reader needs, and spend the budget on what arrives ([`d710ceb`](https://github.com/oisee/vibing-steampunk/commit/d710cebfa165f60c790d355fc3c21608bf12d48e))
+- **ctxcomp:** Who calls this, which the source cannot say ([`533eb51`](https://github.com/oisee/vibing-steampunk/commit/533eb51c1041e276e81a1c629765bd7b4436d2bc))
+- **ctxcomp:** A contract narrowed to the methods the code actually calls ([`ee5a239`](https://github.com/oisee/vibing-steampunk/commit/ee5a23944c2a54fa5c30d055630a2ee35af9c72e))
+
+
+
+## [2.49.0] - 2026-08-25
+### Bug Fixes
+
+- **cli:** The rename preview could say "nothing references this" without having looked ([`81efc9f`](https://github.com/oisee/vibing-steampunk/commit/81efc9fc3125e65f4ed4057a9639cd4665559d62))
+- **examples:** Callers were read from the wrong half of the object ([`f7b8a77`](https://github.com/oisee/vibing-steampunk/commit/f7b8a77ed7d4f05ece9eac38b216046a9192c34b))
+- **ctxcomp:** The context appended to a read could not see CREATE OBJECT ([`e34c059`](https://github.com/oisee/vibing-steampunk/commit/e34c059e760aba71b80fda4b956392d562a1a601))
+
+
+### Features
+
+- **graph:** The section a cross-reference row points at, which was computed and discarded ([`4f17b5b`](https://github.com/oisee/vibing-steampunk/commit/4f17b5b8e8a15f9dbcfb86104698380631bb319e))
+
+
+### Performance
+
+- **scans:** Read sources six at a time, and let health cover the package ([`4f24b64`](https://github.com/oisee/vibing-steampunk/commit/4f24b64ca71d5e2246e8611d0930866b3ddcffd0))
+
+
+
+## [2.48.0] - 2026-08-25
+### Bug Fixes
+
+- **graph:** The parser saw no functional-style call, and no exception at all ([`b837e59`](https://github.com/oisee/vibing-steampunk/commit/b837e5933a046be77a15b7ad093a698d440a4e45))
+- **boundaries:** A clean verdict over a package read in part ([`7b8f370`](https://github.com/oisee/vibing-steampunk/commit/7b8f3705856ce834ae8e3c1085c887d5e1b2e271))
+- **sourcestamp:** The invalidation signal exists after all, and here it is ([`c161e70`](https://github.com/oisee/vibing-steampunk/commit/c161e70cebc6cc87108455f323b0896b7236b2ad))
+- **graph:** A class's generated companion was reported as another object loading it ([`38bac88`](https://github.com/oisee/vibing-steampunk/commit/38bac880bb9257f375e0a99263880116809cf44a))
+- **loads:** The loaded-by list named the object instead of its loader ([`4cb4059`](https://github.com/oisee/vibing-steampunk/commit/4cb4059bf43d95bedabcffac2469a0b39e5ee266))
+- **adt:** A package listed 55 includes as programs, and none of them could be read ([`4dff03f`](https://github.com/oisee/vibing-steampunk/commit/4dff03fb244539339de4d614931502074da4662e))
+
+
+### Features
+
+- **loads:** The command half, and a suffix I had named without asking ([`c6f754d`](https://github.com/oisee/vibing-steampunk/commit/c6f754d95192e821bd271048d7604c039d838832))
+
+
+### Performance
+
+- **boundaries:** 18.8s to 1.6s, and the cache is deliberately not built ([`35f573e`](https://github.com/oisee/vibing-steampunk/commit/35f573e3a413e6f329b6eb73f72cd87f98fc7f90))
+
+
+
+## [2.47.0] - 2026-08-24
+### Bug Fixes
+
+- **sweep:** The coverage figure could contradict itself ([`b17d6ef`](https://github.com/oisee/vibing-steampunk/commit/b17d6ef5f4b7c98ba8006f04b82ee85fdf8b9e2f))
+
+
+### Features
+
+- **mcp:** Every mode reaches the analyze surface, and the sweep now checks it ([`82588fc`](https://github.com/oisee/vibing-steampunk/commit/82588fc8d529ad5c97db1d0af6673d0db94a4568))
+- **effects:** The LUW analysis is reachable, four months after it was written ([`a714cbf`](https://github.com/oisee/vibing-steampunk/commit/a714cbf7839a330f8797f77cef60f4797f83687b))
+- **graph:** Graph_stats answers about an object or a package, not only about pasted source ([`1d527f8`](https://github.com/oisee/vibing-steampunk/commit/1d527f85e77d46ab4e7c6398ad204dd6d751c829))
+- **graph:** The inactive index is reachable, and never mixed in ([`370b478`](https://github.com/oisee/vibing-steampunk/commit/370b4783aa0ae845e6f2178846b85e70c768a6e4))
+- **graph:** D010INC, the load graph — the one source that is not a cross-reference ([`4203ca9`](https://github.com/oisee/vibing-steampunk/commit/4203ca94e2f1bc6c3f9776c01be888834515cc97))
+
+
+
+## [2.46.0] - 2026-08-24
+### Bug Fixes
+
+- **graph:** Trace_execution went quiet in four places, and the surface was two larger than counted ([`e678848`](https://github.com/oisee/vibing-steampunk/commit/e678848984bd705161eb1449668ed0e9030d40bb))
+- **graph:** Check_boundaries called a package clean without opening a single file ([`b3a3bbc`](https://github.com/oisee/vibing-steampunk/commit/b3a3bbcdfbc41aba6891dce19541eb480e4f394f))
+- **graph:** Two nodes for twenty-seven edges, and coverage measured against things that cannot run ([`b1b4f29`](https://github.com/oisee/vibing-steampunk/commit/b1b4f29376a581e1be65a6f0f4338460a9f0b216))
+- **graph:** The references answer was too large to be read by the agent asking ([`84487ae`](https://github.com/oisee/vibing-steampunk/commit/84487ae412319f8b9081eaebb0d9fe8931eeab63))
+- **graph:** The parser invented a function module out of a variable name ([`62c4c8e`](https://github.com/oisee/vibing-steampunk/commit/62c4c8e639fe0bc45d544def178e6e86c845e33d))
+- **deploy:** A function module could be created from a file but never updated ([`e58097d`](https://github.com/oisee/vibing-steampunk/commit/e58097da82092914f82d02560252e8162c176c92))
+- **rename:** The same lost parameter, in the other handler ([`849b70d`](https://github.com/oisee/vibing-steampunk/commit/849b70d1e791c3068825dda59a6be20a1dc1eb06))
+- **graph:** A namespaced object had no name by the time the query was built ([`dc5a10d`](https://github.com/oisee/vibing-steampunk/commit/dc5a10d9a7d8bf3220bb3e5e1d8de0aec61e1a97))
+- The three findings the sweep left standing, and a fourth under one of them ([`3a84261`](https://github.com/oisee/vibing-steampunk/commit/3a84261c57120d544a8f807a36d076d8d2e6f8af))
+- **dumps:** A dump addressed by its own id arrived with nothing but the id ([`256e2c0`](https://github.com/oisee/vibing-steampunk/commit/256e2c0e0e65b40bb48372cae9e9d033593f8029))
+
+
+### Features
+
+- **amdp:** The call stack, with both positions for the same statement ([`5e4c72a`](https://github.com/oisee/vibing-steampunk/commit/5e4c72ab625e5d78e7b28d58c5674a89ab7bf9b8))
+- **sweep:** Call everything we advertise, and report what did not answer ([`9bfe190`](https://github.com/oisee/vibing-steampunk/commit/9bfe1907d4db7084c67dd394e471f2af186e30ad))
+- **edit:** A DDIC table can be edited like any other source ([`438c3d8`](https://github.com/oisee/vibing-steampunk/commit/438c3d877072e926f669540f5e6d0c728698c3de))
+- **sweep:** Probes for the last ten types, and two kinds of "cannot ask" ([`c1d1ccd`](https://github.com/oisee/vibing-steampunk/commit/c1d1ccdd82d4a0b78636eed5a7a373799944b730))
+
+
+
+## [2.45.0] - 2026-08-23
+### Bug Fixes
+
+- **grep:** A search that skipped objects said it had searched them ([`92d23cc`](https://github.com/oisee/vibing-steampunk/commit/92d23cc2eab0db03074ce79cf9e27149b17037dd))
+- **analysis:** A whole ADT namespace that does not exist, and three features on it ([`9b3a1bb`](https://github.com/oisee/vibing-steampunk/commit/9b3a1bbc56ae312f37d19fc6ed3c90fd2c427cac))
+- **cli:** Reports that could not look everywhere said so nowhere ([`77357aa`](https://github.com/oisee/vibing-steampunk/commit/77357aa42d5f98d4cd30aa6d5b970dc62801dc01))
+- **gaps:** Checks that never ran were reported as checks that found nothing ([`834f878`](https://github.com/oisee/vibing-steampunk/commit/834f878eb82c8f377e869c43291ecf20e49ec5d9))
+- **tr-boundaries:** A transport holding nothing was reported SELF-CONSISTENT ([`8b94c47`](https://github.com/oisee/vibing-steampunk/commit/8b94c4719f7d4edf5b37c9da798a2f2bc63ac9ad))
+- **graph:** An include numbered above U19 resolved to the wrong kind of object ([`869a835`](https://github.com/oisee/vibing-steampunk/commit/869a8355ff6285ca1679a274b25c83fc24ac6d6a))
+- **debug:** An interrupted session leaked a debug work process ([`4833260`](https://github.com/oisee/vibing-steampunk/commit/48332608169803a9e440bbdadfd434a9b84b769c))
+- **amdp:** A breakpoint verdict nobody could see, and a trace that lost its debuggee ([`7a1f897`](https://github.com/oisee/vibing-steampunk/commit/7a1f897c9f9ee3f1d90e1297ee83ead1991f68be))
+- **execute:** A program that will not compile is not a program that ran ([`1628605`](https://github.com/oisee/vibing-steampunk/commit/162860593b07be5fd9a86f21f35976a8dcb5d39c))
+- **graph:** Half of a callee list was reported as all of it ([`c7cb144`](https://github.com/oisee/vibing-steampunk/commit/c7cb144174cf0ec64b5e0485d5da10b2f64f039e))
+- **graph:** Four more places where a source that failed counted as a source that was empty ([`ddd236f`](https://github.com/oisee/vibing-steampunk/commit/ddd236f7bbc52122331b8e216f54f37ceedb9c81))
+- **graph:** The last three, so the sweep leaves nothing named and unfixed ([`610c383`](https://github.com/oisee/vibing-steampunk/commit/610c3833358017ccc6ca88c29f039adb2243fa66))
+- **graph:** A SHA-1 was being reported as the name of a referenced object ([`7bf0f61`](https://github.com/oisee/vibing-steampunk/commit/7bf0f61823388dbd7e13e05ede90ef3e95e37348))
+
+
+### Features
+
+- **amdp:** A statement-level trace of SQLScript running inside HANA ([`bd21ba4`](https://github.com/oisee/vibing-steampunk/commit/bd21ba439a985401f3efe7cd5bf0b5f8f2eea807))
+- **graph:** Decode a method include, which unblocks upward tracing ([`fc229bd`](https://github.com/oisee/vibing-steampunk/commit/fc229bd03679c28fa29cc54ec53788211cc2cfaa))
+- **amdp:** Read a variable of a stopped SQLScript, values and all ([`6bb803e`](https://github.com/oisee/vibing-steampunk/commit/6bb803e1948254cb1f41c772f3bba7e4c155f5dd))
+- **amdp:** Table variables — the address is right, the values are not, and that is written down ([`9cf8de3`](https://github.com/oisee/vibing-steampunk/commit/9cf8de31c3f80bee356951d51fe8d3a54d8d4e18))
+- **amdp:** The stop already describes the whole scope, so alocals costs nothing ([`c238955`](https://github.com/oisee/vibing-steampunk/commit/c23895544e5deea0fc74fc0c85fa9e8deb4e70e0))
+- **graph:** An empty callee list now says when the references are filed elsewhere ([`0d0390e`](https://github.com/oisee/vibing-steampunk/commit/0d0390e56ca67b704393c0ef883ad4e3df3d1135))
+
+
+
+## [2.44.0] - 2026-08-23
+### Bug Fixes
+
+- **report:** Two claims about the AMDP session were wrong, and the tool hid why ([`19e2796`](https://github.com/oisee/vibing-steampunk/commit/19e2796cc284ca82f13317a9e42de339ae5065cf))
+- **dumps:** The graph rung cannot fire, and my own code was hiding it ([`12a5398`](https://github.com/oisee/vibing-steampunk/commit/12a5398a0708a50dd27514e4807f5c2bb60e4a5e))
+- **execute:** Notice that the code died, in the response and in ST22 ([`989ea8f`](https://github.com/oisee/vibing-steampunk/commit/989ea8f65eacb1fa60fbe652e9d3dad8f2a47e23))
+- **test:** Two agents named a helper 'at'; the names now say which is which ([`3bb1f06`](https://github.com/oisee/vibing-steampunk/commit/3bb1f067b7c155303ce09c9e50065ce0b19633ac))
+- **graph:** Answer callers and callees from sources that exist ([`28b5aed`](https://github.com/oisee/vibing-steampunk/commit/28b5aed475f952bb06c63f60314480df0d334e3a))
+
+
+### Features
+
+- **dumps:** The similar-dump ladder, and what the detail actually carries ([`02bae70`](https://github.com/oisee/vibing-steampunk/commit/02bae70f5d7a0810b8866c8762fe558e232b808b))
+- **dumps:** Graph up as blast radius, and why it is not a rung ([`d40b2ca`](https://github.com/oisee/vibing-steampunk/commit/d40b2ca91d93219b1ee434a510839745acaf9c0d))
+- **amdp:** The breakpoint fires — AMDP debugging over plain ADT, no Z code ([`61790b5`](https://github.com/oisee/vibing-steampunk/commit/61790b5bff29c20d0edd74a94919386fa4cdf787))
+- **mcp:** The post-mortem surface an agent could not reach, and the old path it was hiding ([`6098bd8`](https://github.com/oisee/vibing-steampunk/commit/6098bd8236536669d7f26032248fe4fc8d89317a))
+- **amdp:** AMDP debugging over ADT reaches MCP, on the session already held ([`4cd3ce4`](https://github.com/oisee/vibing-steampunk/commit/4cd3ce47b44fa019f4cdaf14496c87b04e22c7b7))
+
+
+
+## [2.43.0] - 2026-08-22
+### Bug Fixes
+
+- **fileio:** Create the output directory instead of failing on it ([`5d567d4`](https://github.com/oisee/vibing-steampunk/commit/5d567d4d1721071061bde75fde4a8781006f3a97))
+- **ws:** Open WebSockets with the session in use, not the one from startup ([`c214df2`](https://github.com/oisee/vibing-steampunk/commit/c214df2942f8a29855b97dc4dc05602521f4232d))
+- **amdp:** Probe the AMDP debugger resource that exists ([`58eabaa`](https://github.com/oisee/vibing-steampunk/commit/58eabaab2d3fa30c78714d00ecc784dd4a6143a2))
+- **debug:** Read the call stack on releases that have no stack resource ([`3b01ff9`](https://github.com/oisee/vibing-steampunk/commit/3b01ff9a6d4f7056e29719a90e83a2e906bb16a8))
+- **debug:** Expand an internal table into its rows, and move frames by number ([`caf1218`](https://github.com/oisee/vibing-steampunk/commit/caf12185eedded92a8e3a7d087fc802b83d752fc))
+- **debug:** Every recorded trace came out with no values in it ([`4247b6a`](https://github.com/oisee/vibing-steampunk/commit/4247b6a100bfe3f25b0a4ba16e6b5904c9d7e846))
+- **dumps:** 7.50 has the dump feed but not the detail resource ([`64108f0`](https://github.com/oisee/vibing-steampunk/commit/64108f0072df64cfd87e653fa1559a45779bbf9c))
+
+
+### Features
+
+- **deps:** Build the abapGit archive from upstream instead of from a SAP system ([`462e1c7`](https://github.com/oisee/vibing-steampunk/commit/462e1c7b3687327f6ad293d79728b0a88a0116c0))
+- **debug:** Sample a large table head, middle and end rather than its first rows ([`bef11e1`](https://github.com/oisee/vibing-steampunk/commit/bef11e1bd22a22565f1401374673df940251ecba))
+- **applog:** Read the application log without RFC, and without remembering BALHDR ([`db863e4`](https://github.com/oisee/vibing-steampunk/commit/db863e47623b6498d79c969ccd219fd3dc05e4cd))
+- **dumps:** Read runtime errors, group them, and rank what was logged around one ([`663a1f1`](https://github.com/oisee/vibing-steampunk/commit/663a1f14e96faa4b4925dc57be1b163805315e6f))
+- **dumps:** Read the call stack, and rank a log written by any frame on it ([`fc47a25`](https://github.com/oisee/vibing-steampunk/commit/fc47a25b297073e5ab12513bd0d203e494a67045))
+- **dumps:** Add the graph rung — a log written by something a stack frame calls ([`5b6154e`](https://github.com/oisee/vibing-steampunk/commit/5b6154ed63b772541557fd71e673291a3222a4cc))
+
+
+
 ## [2.42.0] - 2026-08-22
 ### Bug Fixes
 
