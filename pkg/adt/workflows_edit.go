@@ -10,24 +10,28 @@ import (
 
 // EditSourceResult represents the result of editing source code.
 type EditSourceResult struct {
-	Success        bool                `json:"success"`
-	ObjectURL      string              `json:"objectUrl"`
-	ObjectName     string              `json:"objectName"`
-	MatchCount     int                 `json:"matchCount"`
-	OldString      string              `json:"oldString,omitempty"`
-	NewString      string              `json:"newString,omitempty"`
-	SyntaxErrors   []string            `json:"syntaxErrors,omitempty"`
-	SyntaxWarnings []string            `json:"syntaxWarnings,omitempty"`
-	Activation     *ActivationResult   `json:"activation,omitempty"`
-	Message        string              `json:"message,omitempty"`
-	Method         string              `json:"method,omitempty"` // Method name if method-level edit
+	Success        bool              `json:"success"`
+	ObjectURL      string            `json:"objectUrl"`
+	ObjectName     string            `json:"objectName"`
+	MatchCount     int               `json:"matchCount"`
+	OldString      string            `json:"oldString,omitempty"`
+	NewString      string            `json:"newString,omitempty"`
+	SyntaxErrors   []string          `json:"syntaxErrors,omitempty"`
+	SyntaxWarnings []string          `json:"syntaxWarnings,omitempty"`
+	Activation     *ActivationResult `json:"activation,omitempty"`
+	Message        string            `json:"message,omitempty"`
+	Method         string            `json:"method,omitempty"` // Method name if method-level edit
 }
 
 // EditSourceOptions provides optional parameters for EditSource.
 type EditSourceOptions struct {
-	ReplaceAll      bool   // If true, replace all occurrences; if false, require unique match
-	SyntaxCheck     bool   // If true, validate syntax before saving (default: true if not set)
-	IgnoreWarnings  bool   // If true, only block on errors (E), allow warnings (W) and info (I)
+	ReplaceAll  bool // If true, replace all occurrences; if false, require unique match
+	SyntaxCheck bool // If true, validate syntax before saving (default: true if not set)
+	// Deprecated: warnings no longer block an edit, so this has no effect.
+	// Kept so existing callers keep compiling and existing MCP arguments keep
+	// being accepted rather than rejected as unknown. Warnings are reported in
+	// EditSourceResult.SyntaxWarnings and named in the result message.
+	IgnoreWarnings  bool
 	CaseInsensitive bool   // If true, ignore case when matching
 	Method          string // For CLAS only: constrain search/replace to this method only
 	Transport       string // Transport request number (required for non-$TMP packages)
@@ -135,14 +139,16 @@ func (c *Client) EditSource(ctx context.Context, objectURL, oldString, newString
 //   - opts: Optional parameters (ReplaceAll, SyntaxCheck, CaseInsensitive, Method)
 //
 // Method-level isolation (CLAS only):
-//   When opts.Method is set, the search is constrained to the specified method only.
-//   This prevents accidental edits in other methods when the same pattern exists elsewhere.
+//
+//	When opts.Method is set, the search is constrained to the specified method only.
+//	This prevents accidental edits in other methods when the same pattern exists elsewhere.
 //
 // Example:
-//   EditSourceWithOptions(ctx, "/sap/bc/adt/oo/classes/ZCL_TEST",
-//     "METHOD foo.\n  ENDMETHOD.",
-//     "METHOD foo.\n  rv_result = 42.\n  ENDMETHOD.",
-//     &EditSourceOptions{Method: "FOO"})
+//
+//	EditSourceWithOptions(ctx, "/sap/bc/adt/oo/classes/ZCL_TEST",
+//	  "METHOD foo.\n  ENDMETHOD.",
+//	  "METHOD foo.\n  rv_result = 42.\n  ENDMETHOD.",
+//	  &EditSourceOptions{Method: "FOO"})
 func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString, newString string, opts *EditSourceOptions) (*EditSourceResult, error) {
 	// Default options
 	if opts == nil {
@@ -353,12 +359,19 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 				return result, nil
 			}
 
-			if len(warnings) > 0 && !opts.IgnoreWarnings {
-				// Block on warnings unless ignore_warnings is set
-				result.SyntaxErrors = warnings
-				result.Message = fmt.Sprintf("Edit has %d syntax warning(s). Use ignore_warnings=true to proceed. Changes NOT saved.", len(warnings))
-				return result, nil
-			}
+			// Warnings do not block. They used to, unless the caller passed
+			// ignore_warnings on that call — which made vsp stricter than
+			// Eclipse ADT, where a warning is shown and the save proceeds.
+			//
+			// Blocking added no information: the warnings are in
+			// result.SyntaxWarnings either way, so a caller who wants to act on
+			// them can, and one who does not would not have read the refusal
+			// either. What it added was a refused write and a parameter the
+			// caller had to know to pass on every single call.
+			//
+			// Errors still block, above. That distinction is the whole point:
+			// an error means the object would not compile, a warning means
+			// somebody should look.
 		}
 	}
 
@@ -425,13 +438,19 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 	result.Activation = activation
 
 	result.Success = true
+	// Warnings no longer stop the write, so the message has to carry them —
+	// otherwise the only trace is a field the caller may not read, and a
+	// warning nobody sees is the thing the old block was trying to prevent.
+	warned := ""
+	if n := len(result.SyntaxWarnings); n > 0 {
+		warned = fmt.Sprintf(" (%d syntax warning(s): see syntaxWarnings)", n)
+	}
 	if opts.Method != "" {
-		result.Message = fmt.Sprintf("Successfully edited method %s and activated %s", opts.Method, result.ObjectName)
+		result.Message = fmt.Sprintf("Successfully edited method %s and activated %s%s", opts.Method, result.ObjectName, warned)
 	} else if opts.ReplaceAll {
-		result.Message = fmt.Sprintf("Successfully replaced %d occurrences and activated %s", result.MatchCount, result.ObjectName)
+		result.Message = fmt.Sprintf("Successfully replaced %d occurrences and activated %s%s", result.MatchCount, result.ObjectName, warned)
 	} else {
-		result.Message = fmt.Sprintf("Successfully edited and activated %s", result.ObjectName)
+		result.Message = fmt.Sprintf("Successfully edited and activated %s%s", result.ObjectName, warned)
 	}
 	return result, nil
 }
-
