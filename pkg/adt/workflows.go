@@ -76,6 +76,15 @@ func (c *Client) WriteProgram(ctx context.Context, programName string, source st
 		}
 	}()
 
+	// Reuse the request the object is already bound to when the caller supplied no
+	// transport, so an already-captured object is not rejected with a spurious 409
+	// (issue #144). Re-checks transportable-edit policy on the resolved request.
+	transport, err = c.resolveWriteTransport(transport, lock.CorrNr, "WriteProgram")
+	if err != nil {
+		result.Message = fmt.Sprintf("Transportable-edit check failed: %v", err)
+		return result, nil
+	}
+
 	// Step 3: Update source
 	err = c.UpdateSource(ctx, sourceURL, source, lock.LockHandle, transport)
 	if err != nil {
@@ -254,6 +263,15 @@ func (c *Client) WriteClass(ctx context.Context, className string, source string
 			c.UnlockObject(ctx, objectURL, lock.LockHandle)
 		}
 	}()
+
+	// Reuse the request the object is already bound to when the caller supplied no
+	// transport, so an already-captured object is not rejected with a spurious 409
+	// (issue #144). Re-checks transportable-edit policy on the resolved request.
+	transport, err = c.resolveWriteTransport(transport, lock.CorrNr, "WriteClass")
+	if err != nil {
+		result.Message = fmt.Sprintf("Transportable-edit check failed: %v", err)
+		return result, nil
+	}
 
 	// Step 3: Update source
 	err = c.UpdateSource(ctx, sourceURL, source, lock.LockHandle, transport)
