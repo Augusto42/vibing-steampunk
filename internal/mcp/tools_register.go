@@ -205,7 +205,10 @@ func (s *Server) registerReadTools(shouldRegister func(string) bool) {
 				mcp.Description("Name of the ABAP table"),
 			),
 			mcp.WithNumber("max_rows",
-				mcp.Description("Maximum number of rows to retrieve (default 100). Use this instead of SQL LIMIT clause"),
+				mcp.Description("Maximum number of rows to retrieve (default 100). Ignored if all_rows is true. Use this instead of SQL LIMIT clause"),
+			),
+			mcp.WithBoolean("all_rows",
+				mcp.Description("Set true to retrieve every matching row, ignoring max_rows and the 100-row default. Prefer this over max_rows: 0 for \"all rows\" — MCP clients may not transmit 0 or negative numbers reliably; a boolean has no such ambiguity."),
 			),
 			mcp.WithString("sql_query",
 				mcp.Description("Optional ABAP SQL SELECT statement. Uses ABAP syntax: ASCENDING/DESCENDING work, ASC/DESC fail. Example: SELECT * FROM T000 WHERE MANDT = '001' ORDER BY MANDT DESCENDING"),
@@ -227,7 +230,10 @@ func (s *Server) registerReadTools(shouldRegister func(string) bool) {
 				mcp.Description("ABAP SQL query. Example: SELECT carrid, COUNT(*) as cnt FROM sflight GROUP BY carrid ORDER BY cnt DESCENDING. Note: ASC/DESC keywords fail - use ASCENDING/DESCENDING"),
 			),
 			mcp.WithNumber("max_rows",
-				mcp.Description("Maximum number of rows to retrieve (default 100). Use this instead of SQL LIMIT clause"),
+				mcp.Description("Maximum number of rows to retrieve (default 100). Ignored if all_rows is true. Use this instead of SQL LIMIT clause"),
+			),
+			mcp.WithBoolean("all_rows",
+				mcp.Description("Set true to retrieve every matching row, ignoring max_rows and the 100-row default. Prefer this over max_rows: 0 for \"all rows\" — MCP clients may not transmit 0 or negative numbers reliably; a boolean has no such ambiguity."),
 			),
 		), s.handleRunQuery)
 	}

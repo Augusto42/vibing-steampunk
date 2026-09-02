@@ -376,6 +376,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	table := args[0]
 	top, _ := cmd.Flags().GetInt("top")
 	skip, _ := cmd.Flags().GetInt("skip")
+	topExplicit := cmd.Flags().Changed("top")
 	where, _ := cmd.Flags().GetString("where")
 	fields, _ := cmd.Flags().GetString("fields")
 	orderBy, _ := cmd.Flags().GetString("order")
@@ -393,10 +394,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		sql += " ORDER BY " + orderBy
 	}
 
-	maxRows := 100
-	if top > 0 {
-		maxRows = top + skip
-	}
+	maxRows := adt.ResolveRowLimit(topExplicit && top == 0, top) + skip
 
 	ctx := context.Background()
 	result, err := client.RunQuery(ctx, sql, maxRows)
