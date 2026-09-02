@@ -105,8 +105,29 @@ func (c *Client) SetFunctionModuleProcessingType(ctx context.Context, group, nam
 // module inside a single lock: LOCK → PUT metadata → PUT source → UNLOCK.
 // Either write is optional. Doing both under one lock keeps the ENQUEUE
 // footprint to one acquire/release even for a full create-and-fill flow.
-func (c *Client) writeFunctionModule(ctx context.Context, group, name, processingType, source, transport string) error {
+func (c *Client) writeFunctionModule(ctx context.Context, group, name, processingType, source, transport string) (retErr error) {
 	objectURL := GetObjectURL(ObjectTypeFunctionMod, name, group)
+
+	// Gate here, above the lock. Two reasons.
+	//
+	// Policy: the metadata PUT below is a mutation with no gate of its own, so
+	// SetFunctionModuleProcessingType could flip a module to RFC-enabled in any
+	// package, whitelist or not. The source write reaches UpdateSource, which
+	// does gate — but only from inside the lock.
+	//
+	// Sessions: that inner package lookup is a stateless request, and issued
+	// between the LOCK and either PUT it retires the session the lock handle
+	// belongs to (issue #91). Running the same check up here and marking the
+	// context keeps the check and removes the request from the window.
+	ctx, err := c.gateAndMark(ctx, MutationContext{
+		Op:        OpUpdate,
+		OpName:    "WriteFunctionModule",
+		ObjectURL: objectURL,
+		Transport: transport,
+	})
+	if err != nil {
+		return err
+	}
 
 	// The metadata PUT replaces the document, so start from what SAP has —
 	// otherwise the description is silently blanked.
@@ -122,7 +143,16 @@ func (c *Client) writeFunctionModule(ctx context.Context, group, name, processin
 	unlocked := false
 	defer func() {
 		if !unlocked {
-			_ = c.UnlockObject(ctx, objectURL, lock.LockHandle)
+			// The compensating unlock is the only place a leak can be
+			// observed, so its failure is reported rather than dropped.
+			if unlockErr := c.releaseLockAfterFailure(ctx, objectURL, lock.LockHandle); unlockErr != nil {
+				advice := strandedLockAdvice(objectURL, unlockErr)
+				if retErr != nil {
+					retErr = fmt.Errorf("%w — %s", retErr, advice)
+				} else {
+					retErr = fmt.Errorf("%s", advice)
+				}
+			}
 		}
 	}()
 
@@ -272,6 +302,13 @@ func (c *Client) CreateFunctionModule(ctx context.Context, opts CreateFunctionMo
 		result.Message = fmt.Sprintf("Failed to create function module: %v", err)
 		return result, err
 	}
+
+	// The module was just created in opts.PackageName, which CreateObject
+	// checked against the whitelist — so writeFunctionModule's gate need not
+	// resolve it over the wire. That matters twice over here: a module created
+	// moments ago may not be in the search index yet, and the lookup would sit
+	// inside writeFunctionModule's lock window (issue #91).
+	ctx = withMutationPackageChecked(ctx, result.ObjectURL)
 
 	processingType := ""
 	if opts.RFCEnabled {
