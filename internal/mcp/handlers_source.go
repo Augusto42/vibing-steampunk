@@ -250,7 +250,13 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 		return newToolResultError(fmt.Sprintf("WriteSource failed: %v", err)), nil
 	}
 	if err := adt.WriteSourceResultError(result); err != nil {
-		return newToolResultError(err.Error()), nil
+		// Fail closed, but do not throw away the diagnosis with the verdict.
+		// The commonest way for this to fail is a syntax error, and
+		// result.SyntaxErrors carries the line, offset and text the caller
+		// needs to fix it. Returning only the message would hand an agent
+		// "Source has syntax errors - not saved" and nothing to act on.
+		payload, _ := json.MarshalIndent(result, "", "  ")
+		return newToolResultError(fmt.Sprintf("%v\n\n%s", err, payload)), nil
 	}
 
 	output, _ := json.MarshalIndent(result, "", "  ")
