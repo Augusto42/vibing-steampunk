@@ -112,9 +112,12 @@ subsystem:
 
 Perimeter from where-used, access kind from parsing each hit. Two things to
 settle before starting: `WritesDB` lumps all four write statements together, so
-the requested R/I/U/D split means widening `EffectInfo`; and `ExtractEffects`
-has had no caller since it was written, so this would be its first — which also
-retires the line in CLAUDE.md calling it "Library, not feature".
+the requested R/I/U/D split means widening `EffectInfo`. ~~And `ExtractEffects`
+has had no caller since it was written, so this would be its first.~~ It has had
+two since 2026-08-25 — `cmd/vsp/effects.go:82` and
+`internal/mcp/handlers_effects.go:100` — so this would be its third, and the
+"Library, not feature" line in CLAUDE.md was already retired by `a714cbf`.
+Corrected 2026-09-02.
 
 Worth asking the requester whether R/W is enough before building R/I/U/D.
 
@@ -144,13 +147,15 @@ a defect. The default is still arguably wrong — `both` is what someone asking
 for a *graph* means. One-line change, needs agreement that it is an improvement
 and not a break.
 
-### D010INC — the load graph
+### ~~D010INC — the load graph~~ — landed 2026-08-25
 
-Still two constants, `EdgeLoads` and `SourceD010INC`. It is the one genuinely
-novel source in the original graph design, and it has been pending long enough
-that CLAUDE.md had to be corrected for understating the package around it. This
-is a sprint of its own, not an afternoon; it is listed here so it is not
-mistaken for small.
+~~Still two constants, `EdgeLoads` and `SourceD010INC`.~~ It was
+`pkg/graph/builder_loads.go`, `cmd/vsp/loads.go` and `analyze type=loads` four
+days before this entry was written, and this board says so itself two hundred
+lines further down ("**`D010INC` is built**", under the three graph decisions).
+Left struck rather than deleted, because the interesting fact is that a backlog
+written on 2026-08-29 called a thing pending that the same file recorded as
+done on 2026-08-25. Corrected 2026-09-02.
 
 ### `i18n write_message_texts` is unverified
 
@@ -171,6 +176,65 @@ the MCP test router each map object types to ADT URIs, and they disagree about
 which types exist. Tier 1 touches two of the three and deliberately does not
 unify them, because a refactor inside a bug-fix release hides which change
 caused what. Do it after v2.55.0 ships, as its own commit.
+
+## Landed — 2026-09-02 — the board's own drift
+
+A triage read CLAUDE.md, README.md and this file against the code line by line
+and found fourteen claims that were false at HEAD. Every one was re-measured
+before it was changed; three of the fourteen were themselves wrong, and are
+recorded below with the rest, because a correction sweep that does not audit
+its own inputs is the thing it is trying to fix.
+
+**Counts.** `pkg/graph` is **51 files, 218 test functions**; CLAUDE.md said 45
+and 195. `cmd/vsp` registers **55 commands**; CLAUDE.md said 28. The tool
+counts are **102 focused / 147 expert**, pinned in
+`internal/mcp/tools_parity_test.go:18-20` and printed by `--help`; README said
+101 / 146 in two places, **100** in a third, and 102 / 147 in five others — the
+same file disagreeing with itself three ways. Unit tests: **1203**
+(`go test ./... -list`, integration excluded by build tag), not 821.
+
+**`pkg/adt/ui5.go` is not read-only and has not been since v2.10.0
+(2025-12-05).** `UI5UploadFile:273`, `UI5DeleteFile:312`, `UI5CreateApp:345`,
+`UI5DeleteApp:387`, all reachable from MCP through `handlers_ui5.go`. The
+README had the write leg parked behind "needs custom plugin via
+`/UI5/CL_REPOSITORY_LOAD`"; the ADT filestore took PUT and DELETE and no plugin
+was ever needed. Nine months of a shipped feature documented as impossible.
+
+**The graph engine's own status was stale in both directions.** CLAUDE.md was
+corrected on 2026-08-24 for *understating* the package, then went stale the
+other way within a day: it listed D010INC and `graph.ExtractEffects` as pending
+for a week after both shipped on 2026-08-25 (`builder_loads.go` + `vsp loads`;
+`effects.go:82` + `handlers_effects.go:100`). Its "Areas Requiring Care" row
+was worse — "only parser adapter; SQL/ADT adapters pending" contradicted the
+Current Priorities section fourteen lines above it, and had done for four
+months.
+
+**Four items on this board were done before they were written down.** D010INC,
+`ExtractEffects` having no caller, the mode gap, and the `graph_stats` scope
+question are all struck in place above rather than deleted, so the pattern
+stays visible: this board records a decision as taken in one section and as
+open in another, and nothing reconciles the two.
+
+**Undocumented commands.** `vsp loads`, `vsp examples` and `vsp sweep` shipped
+and appear in no README; they are now in the CLI Commands block. The triage
+also named `vsp applog` — that one was already documented, at README lines 197
+and 864-865, and was the first of the three claims that did not survive
+re-measurement.
+
+**CHANGELOG.md was twelve releases stale** — newest entry 2.42.0 against tags
+running to v2.54.0. Regenerating it is reproducible: git-cliff 2.12.0, the
+version pinned in `.github/workflows/release.yml:97`, run against the repo's
+own `cliff.toml`, reproduced all 693 existing lines byte for byte and appended
+214 covering v2.43.0 through v2.54.0. Zero lines removed. The staleness was
+never a formatting drift — the release workflow's "Commit CHANGELOG.md" step
+simply did not land for twelve consecutive releases, which is worth a look
+before v2.55.0 goes out, because regenerating by hand is not a fix for a
+release pipeline that skips a step.
+
+Note for whoever regenerates next: the workflow runs `git-cliff --tag
+$VERSION`, which is right when the tag does not exist yet — it dates the new
+section today. Run bare `git-cliff` for a catch-up over tags that already
+exist, or every backfilled release is stamped with the date you ran it.
 
 ## Landed — 2026-08-27 — v2.54.0
 
@@ -518,10 +582,13 @@ when it does not". Description without verification rots silently; verification
 without description does not know what a right answer is. Together: documentation
 that can fail.
 
-**The mode gap.** The universal `SAP()` tool exists only in hyperfocused mode,
-so agents in `focused` and `expert` cannot reach the seven post-mortem types or
-the four AMDP targets at all. Same disease: a capability that looks present and
-is not. A day, plus updating the pinned counts (1 / 101 / 146).
+**~~The mode gap.~~ Closed 2026-08-25.** ~~The universal `SAP()` tool exists
+only in hyperfocused mode, so agents in `focused` and `expert` cannot reach the
+seven post-mortem types or the four AMDP targets at all.~~ `SAP` is in
+`tools_focused.go:12` and registered through `shouldRegister("SAP")` in every
+mode; the pinned counts moved with it and are **1 / 102 / 147**, asserted in
+`internal/mcp/tools_parity_test.go:18-20`. The old 1 / 101 / 146 written here
+was the count this gap was going to produce, not one that ever shipped.
 
 **Breaking changes in minor versions.** v2.45.0 changed `(*adt.Client).Callees`
 and said so in its first paragraph rather than hiding it behind a compatible
@@ -567,10 +634,13 @@ of defect this week has been worst at finding.
   shows. Three kinds of row in that table and only one is a dependency between
   objects; the other two are containment and kernel machinery.
 
-**Still open, and now the oldest thing on this board:** unify `cli_deps.go`,
-`cli_extra.go` and `ctxcomp/analyzer.go`, which still do not import `pkg/graph`.
-Three implementations of dependency resolution, and this week showed what
-happens when two of them answer the same question by different routes.
+**Still open, and now the oldest thing on this board**, though smaller than it
+reads: unify `cli_deps.go`, `cli_extra.go` and `ctxcomp/analyzer.go`, ~~which
+still do not import `pkg/graph`~~. Two of the three now do — `cli_extra.go:16`
+and `analyzer.go:9`, the latter calling `graph.ExtractDepsFromSource` directly
+at line 315. Only `cli_deps.go` still carries its own extraction. Three
+implementations of dependency resolution became one and a half; the sentence
+saying otherwise stood until 2026-09-02.
 
 
 **Four gaps reported by a neighbouring project** (an IRC server on ABAP Push
@@ -663,9 +733,11 @@ started with and the answer looks identical either way.
 **Status:** all five defects fixed the same night (`b3a3bbc`, `e678848`,
 `b1b4f29`, `84487ae`), plus two the sweep was not looking for (`62c4c8e`). The
 two failures marked for recheck were stale-process artefacts and needed no fix.
-`graph_stats` remains open as a scope question, not a bug: it analyses source
+~~`graph_stats` remains open as a scope question, not a bug: it analyses source
 handed to it and cannot be asked about a repository object, which its name does
-not suggest.
+not suggest.~~ Answered on 2026-08-25 by the widening recorded below under the
+three graph decisions: it now takes source, an object, or a package, and the
+sweep probes all three (`internal/mcp/sweep_probes.go:293-312`).
 
 **Ordered next steps** are in the handoff linked at the top; in short: land the
 branch, then one sentence in `edit` about function-group activation, then the
