@@ -76,9 +76,30 @@ func (c *Client) checkMutation(ctx context.Context, m MutationContext) error {
 		return err
 	}
 
-	// 2. Package ownership check
-	if err := c.checkMutationPackage(ctx, m); err != nil {
-		return err
+	// 2. Package ownership check.
+	//
+	// This is the only step that makes a network request, and inside a lock
+	// window that request is fatal: it goes out explicitly stateless, which
+	// retires the ADT session the lock handle is bound to, and the write that
+	// follows returns 423 ExceptionResourceInvalidLockHandle (issue #91).
+	// An outer workflow that already resolved and approved *this* object's
+	// package marks the context so the lookup is not repeated under the lock.
+	//
+	// The skip is deliberately narrow:
+	//   - it never applies when the caller supplied an explicit Package —
+	//     checkPackageSafety is free and stays;
+	//   - it never applies off the ADT surface, so the SurfaceUI5 fail-closed
+	//     cannot be marked away;
+	//   - it covers step 2 only. Steps 1 and 3 issue no request, so skipping
+	//     them would buy nothing and cost --read-only / --disallowed-ops /
+	//     --allow-transportable-edits enforcement on the inner mutator.
+	skipPackageLookup := m.Surface == SurfaceADT &&
+		m.Package == "" &&
+		mutationPackageAlreadyChecked(ctx, m.ObjectURL)
+	if !skipPackageLookup {
+		if err := c.checkMutationPackage(ctx, m); err != nil {
+			return err
+		}
 	}
 
 	// 3. Transportable-edit check

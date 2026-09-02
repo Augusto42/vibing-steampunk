@@ -420,6 +420,12 @@ func (c *Client) writeSourceCreate(ctx context.Context, objectType, name, source
 			return result, nil
 		}
 
+		// The interface was created in opts.Package, which CreateObject only
+		// accepted after checking it against the whitelist — so UpdateSource
+		// need not resolve the same package again from inside the lock, where
+		// the lookup would retire the lock handle's session (issue #91).
+		ctx = withMutationPackageChecked(ctx, objectURL)
+
 		// Write source (using WriteProgram logic for interface)
 		sourceURL := objectURL + "/source/main"
 
@@ -520,6 +526,12 @@ func (c *Client) writeSourceCreate(ctx context.Context, objectType, name, source
 			result.Message = fmt.Sprintf("Failed to create %s: %v", objectType, err)
 			return result, nil
 		}
+
+		// Created in opts.Package, which CreateObject checked against the
+		// whitelist. Both branches below (BDEF shell fill, DDLS/SRVD source
+		// write) then lock and call UpdateSource; without this mark each would
+		// resolve the package again mid-window and lose the handle (#91).
+		ctx = withMutationPackageChecked(ctx, objectURL)
 
 		// For BDEF, creation creates empty shell, then update source
 		if objectType == "BDEF" {
@@ -765,6 +777,22 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 		if opts.TestSource != "" {
 			objectURL := fmt.Sprintf("/sap/bc/adt/oo/classes/%s", url.PathEscape(name))
 
+			// Run the package check for the class here, above the lock, rather
+			// than letting UpdateClassInclude / CreateTestInclude each run it
+			// under the lock — a stateless lookup there retires the session the
+			// handle belongs to (issue #91). This is the full gate, so nothing
+			// is skipped, only moved out of the window.
+			ctx, err := c.gateAndMark(ctx, MutationContext{
+				Op:        OpUpdate,
+				OpName:    "WriteSource",
+				ObjectURL: objectURL,
+				Transport: opts.Transport,
+			})
+			if err != nil {
+				result.Message += fmt.Sprintf(" (Warning: test include not written: %v)", err)
+				return result, nil
+			}
+
 			// Lock for test update
 			lock, err := c.LockObject(ctx, objectURL, "MODIFY")
 			if err != nil {
@@ -812,6 +840,19 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 		objectURL := fmt.Sprintf("/sap/bc/adt/oo/interfaces/%s", url.PathEscape(name))
 		sourceURL := objectURL + "/source/main"
 		result.ObjectURL = objectURL
+
+		// Full gate, run here rather than inside UpdateSource under the lock
+		// (issue #91). Nothing is skipped — the package lookup is only moved
+		// out of the lock window.
+		ctx, err := c.gateAndMark(ctx, MutationContext{
+			Op:        OpUpdate,
+			OpName:    "WriteSource",
+			ObjectURL: objectURL,
+			Transport: opts.Transport,
+		})
+		if err != nil {
+			return nil, err
+		}
 
 		// Syntax check
 		syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
@@ -895,6 +936,19 @@ func (c *Client) writeSourceUpdate(ctx context.Context, objectType, name, source
 		result.ObjectURL = objectURL
 		sourceURL := objectURL + "/source/main"
 
+		// Full gate, run here rather than inside UpdateSource under the lock
+		// (issue #91). Nothing is skipped — the package lookup is only moved
+		// out of the lock window.
+		ctx, err := c.gateAndMark(ctx, MutationContext{
+			Op:        OpUpdate,
+			OpName:    "WriteSource",
+			ObjectURL: objectURL,
+			Transport: opts.Transport,
+		})
+		if err != nil {
+			return nil, err
+		}
+
 		// Syntax check
 		syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
 		if err != nil {
@@ -976,6 +1030,18 @@ func (c *Client) writeClassMethodUpdate(ctx context.Context, className, methodNa
 	methodName = strings.ToUpper(methodName)
 	objectURL := fmt.Sprintf("/sap/bc/adt/oo/classes/%s", url.PathEscape(strings.ToLower(className)))
 	result.ObjectURL = objectURL
+
+	// Full gate up front, so UpdateSource does not repeat the networked
+	// package lookup between the LOCK and the PUT (issue #91).
+	ctx, err := c.gateAndMark(ctx, MutationContext{
+		Op:        OpUpdate,
+		OpName:    "WriteSource",
+		ObjectURL: objectURL,
+		Transport: transport,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	// Get method boundaries
 	methods, err := c.GetClassMethods(ctx, className)
