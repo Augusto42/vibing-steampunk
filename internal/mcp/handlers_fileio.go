@@ -231,6 +231,9 @@ func (s *Server) handleEditSource(ctx context.Context, request mcp.CallToolReque
 		method = m
 	}
 
+	// Accepted and ignored. Warnings no longer block an edit (#131), so this
+	// has no effect — it is still read so an existing caller that passes it is
+	// not rejected for sending an argument that used to be required.
 	ignoreWarnings := false
 	if iw, ok := request.GetArguments()["ignore_warnings"].(bool); ok {
 		ignoreWarnings = iw
