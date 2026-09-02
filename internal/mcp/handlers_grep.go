@@ -48,7 +48,6 @@ func (s *Server) routeGrepAction(ctx context.Context, action, objectType, object
 		[]string{"package_name (or package)", "object_url (or object)", "packages", "object_urls"},
 		`SAP(action="grep", params={"pattern": "SELECT", "package": "$TMP"})
   SAP(action="grep", params={"pattern": "TODO", "object_url": "/sap/bc/adt/oo/classes/zcl_demo"})`), true, nil
-	return nil, false, nil
 }
 
 // --- Grep/Search Handlers ---
