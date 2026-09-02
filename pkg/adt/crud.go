@@ -253,7 +253,8 @@ type CreateObjectOptions struct {
 	BindingType string `json:"bindingType,omitempty"`
 	// For SRVB: binding version ("V2" or "V4")
 	BindingVersion string `json:"bindingVersion,omitempty"`
-	// For SRVB: category ("0" for Web API, "1" for UI)
+	// For SRVB: category per SAP domain SRVB_BND_CATEGORY:
+	// "0" = UI (User Interface), "1" = A2X (Application to X users, i.e. Web API)
 	BindingCategory string `json:"bindingCategory,omitempty"`
 
 	// For BDEF: source code (required for creation - ADT API embeds source in creation request)
@@ -801,7 +802,7 @@ func buildCreateObjectBody(opts CreateObjectOptions, typeInfo objectTypeInfo, de
 		}
 		bindingCategory := opts.BindingCategory
 		if bindingCategory == "" {
-			bindingCategory = "0" // Web API
+			bindingCategory = "0" // UI (SRVB_BND_CATEGORY: 0=UI, 1=A2X/Web API)
 		}
 		return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <%s %s xmlns:adtcore="http://www.sap.com/adt/core"
@@ -1213,11 +1214,8 @@ type CreateTableOptions struct {
 // CreateTable creates a new DDIC transparent table from JSON-like options.
 // This is a high-level tool that handles the full workflow: create → set source → activate.
 func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error {
-	if err := c.checkSafety(OpCreate, "CreateTable"); err != nil {
-		return err
-	}
-
-	// Validate input
+	// Validate input first: the package default below is part of what the gate
+	// has to see.
 	opts.Name = strings.ToUpper(opts.Name)
 	if opts.Name == "" || len(opts.Name) > 30 {
 		return fmt.Errorf("table name must be 1-30 characters")
@@ -1233,6 +1231,19 @@ func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error
 	}
 	if opts.TableCategory == "" {
 		opts.TableCategory = "TRANSPARENT"
+	}
+
+	// Full mutation gate, not just the op-type half. CreateTable used to run
+	// checkSafety alone, so it created tables in any package the user could
+	// reach — SAP_ALLOWED_PACKAGES did not apply to it at all, and the source
+	// PUT below carried no gate either.
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:        OpCreate,
+		OpName:    "CreateTable",
+		Package:   opts.Package,
+		Transport: opts.Transport,
+	}); err != nil {
+		return err
 	}
 
 	// Generate DDL source
@@ -1268,30 +1279,33 @@ func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error
 	tableURL := fmt.Sprintf("/sap/bc/adt/ddic/tables/%s", strings.ToLower(opts.Name))
 	sourceURL := tableURL + "/source/main"
 
+	// The table was just created in opts.Package, which the gate above
+	// accepted, so UpdateSource does not have to resolve it again from inside
+	// the lock (issue #91).
+	ctx = withMutationPackageChecked(ctx, tableURL)
+
 	lock, err := c.LockObject(ctx, tableURL, "MODIFY")
 	if err != nil {
 		return fmt.Errorf("locking table: %w", err)
 	}
 
-	params = url.Values{}
-	params.Set("lockHandle", lock.LockHandle)
-	if opts.Transport != "" {
-		params.Set("corrNr", opts.Transport)
-	}
-
-	_, err = c.transport.Request(ctx, sourceURL, &RequestOptions{
-		Method:      http.MethodPut,
-		Query:       params,
-		Body:        []byte(ddlSource),
-		ContentType: "text/plain",
-	})
-	if err != nil {
-		c.UnlockObject(ctx, tableURL, lock.LockHandle)
+	// This used to be a hand-rolled transport.Request with no Stateful field,
+	// which meant the PUT that consumes the lock handle went out explicitly
+	// stateless — it retired the very session the handle was issued in, and
+	// creating a table failed with 423 InvalidLockHandle on every attempt, on
+	// any configuration. UpdateSource is the same request with Stateful: true
+	// and the mutation gate attached.
+	if err := c.UpdateSource(ctx, sourceURL, ddlSource, lock.LockHandle, opts.Transport); err != nil {
+		if unlockErr := c.releaseLockAfterFailure(ctx, tableURL, lock.LockHandle); unlockErr != nil {
+			return fmt.Errorf("updating table source: %w — %s", err, strandedLockAdvice(tableURL, unlockErr))
+		}
 		return fmt.Errorf("updating table source: %w", err)
 	}
 
 	// Unlock BEFORE activation
-	c.UnlockObject(ctx, tableURL, lock.LockHandle)
+	if err := c.UnlockObject(ctx, tableURL, lock.LockHandle); err != nil {
+		return fmt.Errorf("unlocking table before activation: %w — %s", err, strandedLockAdvice(tableURL, err))
+	}
 
 	// Step 3: Activate
 	activation, err := c.Activate(ctx, tableURL, opts.Name)

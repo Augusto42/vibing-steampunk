@@ -27,11 +27,30 @@ This section understated the package for four months; corrected 2026-08-24.
 Plan: MCP debug sessions → DAP → Web UI. ADT REST API mapped from `CL_TPDA_ADT_RES_APP`. Design: [001](reports/2026-04-05-001-gui-debugger-design.md)
 
 ### 3. Open Issues
-- ~~**#88** Lock handle bug~~ — closed 2026-04-15 by `22517d4` (Stateful +
-  ModificationSupport guard), together with #91, #92, #98. Left here in struck
-  form because this list said "open" for four months after the fix.
-- **#55** RunReport in APC — architectural limit
-- **#46, #45** Sync script — low effort
+- **#91** The 423 lock-handle class — the live one, and this entry was wrong
+  twice. `22517d4` did not close it: a third-party release bisect names that
+  commit as the start of a regression, and its `ModificationSupport` guard was
+  itself removed by `9b98997`. #88, #92, #98, #110 are closed as duplicates of
+  #91 (2026-09-01); #132 stays open for its transport-reuse leg.
+  Cause: `SessionType` defaults to stateless (`config.go:198`, `d84db03`) and
+  `http.go:502` stamps every unflagged request `stateless`, so any hop between
+  LOCK and the write retires the ICM context and kills the handle. The fix on
+  `fix/91-session-affinity` closes the package-lookup hop, the CSRF probe, and
+  two mutations that were themselves stateless. Still open after it: the
+  keep-alive ticker (on by default, 5m) and the MCP cross-tool-call window.
+- **#166** A failed mutation strands the SAP-side ENQUEUE — split out of #92
+  so it survives that closure. Users clear these by hand in SM12.
+- **#55** RunReport in APC — *not* an architectural limit, which this line
+  claimed for months. `34eb727` ("$ZADT_VSP sync", 2026-02-06) replaced a
+  working XBP background-job + spool implementation in
+  `src/zcl_vsp_report_service.clas.abap` with a bare `SUBMIT ... AND RETURN`,
+  deleting the `getJobStatus`/`getSpoolOutput` actions the Go client still
+  speaks. It is a regression with a known good parent commit. #113 was the
+  same defect and is closed against this one.
+- ~~**#46, #45** Sync script~~ — closed 2026-09-01. `scripts/sync-upstream.sh`
+  has never existed here (`git log --all --diff-filter=A` finds it in none of
+  the 913 commits); both issues were filed from a downstream fork's workflow.
+  This line advertised work that was not ours to do.
 
 ---
 
