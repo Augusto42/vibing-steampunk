@@ -18,8 +18,8 @@ func TestSQLiteWorksWithoutCGO(t *testing.T) {
 	defer c.Close()
 
 	ctx := context.Background()
-	if err := c.PutNode(ctx, &Node{ID: "ZCL_DEMO_ONE", ObjectType: "CLAS", ObjectName: "ZCL_DEMO_ONE", Valid: true}); err != nil {
-		t.Fatalf("PutNode: %v", err)
+	if putErr := c.PutNode(ctx, &Node{ID: "ZCL_DEMO_ONE", ObjectType: "CLAS", ObjectName: "ZCL_DEMO_ONE", Valid: true}); putErr != nil {
+		t.Fatalf("PutNode: %v", putErr)
 	}
 	got, err := c.GetNode(ctx, "ZCL_DEMO_ONE")
 	if err != nil {
