@@ -56,8 +56,18 @@ func (r *ActivationResult) ProblemLines() []string {
 	if r == nil || r.Success {
 		return nil
 	}
+	// A checklist can refuse without an E in it: activationExecuted="false" and
+	// a type="W" "Activation was cancelled." is a real refusal whose only reason
+	// is that warning. Leading with "SAP named no reason" while holding SAP's
+	// reason is the same silence this file exists to end, so when nothing is
+	// error-typed the warnings are what there is to report.
+	msgs := r.ErrorMessages()
+	if len(msgs) == 0 {
+		msgs = r.Messages
+	}
+
 	var lines []string
-	for _, m := range r.ErrorMessages() {
+	for _, m := range msgs {
 		text := strings.TrimSpace(m.ShortText)
 		if text == "" {
 			text = "(SAP gave no text for this message)"

@@ -71,11 +71,16 @@ func (c *Client) SyntaxCheck(ctx context.Context, objectURL string, content stri
 }
 
 func parseSyntaxCheckResults(data []byte) ([]SyntaxCheckResult, error) {
-	// The response uses namespace prefixes like chkrun:uri, chkrun:type, etc.
-	// Go's xml package doesn't handle namespaced attributes well, so we strip the prefix
-	xmlStr := string(data)
-	xmlStr = strings.ReplaceAll(xmlStr, "chkrun:", "")
-
+	// The response uses namespace prefixes — chkrun:uri, chkrun:type — and this
+	// used to strip "chkrun:" out of the whole document first, on the belief that
+	// encoding/xml cannot match a prefixed attribute. It can: a tag of
+	// `xml:"type,attr"` matches on local name, whatever the prefix, which is why
+	// the activation checklist reads adtcore:type without any such help.
+	//
+	// The strip was not merely unnecessary. It rewrote every byte of the payload,
+	// message text included, so a shortText that mentioned the namespace came
+	// back with the prefix cut out of the sentence — SAP's diagnostic, quietly
+	// altered on the way to the caller.
 	type checkMessage struct {
 		URI       string `xml:"uri,attr"`
 		Type      string `xml:"type,attr"`
@@ -92,7 +97,7 @@ func parseSyntaxCheckResults(data []byte) ([]SyntaxCheckResult, error) {
 	}
 
 	var resp checkRunReports
-	if err := xml.Unmarshal([]byte(xmlStr), &resp); err != nil {
+	if err := xml.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parsing syntax check response: %w", err)
 	}
 
@@ -194,18 +199,33 @@ func parseActivationResult(data []byte) (*ActivationResult, error) {
 		return result, nil
 	}
 
+	// SAP splits one message across several <txt> siblings — "Activation was
+	// cancelled." and `"Editing canceled" (EU 202)` arrive as two — so this is a
+	// list, not a string. A string field would be overwritten by each element in
+	// turn and keep only the last, which is reliably the least informative half.
+	// Chardata covers the releases that put the text straight in <shortText>.
+	type shortText struct {
+		Texts    []string `xml:"txt"`
+		CharData string   `xml:",chardata"`
+	}
 	type msg struct {
-		ObjDescr       string `xml:"objDescr,attr"`
-		Type           string `xml:"type,attr"`
-		Line           int    `xml:"line,attr"`
-		Href           string `xml:"href,attr"`
-		ForceSupported bool   `xml:"forceSupported,attr"`
-		ShortText      struct {
-			Text string `xml:"txt"`
-		} `xml:"shortText"`
+		ObjDescr       string    `xml:"objDescr,attr"`
+		Type           string    `xml:"type,attr"`
+		Line           int       `xml:"line,attr"`
+		Href           string    `xml:"href,attr"`
+		ForceSupported bool      `xml:"forceSupported,attr"`
+		ShortText      shortText `xml:"shortText"`
+	}
+	// The checklist's own verdict on whether anything happened. A checklist can
+	// refuse with nothing but warnings in it — activationExecuted="false" beside
+	// a type="W" "Activation was cancelled." — and reading only message types
+	// calls that a success while the object is still inactive.
+	type properties struct {
+		ActivationExecuted string `xml:"activationExecuted,attr"`
 	}
 	type messages struct {
-		Msgs []msg `xml:"msg"`
+		Props *properties `xml:"properties"`
+		Msgs  []msg       `xml:"msg"`
 	}
 	type inactiveRef struct {
 		URI       string `xml:"uri,attr"`
@@ -221,7 +241,17 @@ func parseActivationResult(data []byte) (*ActivationResult, error) {
 	type inactiveObjects struct {
 		Entries []inactiveEntry `xml:"entry"`
 	}
+	// ADT sends the checklist either as the document root (<chkl:messages> or
+	// <ioc:inactiveObjects>, whose children land directly on this struct) or
+	// wrapped in an outer element (where they are one level down). Both shapes
+	// are declared here rather than parsed in two passes, because the root and
+	// the wrapper never use the same element names and so cannot collide.
 	type response struct {
+		// Root shape: this struct *is* <chkl:messages> / <ioc:inactiveObjects>.
+		Props   *properties     `xml:"properties"`
+		Msgs    []msg           `xml:"msg"`
+		Entries []inactiveEntry `xml:"entry"`
+		// Wrapped shape.
 		Messages messages        `xml:"messages"`
 		Inactive inactiveObjects `xml:"inactiveObjects"`
 	}
@@ -237,16 +267,11 @@ func parseActivationResult(data []byte) (*ActivationResult, error) {
 		return result, nil
 	}
 
-	// ADT returns the checklist either wrapped or as the document root
-	// (<chkl:messages> with <msg> children). Only the wrapped shape matches the
-	// struct above, so fall back to the root shape — otherwise a failed
-	// activation parses to nothing and is reported as a success.
-	msgs := resp.Messages.Msgs
-	if len(msgs) == 0 {
-		var root messages
-		if err := xml.Unmarshal(data, &root); err == nil {
-			msgs = root.Msgs
-		}
+	msgs := append(append([]msg{}, resp.Msgs...), resp.Messages.Msgs...)
+	entries := append(append([]inactiveEntry{}, resp.Entries...), resp.Inactive.Entries...)
+	props := resp.Props
+	if props == nil {
+		props = resp.Messages.Props
 	}
 
 	for _, m := range msgs {
@@ -256,15 +281,15 @@ func parseActivationResult(data []byte) (*ActivationResult, error) {
 			Line:           m.Line,
 			Href:           m.Href,
 			ForceSupported: m.ForceSupported,
-			ShortText:      m.ShortText.Text,
+			ShortText:      joinShortText(m.ShortText.Texts, m.ShortText.CharData),
 		})
 		// Check for errors
-		if strings.ContainsAny(m.Type, "EAX") {
+		if strings.ContainsAny(m.Type, activationErrorTypes) {
 			result.Success = false
 		}
 	}
 
-	for _, entry := range resp.Inactive.Entries {
+	for _, entry := range entries {
 		if entry.Object != nil {
 			result.Success = false
 			result.Inactive = append(result.Inactive, InactiveObject{
@@ -276,7 +301,29 @@ func parseActivationResult(data []byte) (*ActivationResult, error) {
 		}
 	}
 
+	// Only an explicit "false" is a refusal. An absent attribute means this
+	// release did not say, and guessing from silence is how the messages got
+	// dropped in the first place.
+	if props != nil && strings.EqualFold(strings.TrimSpace(props.ActivationExecuted), "false") {
+		result.Success = false
+	}
+
 	return result, nil
+}
+
+// joinShortText renders SAP's <shortText> as the one line the rest of the code
+// expects, keeping every <txt> sibling in the order SAP wrote them.
+func joinShortText(texts []string, chardata string) string {
+	parts := make([]string, 0, len(texts))
+	for _, t := range texts {
+		if t = strings.TrimSpace(t); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(chardata)
+	}
+	return strings.Join(parts, " ")
 }
 
 // GetInactiveObjects retrieves all inactive objects for the current user.
