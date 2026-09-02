@@ -5,8 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/oisee/vibing-steampunk/pkg/adt"
 	lua "github.com/yuin/gopher-lua"
+
+	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
 func TestLuaWriteSourceLegacyCallPreservesNilOptions(t *testing.T) {
