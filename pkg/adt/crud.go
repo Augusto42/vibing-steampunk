@@ -80,6 +80,8 @@ func (c *Client) LockObject(ctx context.Context, objectURL string, accessMode st
 			objectURL, result.ModificationSupport)
 	}
 
+	c.noteLockOpened(result.LockHandle)
+
 	return result, nil
 }
 
@@ -161,6 +163,10 @@ func (c *Client) UnlockObject(ctx context.Context, objectURL string, lockHandle 
 	if err != nil {
 		return fmt.Errorf("unlocking object: %w", err)
 	}
+
+	// Only a *successful* unlock ends the window. A failed one may have left
+	// the lock held, and suppressing a ping is the cheaper mistake.
+	c.noteLockClosed(lockHandle)
 
 	return nil
 }
@@ -911,6 +917,10 @@ func (c *Client) DeleteObject(ctx context.Context, objectURL string, lockHandle 
 	if err != nil {
 		return fmt.Errorf("deleting object: %w", err)
 	}
+
+	// A delete consumes the handle without an UNLOCK ever being sent, which is
+	// how a lock-window counter ends up permanently non-zero.
+	c.noteLockClosed(lockHandle)
 
 	return nil
 }
