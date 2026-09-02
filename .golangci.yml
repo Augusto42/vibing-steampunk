@@ -1,37 +1,68 @@
+# Schema version. golangci-lint v2 refuses a v1 config outright — "unsupported
+# version of the configuration" — before it reads a line of Go. That is what
+# happened here: the action asked for `latest`, v2 shipped, and this file stayed
+# v1, so the advisory lint job failed in 67ms on every run and checked nothing
+# at all. Keep this line, and pin the version in ci.yml.
+version: "2"
+
 run:
-  timeout: 5m
   modules-download-mode: readonly
 
 linters:
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - gofmt
-    - goimports
-    - misspell
-    - unconvert
-    - unparam
     - bodyclose
+    - misspell
     - noctx
     - prealloc
+    - unconvert
+    - unparam
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment
-  goimports:
-    local-prefixes: github.com/vibingsteamer/mcp-abap-adt-go
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    misspell:
+      # CLAS is the ADT object-type code for a class, not a typo for CLASS.
+      # It appears in URLs, tool schemas and switch statements; "correcting" it
+      # breaks the code. The first lint run after the v2 migration flagged six
+      # of these, which is a fair illustration of why lint output gets read
+      # rather than applied.
+      ignore-rules:
+        - clas
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - unparam
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      # Was github.com/vibingsteamer/mcp-abap-adt-go — a module path this repo
+      # has never had (see go.mod), so local-import grouping matched nothing.
+      local-prefixes:
+        - github.com/oisee/vibing-steampunk
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

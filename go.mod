@@ -1,6 +1,6 @@
 module github.com/oisee/vibing-steampunk
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/chromedp/cdproto v0.0.0-20250803210736-d308e07a266d
@@ -9,6 +9,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/mattn/go-sqlite3 v1.14.32
+	github.com/oisee/open-rfc-go v0.0.0-20260820234724-6ef4d9eeb9cd
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
 	github.com/tetratelabs/wazero v1.11.0

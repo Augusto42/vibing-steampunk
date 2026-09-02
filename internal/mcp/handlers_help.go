@@ -54,6 +54,8 @@ High-level edit (recommended - auto lock/unlock/activate):
   SAP(action="edit", target="CLAS ZCL_TEST", params={"source": "CLASS zcl_test..."})
   SAP(action="edit", target="PROG ZREPORT", params={"source": "REPORT zreport..."})
   SAP(action="edit", target="INTF ZIF_TEST", params={"source": "INTERFACE zif_test..."})
+  SAP(action="edit", target="FUNC ZMY_FM", params={"source": "FUNCTION zmy_fm...ENDFUNCTION."})
+      the function group is resolved from the module name; pass params={"parent": "ZMY_FG"} to name it
   SAP(action="edit", target="DDLS ZDDL_VIEW", params={"source": "@AbapCatalog..."})
 
 Method-level edit (CLAS only):
@@ -80,6 +82,8 @@ Service binding:
 
 Create object:
   SAP(action="create", target="OBJECT", params={"object_type": "CLAS/OC", "name": "ZCL_NEW", "description": "New class", "package_name": "$TMP"})
+  SAP(action="create", target="OBJECT", params={"object_type": "FUGR/F", "name": "ZVSP_DEMO", "description": "Demo group", "package_name": "$TMP"})
+  SAP(action="create", target="OBJECT", params={"object_type": "FUGR/FF", "name": "ZVSP_DEMO_FM", "parent_name": "ZVSP_DEMO", "description": "RFC demo", "package_name": "$TMP", "rfc_enabled": true, "source": "FUNCTION zvsp_demo_fm\n  IMPORTING VALUE(iv_n) TYPE i\n  EXPORTING VALUE(ev_result) TYPE i.\n  ev_result = iv_n * 2.\nENDFUNCTION."})
   SAP(action="create", target="DEVC", params={"name": "$ZNEW", "description": "New package"})
   SAP(action="create", target="TABL", params={"name": "ZTABLE", "description": "New table", "fields": "[...]", "package": "$TMP"})
   SAP(action="create", target="CLONE", params={"object_type": "CLAS", "source_name": "ZCL_OLD", "target_name": "ZCL_NEW", "package": "$TMP"})
@@ -120,6 +124,103 @@ Unit tests:
 
 ATC check:
   SAP(action="test", params={"type": "atc", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})`)
+
+	case "info":
+		return mcp.NewToolResultText(`SAP(action="info") - What am I talking to?
+
+  SAP()
+  SAP(action="info")
+
+Both answer the same four things, in the order somebody needs them:
+
+  which build is answering — an agent reporting a defect against "vsp"
+    names nothing; against a commit it names something
+  whether the session is alive and authenticated, which decides whether
+    any other call is worth making
+  which system, so nobody acts on production believing it is a sandbox
+  what to call next
+
+The connection check is a CSRF token fetch, not a status code: an expired
+SSO session answers 200 with a logon page, and only the missing token
+gives it away.
+
+The instance number is derived from the port (80NN, 443NN, 5NN00), not
+read from the system, and the card says so.`)
+
+	case "rfc":
+		return mcp.NewToolResultText(`SAP(action="rfc") - Classic RFC to the same system
+
+Not ADT. This speaks SAP's classic Type-3 protocol to the gateway, in pure
+Go. A system reachable over HTTPS is not necessarily reachable here: the
+gateway is a different port and is often closed.
+
+  SAP(action="rfc", params={"op": "info"})
+  SAP(action="rfc", params={"op": "ping"})
+  SAP(action="rfc", target="STFC_CONNECTION")
+  SAP(action="rfc", target="Z_DOUBLE", params={"op": "call", "args": {"N": 21}})
+  SAP(action="rfc", params={"op": "search", "pattern": "BAPI_USER*"})
+  SAP(action="rfc", params={"op": "read_table", "table": "T000"})
+
+Only remote-enabled function modules can be called. A module that is not
+marked remote is unreachable by every transport — a property of the module,
+not of the connection.`)
+
+	case "i18n":
+		return mcp.NewToolResultText(`SAP(action="i18n") - Translation texts and language comparison
+
+Object texts in one language:
+  SAP(action="i18n", params={"op": "texts", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "language": "DE"})
+
+Data element labels — short, medium, long, heading:
+  SAP(action="i18n", params={"op": "data_element_labels", "name": "ZDE_ORDER_ID", "language": "DE"})
+
+Message class texts:
+  SAP(action="i18n", params={"op": "message_class_texts", "name": "ZVSP_GIT", "language": "EN"})
+
+A report's selection texts and text symbols — program_name here, not name:
+  SAP(action="i18n", params={"op": "text_pool", "program_name": "ZDEMO_REPORT", "language": "EN"})
+
+What differs between two languages — named separately, not as a list:
+  SAP(action="i18n", params={"op": "compare_languages", "object_url": "/sap/bc/adt/oo/classes/zcl_demo", "source_language": "EN", "target_language": "DE"})
+
+Writing needs a lock_handle from a lock taken first, and changes the system:
+  SAP(action="i18n", params={"op": "write_message_texts", "name": "ZVSP_GIT", "language": "DE", "lock_handle": "...", "texts": []})
+
+write_labels is not implemented and refuses. What it used to send was a
+four-field document to a resource that takes the data element's whole
+representation, so it never worked; it now says so instead of failing
+opaquely. Use SE11.`)
+
+	case "revisions", "history":
+		return mcp.NewToolResultText(`SAP(action="revisions") - Version history
+
+Name the object by type and name, or by target:
+  SAP(action="revisions", params={"type": "CLAS", "name": "ZCL_DEMO"})
+  SAP(action="revisions", target="CLAS ZCL_DEMO")
+
+Read one version's source. The URI comes from the list above and is not
+constructable by hand:
+  SAP(action="revisions", params={"op": "source", "version_uri": "..."})
+
+Compare two versions; version2_uri defaults to the current one:
+  SAP(action="revisions", params={"op": "compare", "type": "CLAS", "name": "ZCL_DEMO", "version1_uri": "..."})
+
+For a function module, name its group as parent.`)
+
+	case "lint":
+		return mcp.NewToolResultText(`SAP(action="lint") - Static analysis, offline
+
+Supply the source, or name an object to read it from. One or the other —
+neither is optional on its own:
+  SAP(action="lint", params={"source": "REPORT zdemo.\nWRITE 'x'.\n"})
+  SAP(action="lint", params={"object_type": "CLAS", "object_name": "ZCL_DEMO"})
+
+Also reachable as analyze type=lint, because that is where somebody looks
+for static analysis first.
+
+Thirteen rules, eight on by default: empty catch blocks, over-broad
+exception catches, hardcoded credentials, magic numbers, unreachable code.
+No ABAP is executed, and no server is involved when source is supplied.`)
 
 	case "grep":
 		return mcp.NewToolResultText(`SAP(action="grep") - Search in source code
@@ -166,7 +267,17 @@ Report execution:
   SAP(action="debug", target="GET_TEXT_ELEMENTS", params={"program": "ZREPORT"})
   SAP(action="debug", target="SET_TEXT_ELEMENTS", params={"program": "ZREPORT", "selection_texts": "{\"P_USER\": \"Username\"}"})
 
-AMDP debugging:
+AMDP debugging over ADT (nothing installed on the server; breakpoints fire):
+  SAP(action="debug", target="AMDP_ADT_START")
+  SAP(action="debug", target="AMDP_ADT_BREAKPOINT", params={"class": "ZCL_X", "line": 41})
+  SAP(action="debug", target="AMDP_ADT_AWAIT")   # run the AMDP method from elsewhere first
+  SAP(action="debug", target="AMDP_ADT_STOP")
+  Answers arrive as a queue with acknowledgements at its head, so AWAIT keeps
+  asking past them. It also reports whether SAP calls the breakpoint VALID —
+  a refused breakpoint and a method that never ran look identical otherwise.
+
+AMDP debugging over the ZADT_VSP WebSocket (older route; its breakpoints have
+never been observed to fire):
   SAP(action="debug", target="AMDP_START", params={"cascade_mode": "FULL"})
   SAP(action="debug", target="AMDP_RESUME")
   SAP(action="debug", target="AMDP_STEP", params={"step_type": "stepInto"})
@@ -181,10 +292,13 @@ AMDP debugging:
 Syntax check:
   SAP(action="analyze", params={"type": "syntax_check", "object_url": "/sap/bc/adt/oo/classes/zcl_test", "content": "..."})
 
-Call graph:
+Call graph (one hop; object_type + object_name work instead of object_uri):
   SAP(action="analyze", params={"type": "call_graph", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
-  SAP(action="analyze", params={"type": "callers", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
-  SAP(action="analyze", params={"type": "callees", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
+  SAP(action="analyze", params={"type": "callers", "object_type": "CLAS", "object_name": "ZCL_TEST"})
+    who references it — the where-used list behind SE84
+  SAP(action="analyze", params={"type": "callees", "object_type": "CLAS", "object_name": "ZCL_TEST"})
+    what it references — the CROSS and WBCROSSGT tables, filled at activation,
+    so these are recorded references and not observed calls; needs free SQL
   SAP(action="analyze", params={"type": "analyze_call_graph", "object_uri": "/sap/bc/adt/oo/classes/zcl_test"})
   SAP(action="analyze", params={"type": "compare_call_graphs", "object_uri": "...", "trace_data": "[...]"})
   SAP(action="analyze", params={"type": "trace_execution", "object_uri": "..."})
@@ -233,9 +347,27 @@ Transport analysis:
 Execute ABAP:
   SAP(action="analyze", params={"type": "execute_abap", "code": "WRITE 'Hello'."})
 
-Runtime errors:
-  SAP(action="analyze", params={"type": "list_dumps"})
-  SAP(action="analyze", params={"type": "get_dump", "dump_id": "..."})
+Runtime errors (ST22) — a listing, and a post-mortem around one dump:
+  SAP(action="analyze", params={"type": "list_dumps", "since": "2026-08-01", "program": "ZDEMO_POST"})
+  SAP(action="analyze", params={"type": "group_dumps", "since": "2026-08-01"})
+      what keeps failing, not what failed once: count, first seen, last seen, users
+  SAP(action="analyze", params={"type": "get_dump", "dump_id": "latest"})
+      header, termination point and call stack of one dump
+  SAP(action="analyze", params={"type": "explain_dump", "dump_id": "latest", "tolerance": "5m"})
+      the stack, plus application log entries ranked by the argument for each — a log written by
+      the program that died is structural; one merely nearby in time is a coincidence
+  SAP(action="analyze", params={"type": "similar_dumps", "dump_id": "latest", "deep": 10})
+      is this new, and how often: rung 1 same line, 2 same program, 3 same component, 4 same error
+  SAP(action="analyze", params={"type": "dump_impact", "dump_id": "latest"})
+      who else reaches the code that failed — blast radius, not blame
+  dump_id takes "latest", any part of an id from list_dumps, or a whole id.
+  filters shared by all six: program, error_type, user, since, until (YYYY-MM-DD), max_results
+
+Application log (SLG1 headers, read with free SQL — no RFC, no gateway, no Z code):
+  SAP(action="analyze", params={"type": "application_log", "program": "ZDEMO_POST", "max_results": 20})
+  SAP(action="analyze", params={"type": "application_log", "user": "TESTUSER", "since": "2026-08-01"})
+  SAP(action="analyze", params={"type": "application_log", "object": "ZDEMO_LOG", "subobject": "POST"})
+      headers only: message bodies live in a cluster table ADT will not read
 
 Profiler traces:
   SAP(action="analyze", params={"type": "list_traces"})
@@ -259,6 +391,8 @@ Dependency graph & boundary analysis:
 
 Info:
   SAP(action="system", target="INFO")
+  SAP(action="revisions", target="CLAS ZCL_TEST")
+  SAP(action="lint", params={"object_type": "CLAS", "object_name": "ZCL_TEST"})
   SAP(action="system", target="COMPONENTS")
   SAP(action="system", target="CONNECTION")
   SAP(action="system", target="FEATURES")
@@ -312,7 +446,7 @@ File operations:
 3. Syntax check:                 SAP(action="analyze", params={"type": "syntax_check", "object_url": "/sap/bc/adt/oo/classes/zcl_test"})
 
 === DEPENDENCY ANALYSIS ===
-1. Call graph (down):            SAP(action="analyze", params={"type": "callees", "object_uri": "..."})
+1. What this uses (down):        SAP(action="analyze", params={"type": "callees", "object_uri": "..."})
 2. Where-used (up):              SAP(action="analyze", params={"type": "callers", "object_uri": "..."})
 3. CDS dependencies:             SAP(action="read", target="CDS_DEPS ZDDL_VIEW")
 4. CDS impact (consumers):      SAP(action="analyze", params={"type": "cds_impact", "cds_view": "ZDDL_VIEW"})
@@ -348,9 +482,16 @@ Actions:
   query    - Query table contents or run SQL
   grep     - Search patterns in source code
   test     - Run unit tests, ATC checks
-  analyze  - Syntax check, call graph, code intelligence, profiler, dumps, boundary analysis
+  analyze  - Syntax check, call graph, code intelligence, profiler, dumps and the log around
+             them, application log, boundary analysis
   debug    - Breakpoints, stepping, variables, RFC calls, report execution
   system   - System info, transports, git, install tools, file operations
+  rfc      - Classic RFC to the same system, no gateway library
+  i18n     - Translation texts, language comparison
+  revisions- Version history, one version's source, two versions compared
+  lint     - Static analysis of ABAP source, offline
+  info     - Build, connection, system, and what to call next. Also SAP() with
+             no arguments at all.
   help     - This help. Use SAP(action="help", target="<action>") for details.
 
 Quick examples:
@@ -367,32 +508,72 @@ Use SAP(action="help", target="tips") for best practices and workflow guides.`)
 }
 
 // getUnhandledErrorMessage returns a helpful error message when no route matched.
+// validActionsLine is the one place the action list is written down. It had
+// drifted from the dispatcher in both directions at once: "rfc" was routed but
+// absent from the list, so a caller was told the feature did not exist, while
+// "system" and "analyze" were listed without their target or type and so looked
+// broken when they were merely under-specified.
+const validActionsLine = "Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, rfc, i18n, revisions, lint, info, help\n"
+
+// actionsNeedingTarget are the actions the dispatcher can only route once it
+// knows what they are aimed at.
+var actionsNeedingTarget = map[string]bool{
+	"read":   true,
+	"edit":   true,
+	"create": true,
+	"delete": true,
+	"system": true,
+}
+
+func actionNeedsTarget(action string) bool { return actionsNeedingTarget[action] }
+
 func getUnhandledErrorMessage(action, objectType, objectName string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "No handler found for action=%q", action)
-	if objectType != "" {
-		fmt.Fprintf(&sb, " target=%q", objectType)
-		if objectName != "" {
-			fmt.Fprintf(&sb, " %q", objectName)
+	// Say which of the three the caller is missing. "No handler found" reads as
+	// "this action does not exist" and sends people looking for a feature that
+	// is present — several actions simply need a target, or a type in params,
+	// and the old message listed them as valid without ever saying so.
+	switch {
+	case objectType == "" && actionNeedsTarget(action):
+		fmt.Fprintf(&sb, "action=%q needs a target.", action)
+	case action == "analyze":
+		fmt.Fprintf(&sb, "action=%q needs params={\"type\": ...}.", action)
+	default:
+		fmt.Fprintf(&sb, "No handler found for action=%q", action)
+		if objectType != "" {
+			fmt.Fprintf(&sb, " target=%q", objectType)
+			if objectName != "" {
+				fmt.Fprintf(&sb, " %q", objectName)
+			}
 		}
+		sb.WriteString(".")
 	}
-	sb.WriteString(".\n\n")
+	sb.WriteString("\n\n")
 
 	switch action {
 	case "read":
 		sb.WriteString("Supported read targets: CLAS, PROG, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, TABL, TABL_CONTENTS, DEVC, MSAG, TRAN, TYPE_INFO, STRUCT, CDS_DEPS\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"read\") for examples.")
 	case "edit":
-		sb.WriteString("Supported edit targets: CLAS, PROG, INTF, DDLS, BDEF, SRVD, LOCK, UNLOCK, UPDATE_SOURCE, ACTIVATE, ACTIVATE_PACKAGE, EDITSOURCE, PUBLISH_SERVICE, UNPUBLISH_SERVICE\n")
+		sb.WriteString("Supported edit targets: CLAS, PROG, INTF, FUNC, DDLS, BDEF, SRVD, TABL, LOCK, UNLOCK, UPDATE_SOURCE, ACTIVATE, ACTIVATE_PACKAGE, EDITSOURCE, PUBLISH_SERVICE, UNPUBLISH_SERVICE\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"edit\") for examples.")
 	case "create":
 		sb.WriteString("Supported create targets: OBJECT, DEVC, TABL, CLONE, PROGRAM, CLASS_WITH_TESTS, CLAS_TEST_INCLUDE\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"create\") for examples.")
 	case "debug":
-		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_*\n")
+		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_ADT_*, AMDP_*\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"debug\") for examples.")
+	case "system":
+		sb.WriteString("Supported system targets: INFO, COMPONENTS, CONNECTION, FEATURES\n")
+		sb.WriteString("Example: SAP(action=\"system\", target=\"INFO\")")
+	case "analyze":
+		sb.WriteString("Supported analysis types (params.type): call_graph, object_structure, callers, callees,\n")
+		sb.WriteString("analyze_call_graph, compare_call_graphs, trace_execution, check_boundaries, graph_stats,\n")
+		sb.WriteString("co_change, impact, where_used_config, usage_examples, health, cr_history, tr_boundaries,\n")
+		sb.WriteString("cr_boundaries\n")
+		sb.WriteString("Example: SAP(action=\"analyze\", params={\"type\": \"check_boundaries\", \"package\": \"$ZDEV\"})")
 	default:
-		sb.WriteString("Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, help\n")
+		sb.WriteString(validActionsLine)
 		sb.WriteString("Use SAP(action=\"help\") for full documentation.")
 	}
 

@@ -167,23 +167,37 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 	// Build graph
 	g := graph.New()
 	count := 0
+	// An object whose source will not load contributes no edges, and an edge
+	// that was never extracted cannot cross a boundary. "No crossings found"
+	// is then said about a package that was read in part.
+	var missed []adt.Unsearched
+	sourceBearing := 0
+	// One implementation of the concurrent read, in fetchsources.go, used by
+	// every scan. See there for why results come back in input order.
+	var toFetch []PackageObject
+	var refs []sourceRef
 	for _, obj := range objects {
-		if !IsSourceBearing(obj.Type) {
+		if IsSourceBearing(obj.Type) {
+			toFetch = append(toFetch, obj)
+			refs = append(refs, sourceRef{Type: obj.Type, Name: obj.Name})
+		}
+	}
+	sourceBearing = len(refs)
+
+	for i, r := range fetchSources(ctx, client, refs, "") {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "  WARN: %s %s: %v\n", r.Ref.Type, r.Ref.Name, r.Err)
+			missed = append(missed, adt.Unsearched{Object: r.Ref.Type + " " + r.Ref.Name, Reason: r.Err.Error()})
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "\r  [%d] %s %-40s", count+1, obj.Type, obj.Name)
-		source, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n  WARN: %s %s: %v\n", obj.Type, obj.Name, err)
+		if r.Source == "" {
 			continue
 		}
-		if source == "" {
-			continue
-		}
+		obj := toFetch[i]
 		nodeID := graph.NodeID(obj.Type, obj.Name)
 		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: obj.Type, Package: obj.Package})
-		edges := graph.ExtractDepsFromSource(source, nodeID)
-		dynEdges := graph.ExtractDynamicCalls(source, nodeID)
+		edges := graph.ExtractDepsFromSource(r.Source, nodeID)
+		dynEdges := graph.ExtractDynamicCalls(r.Source, nodeID)
 		for _, e := range append(edges, dynEdges...) {
 			g.AddEdge(e)
 			parts := strings.SplitN(e.To, ":", 2)
@@ -193,14 +207,30 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 		}
 		count++
 	}
-	if count > 0 {
-		fmt.Fprintf(os.Stderr, "\n")
-	}
+
 	fmt.Fprintf(os.Stderr, "Resolving target packages...\n")
-	resolvePackagesCLI(ctx, client, g)
+	missed = append(missed, resolvePackagesCLI(ctx, client, g)...)
 
 	// Analyze crossings
 	crossReport := graph.AnalyzeCrossings(g, scope, nil)
+
+	// The gap goes into the report as data, not as a sentence appended to it.
+	//
+	// It used to go to stderr only, on the reasoning that this command writes
+	// DOT, GraphML and JSON to stdout and prose in the middle of those is a
+	// parse error rather than a caveat. That reasoning is right about the
+	// machine formats and wrong about the text one, which is what a person
+	// reads and what `> report.txt` captures: a package where 53 of 167 objects
+	// answered 404 printed "No crossings found." with every failure on the
+	// other stream.
+	crossReport.SourceAttempted = sourceBearing
+	crossReport.SourceRead = sourceBearing - len(missed)
+	for _, m := range missed {
+		crossReport.Unreadable = append(crossReport.Unreadable, m.Object+": "+m.Reason)
+	}
+	if note := adt.UnsearchedNote(missed, sourceBearing+len(missed), "object"); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 
 	// Handle --report flag
 	if report != "" {
@@ -277,11 +307,22 @@ func runBoundaries(cmd *cobra.Command, args []string) error {
 }
 
 func printCrossingsText(report *graph.CrossingReport) {
-	fmt.Printf("Boundaries: %s (%d packages, %d objects scanned)\n\n",
+	fmt.Printf("Boundaries: %s (%d packages, %d objects in the graph)\n\n",
 		report.RootPackage, report.PackagesScanned, report.ObjectsScanned)
 
+	// Above the verdict, not below it. A reader who stops at "No crossings
+	// found" has to have seen this first, or they have read a clean bill over a
+	// package that was read in part.
+	if caveat := report.Caveat(); caveat != "" {
+		fmt.Printf("%s\n\n", caveat)
+	}
+
 	if len(report.Entries) == 0 {
-		fmt.Println("No crossings found.")
+		if report.Complete() {
+			fmt.Println("No crossings found.")
+		} else {
+			fmt.Println("No crossings found in what could be read.")
+		}
 		return
 	}
 
@@ -494,6 +535,7 @@ func init() {
 	sourceContextCmd.Flags().Int("max-deps", 20, "Maximum number of dependencies to resolve")
 	sourceContextCmd.Flags().Int("depth", 1, "Dependency expansion depth (1-3)")
 	contextCmd.Flags().Int("max-deps", 20, "Maximum number of dependencies to resolve")
+	contextCmd.Flags().Bool("callers", false, "Also summarise who calls this — the half the source cannot tell you")
 	contextCmd.Flags().Int("depth", 1, "Dependency expansion depth (1-3)")
 
 	// Test flags
@@ -514,7 +556,7 @@ func init() {
 	deployCmd.Flags().String("transport", "", "Transport request number")
 
 	// Transport list flags
-	transportListCmd.Flags().String("user", "", "Filter by user (default: current user)")
+	transportListCmd.Flags().String("user", "", "Filter by user (default: current user, '*' for every user)")
 
 	// Install flags
 	installZadtVspCmd.Flags().String("package", "$ZADT_VSP", "Target package for ZADT_VSP objects")
@@ -996,7 +1038,7 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 
 	// Step 2: Build dependency graph. Sort the object list so the analysis
 	// (and its stderr "Analyzing X..." trace) is stable across runs — makes
-	// the maxObjects=50 cap deterministic and diffing reports meaningful.
+	// the healthScanCap deterministic and diffing reports meaningful.
 	sortedObjs := make([]objKey, 0, len(objectSet))
 	for k := range objectSet {
 		sortedObjs = append(sortedObjs, k)
@@ -1012,6 +1054,7 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 	maxObjects := 50
 	count := 0
 	truncated := false
+	var missed []adt.Unsearched
 
 	for _, obj := range sortedObjs {
 		if count >= maxObjects {
@@ -1032,12 +1075,22 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 			// GetSource for FUGR returns JSON metadata (function module list), which has
 			// no ABAP statements and yields zero dependencies. For accurate graph analysis
 			// we need the actual source: TOP include + all fmodules + all sub-includes.
-			source, err = client.GetFunctionGroupAllSources(ctx, obj.objName)
+			var missed []adt.Unsearched
+			source, missed, err = client.GetFunctionGroupAllSources(ctx, obj.objName)
+			// A sub-source that failed to load yields no dependencies, which
+			// downstream is indistinguishable from having none.
+			for _, m := range missed {
+				fmt.Fprintf(os.Stderr, "    WARN: %s %s: %s: %s\n", obj.objType, obj.objName, m.Object, m.Reason)
+			}
 		} else {
 			source, err = client.GetSource(ctx, obj.objType, obj.objName, nil)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "    WARN: %s %s: %v\n", obj.objType, obj.objName, err)
+			// The node stays in the graph with no edges, so the boundary totals
+			// below count it as an object that crosses nothing rather than as
+			// one nobody could read.
+			missed = append(missed, adt.Unsearched{Object: obj.objType + " " + obj.objName, Reason: err.Error()})
 			continue
 		}
 
@@ -1055,24 +1108,61 @@ func analyzeTRBoundariesCLI(ctx context.Context, client *adt.Client, trList []st
 	}
 
 	// Resolve packages
-	resolvePackagesCLI(ctx, client, g)
+	missed = append(missed, resolvePackagesCLI(ctx, client, g)...)
 
 	if truncated {
 		fmt.Fprintf(os.Stderr,
 			"  WARN: analysis truncated at %d objects (CR has %d source-bearing objects). Deps for the remaining %d are not counted — boundary totals are lower bounds, not complete.\n",
 			maxObjects, len(sortedObjs), len(sortedObjs)-maxObjects)
 	}
+	// Same reasoning as `vsp boundaries`: the report itself goes to stdout in
+	// whatever format was asked for, so the gap is stated beside the WARN lines
+	// that produced it.
+	if note := adt.UnsearchedNote(missed, len(sortedObjs), "object"); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 
 	return graph.AnalyzeTransportBoundaries(g, scope), nil
 }
 
-func printTRBoundariesText(report *graph.TransportBoundaryReport, details bool) {
-	status := "SELF-CONSISTENT"
-	if !report.Summary.SelfConsistent {
-		status = "INCOMPLETE"
+// transportBoundaryStatus is the verdict, including the one the two-way
+// version could not express.
+//
+// SELF-CONSISTENT means "this transport carries everything it depends on",
+// and it was reported for a transport holding no objects at all — which is
+// trivially true and says nothing. A transport number that does not exist
+// answered with it, and a reader looking for reassurance found some.
+//
+// So a report over nothing gets its own word. It is not a failure — the query
+// worked, the transport is simply empty or absent — but it is not a pass
+// either, and those are different things.
+func transportBoundaryStatus(report *graph.TransportBoundaryReport) string {
+	if report.ObjectCount == 0 {
+		return "EMPTY"
 	}
+	if !report.Summary.SelfConsistent {
+		return "INCOMPLETE"
+	}
+	return "SELF-CONSISTENT"
+}
+
+// transportBoundaryNote explains an EMPTY verdict, which otherwise reads as a
+// tool that failed silently.
+func transportBoundaryNote(report *graph.TransportBoundaryReport) string {
+	if report.ObjectCount != 0 {
+		return ""
+	}
+	return "This transport holds no objects — it is empty, or the number does not exist. " +
+		"Nothing was analysed, so neither verdict applies."
+}
+
+func printTRBoundariesText(report *graph.TransportBoundaryReport, details bool) {
+	status := transportBoundaryStatus(report)
 	fmt.Printf("Transport Boundaries: %s\n", report.Scope)
 	fmt.Printf("Status: %s\n", status)
+	if note := transportBoundaryNote(report); note != "" {
+		fmt.Printf("%s\n", note)
+	}
 	fmt.Printf("Objects: %d | Deps: %d (in-scope: %d [same-pkg: %d, cross-pkg: %d], missing: %d, standard: %d, dynamic: %d)\n\n",
 		report.ObjectCount, report.Summary.TotalDeps,
 		report.Summary.InScope, report.Summary.InScopeSamePkg, report.Summary.InScopeCrossPkg,
@@ -1165,11 +1255,15 @@ func outputTRBoundaries(cmd *cobra.Command, report *graph.TransportBoundaryRepor
 }
 
 func printTRBoundariesHTML(report *graph.TransportBoundaryReport, details bool) {
-	status := "SELF-CONSISTENT"
+	status := transportBoundaryStatus(report)
 	statusClass := "PASS"
-	if !report.Summary.SelfConsistent {
-		status = "INCOMPLETE"
+	switch status {
+	case "INCOMPLETE":
 		statusClass = "FAIL"
+	case "EMPTY":
+		// Not a failure and not a pass; styling it as either would put a
+		// colour on a verdict that was never reached.
+		statusClass = "UNKNOWN"
 	}
 
 	fmt.Printf(`<!DOCTYPE html>
@@ -1315,12 +1409,12 @@ func sanitizeScopeFilename(scope string) string {
 // Package section under --details. Emoji-free on purpose so grep and
 // automated log parsers stay happy.
 func printTRBoundariesMarkdown(report *graph.TransportBoundaryReport, details bool) {
-	status := "SELF-CONSISTENT"
-	if !report.Summary.SelfConsistent {
-		status = "INCOMPLETE"
-	}
+	status := transportBoundaryStatus(report)
 	fmt.Printf("# Transport Boundaries: %s\n\n", report.Scope)
 	fmt.Printf("**Status:** %s\n\n", status)
+	if note := transportBoundaryNote(report); note != "" {
+		fmt.Printf("%s\n\n", note)
+	}
 
 	fmt.Printf("## Summary\n\n")
 	fmt.Println("| Metric | Value |")
@@ -1446,7 +1540,7 @@ func runSourceEdit(cmd *cobra.Command, args []string) error {
 	// Build object URL from type + name
 	objectURL := buildObjectURL(objType, name)
 	if objectURL == "" {
-		return fmt.Errorf("unsupported object type: %s (supported: CLAS, PROG, INTF)", objType)
+		return fmt.Errorf("unsupported object type: %s (supported: CLAS, PROG, INCL, INTF)", objType)
 	}
 
 	ctx := context.Background()
@@ -1516,6 +1610,33 @@ func runSourceContext(cmd *cobra.Command, args []string) error {
 	depth, _ := cmd.Flags().GetInt("depth")
 
 	// Create adapter and compress
+	// Who calls this — the half a source cannot tell you. Opt-in, because a hub
+	// class has thousands of callers and takes four seconds to ask about, and a
+	// plain read should not pay that without being asked.
+	var upstream string
+	if callers, _ := cmd.Flags().GetBool("callers"); callers {
+		uri := adt.GetClassIncludeURL(strings.ToUpper(name), adt.ClassIncludeMain)
+		if strings.ToUpper(objType) != "CLAS" {
+			uri = ""
+		}
+		if uri != "" {
+			uri = strings.TrimSuffix(uri, "/source/main")
+			found, err := client.WhereUsed(ctx, uri)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  the caller list could not be read: %v\n", err)
+			} else {
+				list := make([]ctxcomp.Caller, 0, len(found))
+				for _, f := range found {
+					list = append(list, ctxcomp.Caller{
+						Name: f.Name, Type: f.Type, Component: f.Component,
+						Package: f.Package, IsTest: f.IsTest,
+					})
+				}
+				upstream = ctxcomp.SummariseCallers(list, 6).Text()
+			}
+		}
+	}
+
 	provider := ctxcomp.NewMultiSourceProvider("", &cliSourceAdapter{client: client})
 	compressor := ctxcomp.NewCompressor(provider, maxDeps).WithDepth(depth)
 	result, err := compressor.Compress(ctx, source, name, objType)
@@ -1524,6 +1645,10 @@ func runSourceContext(cmd *cobra.Command, args []string) error {
 	}
 
 	// Output: source with prologue
+	if upstream != "" {
+		fmt.Print(upstream)
+		fmt.Println()
+	}
 	if result.Prologue != "" {
 		fmt.Print(result.Prologue)
 		fmt.Println()
@@ -1563,7 +1688,7 @@ func runTest(cmd *cobra.Command, args []string) error {
 		name := strings.ToUpper(args[1])
 		objectURL = buildObjectURL(objType, name)
 		if objectURL == "" {
-			return fmt.Errorf("unsupported object type: %s (supported: CLAS, PROG, INTF)", objType)
+			return fmt.Errorf("unsupported object type: %s (supported: CLAS, PROG, INCL, INTF)", objType)
 		}
 	}
 
@@ -1643,7 +1768,7 @@ func runATC(cmd *cobra.Command, args []string) error {
 
 	objectURL := buildObjectURL(objType, name)
 	if objectURL == "" {
-		return fmt.Errorf("unsupported object type: %s (supported: CLAS, PROG, INTF)", objType)
+		return fmt.Errorf("unsupported object type: %s (supported: CLAS, PROG, INCL, INTF)", objType)
 	}
 
 	ctx := context.Background()
@@ -1699,15 +1824,20 @@ type cliHealthSummary struct {
 type cliHealthSignal struct {
 	Status  string         `json:"status"`
 	Details map[string]any `json:"details,omitempty"`
+	// Unsearched names what this signal could not look at. A health report is
+	// read as a verdict, and a signal that reached nine packages of ten and
+	// answered "NONE" reports better health than the truth — which is the one
+	// direction a health report must never be wrong in.
+	Unsearched []adt.Unsearched `json:"unsearched,omitempty"`
 }
 
 type cliHealthResult struct {
-	Scope            cliHealthScope              `json:"scope"`
-	Summary          cliHealthSummary            `json:"summary"`
-	Signals          map[string]cliHealthSignal  `json:"signals"`
-	TestDetails      *adt.UnitTestResult         `json:"testDetails,omitempty"`
-	ATCDetails       *adt.ATCWorklist            `json:"atcDetails,omitempty"`
-	CrossingDetails  *graph.CrossingReport       `json:"crossingDetails,omitempty"`
+	Scope           cliHealthScope             `json:"scope"`
+	Summary         cliHealthSummary           `json:"summary"`
+	Signals         map[string]cliHealthSignal `json:"signals"`
+	TestDetails     *adt.UnitTestResult        `json:"testDetails,omitempty"`
+	ATCDetails      *adt.ATCWorklist           `json:"atcDetails,omitempty"`
+	CrossingDetails *graph.CrossingReport      `json:"crossingDetails,omitempty"`
 }
 
 func runHealth(cmd *cobra.Command, args []string) error {
@@ -1902,10 +2032,15 @@ func collectPackageTestsWithDetails(ctx context.Context, client *adt.Client, pkg
 
 	combined := &adt.UnitTestResult{}
 	totalClasses, totalMethods, totalAlerts := 0, 0, 0
+	var missed []adt.Unsearched
 	for _, p := range packages {
 		objectURL := fmt.Sprintf("/sap/bc/adt/packages/%s", p)
 		result, err := client.RunUnitTests(ctx, objectURL, nil)
 		if err != nil {
+			// packages_scanned used to count this one, so a run that reached
+			// three of ten packages, found nothing, and said "NONE across 10
+			// packages" was the whole lie in one line.
+			missed = append(missed, adt.Unsearched{Object: p, Reason: err.Error()})
 			continue
 		}
 		combined.Classes = append(combined.Classes, result.Classes...)
@@ -1915,15 +2050,21 @@ func collectPackageTestsWithDetails(ctx context.Context, client *adt.Client, pkg
 		totalAlerts += a
 	}
 
+	scanned := len(packages) - len(missed)
 	status := "PASS"
 	if totalClasses == 0 {
 		status = "NONE"
 	}
+	// "This package has no tests" and "nobody could run tests here" are
+	// different answers, and only one of them is reassuring.
+	if scanned == 0 {
+		status = "UNKNOWN"
+	}
 	if totalAlerts > 0 {
 		status = "FAIL"
 	}
-	return cliHealthSignal{Status: status, Details: map[string]any{
-		"packages_scanned": len(packages),
+	return cliHealthSignal{Status: status, Unsearched: missed, Details: map[string]any{
+		"packages_scanned": scanned,
 		"classes":          totalClasses,
 		"methods":          totalMethods,
 		"alerts":           totalAlerts,
@@ -2016,17 +2157,17 @@ func collectObjectBoundariesCLI(ctx context.Context, client *adt.Client, objType
 			g.AddNode(&graph.Node{ID: e.To, Name: parts[1], Type: parts[0]})
 		}
 	}
-	resolvePackagesCLI(ctx, client, g)
+	missed := resolvePackagesCLI(ctx, client, g)
 	n := g.GetNode(nodeID)
 	if n == nil || n.Package == "" {
-		return cliHealthSignal{Status: "UNKNOWN"}
+		return cliHealthSignal{Status: "UNKNOWN", Unsearched: missed}
 	}
 	report := g.CheckBoundaries(n.Package, &graph.BoundaryOptions{IncludeDynamic: true})
 	status := "CLEAN"
 	if report.Violations > 0 {
 		status = "VIOLATIONS"
 	}
-	return cliHealthSignal{Status: status, Details: map[string]any{"violations": report.Violations, "crossed_packages": report.CrossedPackages, "dynamic": report.Dynamic}}
+	return cliHealthSignal{Status: status, Unsearched: missed, Details: map[string]any{"violations": report.Violations, "crossed_packages": report.CrossedPackages, "dynamic": report.Dynamic}}
 }
 
 func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client, pkg string) (cliHealthSignal, *graph.CrossingReport) {
@@ -2044,26 +2185,52 @@ func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client
 
 	g := graph.New()
 	count := 0
+	// Two ways this signal stops short of the package: an object that will not
+	// load, and the cap. Both make the crossing counts lower bounds, and a
+	// lower bound presented as a count is what turns a partial read into
+	// "CLEAN".
+	var missed []adt.Unsearched
+	sourceBearing, attempted := 0, 0
+
+	// The cap used to be 50, and it was there because reading was serial: fifty
+	// objects at a round trip each is about six seconds, and a health signal
+	// nobody waits for is a health signal nobody runs. Reading six at a time
+	// took a 222-object package to 1.6 seconds, so the cap can rise to where it
+	// stops shaping the answer.
+	//
+	// It does not go away. A cap that is never reached costs nothing and is the
+	// only thing standing between this command and a customer package of four
+	// thousand objects — and when it *is* reached, the number is stated below
+	// rather than the sweep ending quietly.
+	var toRead []PackageObject
+	var refs []sourceRef
 	for _, obj := range objects {
 		if !IsSourceBearing(obj.Type) {
 			continue
 		}
-		if count >= 50 {
-			break
-		}
-		fmt.Fprintf(os.Stderr, "\r    [%d] %s %-40s", count+1, obj.Type, obj.Name)
-		source, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n    WARN: %s %s: %v\n", obj.Type, obj.Name, err)
+		sourceBearing++
+		if len(refs) >= healthScanCap {
 			continue
 		}
-		if source == "" {
+		toRead = append(toRead, obj)
+		refs = append(refs, sourceRef{Type: obj.Type, Name: obj.Name})
+	}
+	attempted = len(refs)
+
+	for i, r := range fetchSources(ctx, client, refs, "  ") {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "    WARN: %s %s: %v\n", r.Ref.Type, r.Ref.Name, r.Err)
+			missed = append(missed, adt.Unsearched{Object: r.Ref.Type + " " + r.Ref.Name, Reason: r.Err.Error()})
 			continue
 		}
+		if r.Source == "" {
+			continue
+		}
+		obj := toRead[i]
 		nodeID := graph.NodeID(obj.Type, obj.Name)
 		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: obj.Type, Package: obj.Package})
-		edges := graph.ExtractDepsFromSource(source, nodeID)
-		dynEdges := graph.ExtractDynamicCalls(source, nodeID)
+		edges := graph.ExtractDepsFromSource(r.Source, nodeID)
+		dynEdges := graph.ExtractDynamicCalls(r.Source, nodeID)
 		for _, e := range append(edges, dynEdges...) {
 			g.AddEdge(e)
 			parts := strings.SplitN(e.To, ":", 2)
@@ -2078,7 +2245,17 @@ func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client
 	}
 
 	// Resolve packages for target nodes
-	resolvePackagesCLI(ctx, client, g)
+	missed = append(missed, resolvePackagesCLI(ctx, client, g)...)
+
+	// The cap is not a failure but it is a gap, and a reader deciding whether
+	// CLEAN means anything needs it stated the same way. An object read as
+	// empty source was read, so it is neither.
+	if capped := sourceBearing - attempted; capped > 0 {
+		missed = append(missed, adt.Unsearched{
+			Object: fmt.Sprintf("%d further object(s) in %s", capped, pkg),
+			Reason: fmt.Sprintf("not read: this signal stops at %d objects", healthScanCap),
+		})
+	}
 
 	// Directional crossing analysis
 	report := graph.AnalyzeCrossings(g, scope, nil)
@@ -2086,6 +2263,10 @@ func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client
 	status := "CLEAN"
 	if report.Sibling > 0 || report.Downward > 0 || report.CommonDown > 0 || len(report.Circular) > 0 {
 		status = "VIOLATIONS"
+	}
+	// Nothing was read, so nothing crossed anything. That is not CLEAN.
+	if count == 0 && sourceBearing > 0 {
+		status = "UNKNOWN"
 	}
 
 	details := map[string]any{
@@ -2116,7 +2297,7 @@ func collectPackageBoundariesWithDetails(ctx context.Context, client *adt.Client
 	if len(report.Circular) > 0 {
 		details["circular"] = report.Circular
 	}
-	return cliHealthSignal{Status: status, Details: details}, report
+	return cliHealthSignal{Status: status, Details: details, Unsearched: missed}, report
 }
 
 func collectObjectStalenessCLI(ctx context.Context, client *adt.Client, objType, objName string) cliHealthSignal {
@@ -2134,6 +2315,10 @@ func collectPackageStalenessCLI(ctx context.Context, client *adt.Client, pkg str
 	}
 	var newest time.Time
 	checked := 0
+	// Staleness is the newest change anyone made, so a revision list that did
+	// not arrive can only make the package look older than it is — and STALE is
+	// the answer someone acts on by going looking for the owner.
+	var missed []adt.Unsearched
 	for _, obj := range content.Objects {
 		objType := strings.ToUpper(obj.Type)
 		if objType != "CLAS" && objType != "PROG" && objType != "INTF" {
@@ -2143,7 +2328,14 @@ func collectPackageStalenessCLI(ctx context.Context, client *adt.Client, pkg str
 			break
 		}
 		revs, err := client.GetRevisions(ctx, objType, obj.Name, nil)
-		if err != nil || len(revs) == 0 {
+		if err != nil {
+			// An object with no version history is an answer; an object whose
+			// history could not be fetched is not, and one `continue` used to
+			// serve both.
+			missed = append(missed, adt.Unsearched{Object: objType + " " + obj.Name, Reason: err.Error()})
+			continue
+		}
+		if len(revs) == 0 {
 			continue
 		}
 		tm, err := time.Parse(time.RFC3339, revs[0].Date)
@@ -2169,9 +2361,11 @@ func collectPackageStalenessCLI(ctx context.Context, client *adt.Client, pkg str
 				}
 			}
 		}
-		return cliHealthSignal{Status: "UNKNOWN"}
+		return cliHealthSignal{Status: "UNKNOWN", Unsearched: missed}
 	}
-	return stalenessCLIFromTime(newest, checked)
+	sig := stalenessCLIFromTime(newest, checked)
+	sig.Unsearched = missed
+	return sig
 }
 
 func stalenessCLIFromRevisions(revs []adt.Revision) cliHealthSignal {
@@ -2230,7 +2424,40 @@ func summarizeCLIHealth(signals map[string]cliHealthSignal) cliHealthSummary {
 	if signals["staleness"].Status == "STALE" {
 		return cliHealthSummary{Status: "WARN", Headline: "Object or package appears stale"}
 	}
+
+	// Last, and only when nothing worse was found: a report that could not look
+	// everywhere has not earned GOOD. A bad finding still outranks this — the
+	// gap does not make a failing test less true — but "no major health issues
+	// detected" said over a partial sweep is the sentence someone closes the
+	// tab on.
+	if gaps := totalUnsearched(signals); gaps > 0 {
+		return cliHealthSummary{
+			Status:   "PARTIAL",
+			Headline: fmt.Sprintf("Nothing bad found, but %d thing(s) could not be checked — this is not a clean bill of health", gaps),
+		}
+	}
 	return cliHealthSummary{Status: "GOOD", Headline: "No major health issues detected"}
+}
+
+// totalUnsearched counts what the signals could not look at.
+func totalUnsearched(signals map[string]cliHealthSignal) int {
+	n := 0
+	for _, sig := range signals {
+		n += len(sig.Unsearched)
+	}
+	return n
+}
+
+// searchedCount recovers how many things a signal did reach, so the caveat can
+// say "3 of 12" rather than only "3". Each signal counts a different noun, and
+// the ones that count nothing fall back to naming the gaps alone.
+func searchedCount(sig cliHealthSignal) int {
+	for _, key := range []string{"packages_scanned", "objects_scanned", "checked"} {
+		if v, ok := sig.Details[key].(int); ok {
+			return v
+		}
+	}
+	return 0
 }
 
 func printCLIHealth(result *cliHealthResult, details bool) {
@@ -2252,6 +2479,13 @@ func printCLIHealth(result *cliHealthResult, details bool) {
 			fmt.Printf(" %s", string(data))
 		}
 		fmt.Println()
+		// Beneath the signal it qualifies, because that is where the number it
+		// contradicts is. --format json carries the same list as a field.
+		if note := adt.UnsearchedNote(sig.Unsearched, len(sig.Unsearched)+searchedCount(sig), "item"); note != "" {
+			for _, line := range strings.Split(note, "\n") {
+				fmt.Printf("            %s\n", strings.TrimLeft(line, " "))
+			}
+		}
 	}
 
 	if !details {
@@ -2743,7 +2977,16 @@ func printCLIHealthHTML(result *cliHealthResult, details bool) {
 
 // resolvePackagesCLI queries TADIR to fill in missing package info and correct
 // object types. Two-pass: TADIR for R3TR objects, then TFDIR→TADIR for FMs.
-func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph) {
+//
+// It returns the objects whose package is unknown *because a query failed*, and
+// that distinction is the whole point. AnalyzeCrossings drops an edge whose
+// source package is empty and guesses at one whose target package is empty, so
+// a resolve that never ran comes back as a boundary report with fewer crossings
+// in it — clean because nothing could be looked at, which reads exactly like
+// clean because there was nothing to find. An object the query did reach and
+// did not find in TADIR is a genuine answer (a local class, a standard name)
+// and is not reported here, or every run would carry a caveat.
+func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph) []adt.Unsearched {
 	var names []string
 	nodesByName := make(map[string][]*graph.Node)
 	for _, n := range g.Nodes() {
@@ -2753,11 +2996,11 @@ func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph)
 		}
 	}
 	if len(names) == 0 {
-		return
+		return nil
 	}
 
 	// Pass 1: TADIR batch lookup
-	resolveTADIRcli(ctx, client, names, nodesByName)
+	failed := resolveTADIRcli(ctx, client, names, nodesByName)
 
 	// Pass 2: TFDIR fallback for unresolved nodes (function modules)
 	var unresolved []string
@@ -2772,11 +3015,56 @@ func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph)
 		}
 	}
 	if len(unresolved) > 0 {
-		resolveFMviaTFDIRcli(ctx, client, unresolved, nodesByName)
+		// Pass 2 can rescue a name pass 1 could not reach, so its verdict wins.
+		for name, reason := range resolveFMviaTFDIRcli(ctx, client, unresolved, nodesByName) {
+			failed[name] = reason
+		}
 	}
+
+	// Only a name that is *still* without a package and whose lookup failed is
+	// a gap. One that resolved on the second pass is answered, and one the
+	// query reached and did not find is answered too.
+	var missed []adt.Unsearched
+	for _, n := range names {
+		key := strings.ToUpper(n)
+		reason, everFailed := failed[key]
+		if !everFailed {
+			continue
+		}
+		for _, node := range nodesByName[key] {
+			if node.Package == "" {
+				missed = append(missed, adt.Unsearched{Object: key, Reason: reason})
+				break
+			}
+		}
+	}
+	sort.Slice(missed, func(i, j int) bool { return missed[i].Object < missed[j].Object })
+	return dedupeUnsearched(missed)
 }
 
-func resolveTADIRcli(ctx context.Context, client *adt.Client, names []string, nodesByName map[string][]*graph.Node) {
+// dedupeUnsearched keeps one entry per object. The same class can be reached
+// through several edges, and a caveat that names it four times reads as four
+// separate holes.
+func dedupeUnsearched(in []adt.Unsearched) []adt.Unsearched {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := in[:0:0]
+	for _, u := range in {
+		if seen[u.Object] {
+			continue
+		}
+		seen[u.Object] = true
+		out = append(out, u)
+	}
+	return out
+}
+
+// resolveTADIRcli fills packages in from TADIR and returns, per object name,
+// the reason its batch never ran.
+func resolveTADIRcli(ctx context.Context, client *adt.Client, names []string, nodesByName map[string][]*graph.Node) map[string]string {
+	failed := map[string]string{}
 	// Batch size 5: SAP freestyle query has a ~255 char literal limit for IN clauses
 	for start := 0; start < len(names); start += 5 {
 		end := start + 5
@@ -2791,10 +3079,20 @@ func resolveTADIRcli(ctx context.Context, client *adt.Client, names []string, no
 		query := fmt.Sprintf("SELECT object, obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND obj_name IN (%s)", strings.Join(quoted, ","))
 		result, err := client.RunQuery(ctx, query, len(chunk)*3)
 		if err != nil {
+			// Five objects lose their package here, and a boundary report is
+			// built out of packages. Failing the whole run over one batch would
+			// be worse, so it carries on — but silently is what turned a
+			// blocked query into a clean report.
 			fmt.Fprintf(os.Stderr, "    WARN: TADIR resolve batch failed: %v\n", err)
+			for _, n := range chunk {
+				failed[strings.ToUpper(n)] = err.Error()
+			}
 			continue
 		}
 		if result == nil {
+			for _, n := range chunk {
+				failed[strings.ToUpper(n)] = "TADIR query returned nothing at all"
+			}
 			continue
 		}
 		for _, row := range result.Rows {
@@ -2811,9 +3109,13 @@ func resolveTADIRcli(ctx context.Context, client *adt.Client, names []string, no
 			}
 		}
 	}
+	return failed
 }
 
-func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) {
+// resolveFMviaTFDIRcli resolves function modules through their function group,
+// and returns, per name, the reason a lookup on the way never ran.
+func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) map[string]string {
+	failed := map[string]string{}
 	fugrSet := make(map[string]bool)
 	fmToFugr := make(map[string]string)
 
@@ -2832,9 +3134,15 @@ func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []str
 		result, err := client.RunQuery(ctx, query, len(batch)*2)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "    WARN: TFDIR resolve batch failed: %v\n", err)
+			for _, n := range batch {
+				failed[n] = err.Error()
+			}
 			continue
 		}
 		if result == nil {
+			for _, n := range batch {
+				failed[n] = "TFDIR query returned nothing at all"
+			}
 			continue
 		}
 		for _, row := range result.Rows {
@@ -2853,7 +3161,7 @@ func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []str
 		}
 	}
 	if len(fugrSet) == 0 {
-		return
+		return failed
 	}
 
 	fugrQuoted := make([]string, 0, len(fugrSet))
@@ -2863,11 +3171,19 @@ func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []str
 	fugrQuery := fmt.Sprintf("SELECT obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND object = 'FUGR' AND obj_name IN (%s)", strings.Join(fugrQuoted, ","))
 	fugrResult, err := client.RunQuery(ctx, fugrQuery, len(fugrSet)*2)
 	if err != nil {
+		// The function groups were found but their packages were not, so every
+		// module that reached this point is still unplaced.
 		fmt.Fprintf(os.Stderr, "    WARN: FUGR TADIR resolve failed: %v\n", err)
-		return
+		for fmName := range fmToFugr {
+			failed[fmName] = err.Error()
+		}
+		return failed
 	}
 	if fugrResult == nil {
-		return
+		for fmName := range fmToFugr {
+			failed[fmName] = "FUGR TADIR query returned nothing at all"
+		}
+		return failed
 	}
 
 	fugrPkg := make(map[string]string)
@@ -2885,8 +3201,11 @@ func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []str
 					n.Type = "FUNC"
 				}
 			}
+			// Resolved after all: pass 1's failure is no longer a gap.
+			delete(failed, fmName)
 		}
 	}
+	return failed
 }
 
 func runDeploy(cmd *cobra.Command, args []string) error {
@@ -3058,11 +3377,18 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 	// Phase 1: Check prerequisites
 	fmt.Fprintf(os.Stderr, "Checking prerequisites...\n")
 
-	// Check if package exists
-	packageExists := false
-	pkg, err := client.GetPackage(ctx, packageName)
-	if err == nil && pkg.URI != "" {
-		packageExists = true
+	// Check if package exists.
+	// GetPackage reads the nodestructure API and cannot distinguish
+	// "package does not exist" from "package exists but has no children",
+	// so we use the direct PackageExists probe here. If the probe itself
+	// errors (5xx, network), we fall through to the create path and let
+	// SAP's own error surface there.
+	packageExists, err := client.PackageExists(ctx, packageName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  Package %s existence check failed: %v — will attempt create\n", packageName, err)
+		packageExists = false
+	}
+	if packageExists {
 		fmt.Fprintf(os.Stderr, "  Package %s exists\n", packageName)
 	} else {
 		fmt.Fprintf(os.Stderr, "  Package %s will be created\n", packageName)
@@ -3158,14 +3484,23 @@ func runInstallZadtVsp(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  [%d/%d] %s ... ", i+1, len(objects), obj.Name)
 
 		opts := &adt.WriteSourceOptions{
-			Package: packageName,
-			Mode:    adt.WriteModeUpsert,
+			Package:     packageName,
+			Description: obj.Description,
+			Mode:        adt.WriteModeUpsert,
 		}
-		_, err := client.WriteSource(ctx, obj.Type, obj.Name, obj.Source, opts)
-		if err != nil {
+		res, err := client.WriteSource(ctx, obj.Type, obj.Name, obj.Source, opts)
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "FAILED: %v\n", err)
 			failed++
-		} else {
+		case res == nil || !res.Success:
+			msg := "unknown failure"
+			if res != nil && res.Message != "" {
+				msg = res.Message
+			}
+			fmt.Fprintf(os.Stderr, "FAILED: %s\n", msg)
+			failed++
+		default:
 			fmt.Fprintf(os.Stderr, "OK\n")
 			deployed++
 		}
@@ -3248,8 +3583,8 @@ func runInstallAbapGit(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "============================\n\n")
 
 	// Get ZIP data
-	zipData := deps.GetDependencyZIP(depName)
-	if zipData == nil || len(zipData) == 0 {
+	zipData, depErr := deps.RequireDependencyZIP(depName)
+	if depErr != nil {
 		fmt.Fprintf(os.Stderr, "ZIP not embedded for edition '%s'\n\n", edition)
 		fmt.Fprintf(os.Stderr, "To embed abapGit:\n")
 		fmt.Fprintf(os.Stderr, "1. On a system with abapGit installed, run:\n")
@@ -3262,7 +3597,7 @@ func runInstallAbapGit(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "3. Update embedded/deps/embed.go with go:embed directive\n")
 		fmt.Fprintf(os.Stderr, "4. Rebuild vsp\n\n")
 		fmt.Fprintf(os.Stderr, "Alternative: Download from https://github.com/abapGit/abapGit\n")
-		return fmt.Errorf("embedded ZIP not available for edition '%s'", edition)
+		return depErr
 	}
 
 	fmt.Fprintf(os.Stderr, "Source: %s (embedded, %d bytes)\n", depName, len(zipData))
@@ -3301,10 +3636,16 @@ func runInstallAbapGit(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
-	// Ensure package exists
+	// Ensure package exists. PackageExists probes /packages/{name} directly;
+	// a GetPackage-based check cannot distinguish "absent" from "present but
+	// empty" because nodestructure returns an empty tree in both cases.
 	fmt.Fprintf(os.Stderr, "Checking package %s...\n", packageName)
-	pkg, pkgErr := client.GetPackage(ctx, packageName)
-	if pkgErr != nil || pkg.URI == "" {
+	exists, pkgErr := client.PackageExists(ctx, packageName)
+	if pkgErr != nil {
+		fmt.Fprintf(os.Stderr, "  Package existence check failed: %v — will attempt create\n", pkgErr)
+		exists = false
+	}
+	if !exists {
 		fmt.Fprintf(os.Stderr, "Creating package %s...\n", packageName)
 		err = client.CreateObject(ctx, adt.CreateObjectOptions{
 			ObjectType:  adt.ObjectTypePackage,
@@ -3406,6 +3747,8 @@ func buildObjectURL(objType, name string) string {
 		return fmt.Sprintf("/sap/bc/adt/oo/classes/%s", name)
 	case "PROG":
 		return fmt.Sprintf("/sap/bc/adt/programs/programs/%s", name)
+	case "INCL":
+		return fmt.Sprintf("/sap/bc/adt/programs/includes/%s", name)
 	case "INTF":
 		return fmt.Sprintf("/sap/bc/adt/oo/interfaces/%s", name)
 	case "FUGR":

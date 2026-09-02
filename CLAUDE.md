@@ -2,25 +2,59 @@
 
 **vsp** — Go-native MCP server and CLI for SAP ABAP Development Tools (ADT).
 
-> **Doc intent:** CLAUDE.md = dev context. README.md = user onboarding. reports/ = research/history. contexts/ = session handoff.
+> **Doc intent:** CLAUDE.md = dev context. README.md = user onboarding. reports/ = research/history. contexts/ = session handoff. agenda/ = what is open and what was decided (`AGENDA.md` is the living board; `YYYY-MM-DD-NNN-topic.md` are dated analyses).
 
 ---
 
 ## Current Priorities
 
-### 1. Graph Engine (`pkg/graph/`) — In Progress
-Sequence: unify existing dep logic → SQL/ADT adapters → impact/path queries.
-- Done: core types, parser dep extraction, boundary analyzer (11 tests)
-- Pending: SQL adapters (CROSS/WBCROSSGT/D010INC), ADT adapters, unify `cli_deps.go` + `cli_extra.go` + `ctxcomp/analyzer.go`
+### 1. Graph Engine (`pkg/graph/`) — Feature-complete
+This section understated the package for four months; corrected 2026-08-24. It
+then went stale again the other way — it listed D010INC and `ExtractEffects` as
+pending for a week after both shipped on 2026-08-25. Corrected 2026-09-02.
+- Done: core types, parser dep extraction, boundary analyzer, **SQL adapters
+  (`builder_sql.go` — CROSS + WBCROSSGT + WBCROSSGTX long names)**,
+  `builder_transport.go`, `builder_config.go`, and the `queries_*.go` surface
+  behind slim / health / impact / api-surface / rename / examples.
+  51 files, 218 test functions.
+- Done 2026-08-25: **D010INC**, the compile-time *load* graph — the one novel
+  source in the original design — is `builder_loads.go`, reachable as
+  `vsp loads`. And `graph.ExtractEffects` (side effects / LUW) has callers at
+  last: `cmd/vsp/effects.go:82` and `internal/mcp/handlers_effects.go:100`.
+  Both were described here as unwired for the four months they sat unused.
+- Pending: unify `cli_deps.go` + `cli_extra.go` + `ctxcomp/analyzer.go`. Two of
+  the three now import `pkg/graph` (`cli_extra.go:16`, `analyzer.go:9`); only
+  `cli_deps.go` still carries its own extraction.
 - Design: [002](reports/2026-04-05-002-graph-engine-design.md), [003](reports/2026-04-05-003-graph-engine-alignment-for-claude.md)
 
 ### 2. GUI Debugger (Issue #2) — Strategic
 Plan: MCP debug sessions → DAP → Web UI. ADT REST API mapped from `CL_TPDA_ADT_RES_APP`. Design: [001](reports/2026-04-05-001-gui-debugger-design.md)
 
 ### 3. Open Issues
-- **#88** Lock handle bug (EditSource/WriteSource) — real user report
-- **#55** RunReport in APC — architectural limit
-- **#46, #45** Sync script — low effort
+- **#91** The 423 lock-handle class — the live one, and this entry was wrong
+  twice. `22517d4` did not close it: a third-party release bisect names that
+  commit as the start of a regression, and its `ModificationSupport` guard was
+  itself removed by `9b98997`. #88, #92, #98, #110 are closed as duplicates of
+  #91 (2026-09-01); #132 stays open for its transport-reuse leg.
+  Cause: `SessionType` defaults to stateless (`config.go:198`, `d84db03`) and
+  `http.go:502` stamps every unflagged request `stateless`, so any hop between
+  LOCK and the write retires the ICM context and kills the handle. The fix on
+  `fix/91-session-affinity` closes the package-lookup hop, the CSRF probe, and
+  two mutations that were themselves stateless. Still open after it: the
+  keep-alive ticker (on by default, 5m) and the MCP cross-tool-call window.
+- **#166** A failed mutation strands the SAP-side ENQUEUE — split out of #92
+  so it survives that closure. Users clear these by hand in SM12.
+- **#55** RunReport in APC — *not* an architectural limit, which this line
+  claimed for months. `34eb727` ("$ZADT_VSP sync", 2026-02-06) replaced a
+  working XBP background-job + spool implementation in
+  `src/zcl_vsp_report_service.clas.abap` with a bare `SUBMIT ... AND RETURN`,
+  deleting the `getJobStatus`/`getSpoolOutput` actions the Go client still
+  speaks. It is a regression with a known good parent commit. #113 was the
+  same defect and is closed against this one.
+- ~~**#46, #45** Sync script~~ — closed 2026-09-01. `scripts/sync-upstream.sh`
+  has never existed here (`git log --all --diff-filter=A` finds it in none of
+  the 913 commits); both issues were filed from a downstream fork's workflow.
+  This line advertised work that was not ours to do.
 
 ---
 
@@ -40,7 +74,7 @@ Key flags: `--mode focused|expert|hyperfocused`, `--read-only`, `--allowed-packa
 ## Codebase
 
 ```
-cmd/vsp/              CLI entry + 28 commands
+cmd/vsp/              CLI entry + 55 commands
 internal/mcp/
   handlers_*.go       Domain handlers (read, edit, debug, graph, ...)
   tools_register.go   Registration + mode logic
@@ -50,7 +84,7 @@ pkg/
   adt/                ADT client (HTTP, CSRF, sessions, all SAP ops)
   graph/              Dependency graph engine (in progress)
   ctxcomp/            Context compression (dep resolution for read)
-  abaplint/           ABAP lexer + parser (91 statements, 8 lint rules)
+  abaplint/           ABAP lexer + parser (95 statement patterns; 13 lint rules, 8 on by default)
   dsl/                Fluent API, YAML workflows, batch ops
   cache/              In-memory + SQLite
   scripting/          Lua engine
@@ -62,6 +96,7 @@ pkg/
 |------|-------|
 | Add MCP tool | `tools_register.go` + `handlers_*.go` + `tools_focused.go` |
 | Add ADT operation | `pkg/adt/client.go`, `crud.go`, `devtools.go`, `codeintel.go` |
+| Touch SSO auth | `pkg/adt/sso*.go`, `cmd/vsp-sso/`, `cmd/vsp/sso.go` |
 | Add graph feature | `pkg/graph/` |
 | Add lint rule | `pkg/abaplint/rules.go` |
 | Add integration test | `pkg/adt/integration_test.go` |
@@ -86,13 +121,42 @@ func (s *Server) handleX(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 ---
 
+## Provoking a failure on a live system
+
+Testing the unhappy path means making something fail, and the cheapest
+way to make SAP say no is the one that costs the most. A wrong password
+for a **real** user counts against `login/fails_to_user_lock`, and one
+sweep is dozens of requests — `vsp compat` locked the developer account
+for a day this way, after which the *correct* password also returns 401.
+
+Reach for these in order. The first three touch no credential at all:
+
+1. **A client-side refusal** — `SAP_BLOCK_FREE_SQL=1`,
+   `adt.WithBlockFreeSQL()`, `--disallowed-ops`. The request is never
+   sent, and the error is the one a safety-blocked user would see.
+2. **An `httptest` server returning 403.** The authorisation case with
+   no SAP anywhere near it, and it runs in CI.
+3. **An object or package that does not exist** — a real 404 from a
+   real session.
+4. **An unresolvable hostname** — fails before any credential leaves the
+   process.
+5. **A user that does not exist**, if a genuine 401 is unavoidable.
+   Nothing can be locked, because there is nothing to lock. It still
+   writes to the security audit log, so keep it to a few requests rather
+   than a sweep.
+
+Never a real user with a wrong password. Not once, not "just to see":
+the cost is not a failed request, it is the system for everyone until
+the lock clears — midnight on a stock A4H, `SU01` otherwise.
+
 ## Common Issues
 
 1. **CSRF errors** — auto-refreshed in `http.go`
 2. **Lock conflicts** — edit handler does auto lock/unlock
 3. **Session issues** — some CRUD/debugger flows are session-sensitive; verify stateful/stateless before changing transport or auth logic
-4. **Auth** — use basic OR cookies, not both
-5. **ZADT_VSP** — WebSocket debug/RFC/RunReport require it installed on SAP
+4. **Auth** — use basic OR cookies, not both. `HasBasicAuth()` disables `ReauthFunc`, so a stray `SAP_USER`/`SAP_PASSWORD` alongside SSO silently kills auto-refresh
+5. **Expired SSO sessions do not return 401** — ICF forwards to the IdP and a logon page arrives under a 200. Detection is by origin and by a missing CSRF token (`http.go`), not by status code
+6. **ZADT_VSP** — WebSocket debug/RFC/RunReport require it installed on SAP
 
 ## Security
 
@@ -150,7 +214,28 @@ customer, the system, or a live account?" If yes, redact.
 
 ## Conventions
 
-Reports: `reports/YYYY-MM-DD-NNN-title.md`. SAP objects: `ZADT_<nn>_<name>`, `ZCL_ADT_<name>`, packages `$ZADT*`.
+Reports: `reports/YYYY-MM-DD-NNN-title.md`.
+
+**SAP object names.** After the kind prefix comes a *domain* token, then the
+name. Ours is `VSP`. There is never an underscore straight after `Z`.
+
+| Kind | Form | Ours |
+|------|------|------|
+| Class | `ZCL_<domain>_<name>` | `ZCL_VSP_GIT_SERVICE`, `ZCL_VSP_APC_HANDLER` |
+| Interface | `ZIF_<domain>_<name>` | `ZIF_VSP_SERVICE` |
+| Program | `Z<domain>_<name>` | `ZVSP_ENQUEUE_RESET` |
+| Function group | `Z<domain>_<name>` | `ZVSP_GIT` |
+| Function module | `Z<domain>_<name>` | `ZVSP_GIT_CALL` |
+| Message class | `Z<domain>_<name>` | `ZVSP_GIT` |
+| Package | `$ZADT_VSP` | |
+
+A numeric bucket may sit between domain and name — `ZCL_VSP_00_AMDP_TEST` — and
+we use it only for test fixtures. Landscapes that carry it everywhere use it to
+mirror package structure; we do not.
+
+Names predating this — `ZADT_CL_TADIR_MOVE`, `ZCL_ADT_00_AMDP_TEST` — are the
+older `ADT` domain and put `CL` in the wrong place. Both have `ZCL_VSP_*`
+successors; do not add more.
 
 ---
 
@@ -158,10 +243,11 @@ Reports: `reports/YYYY-MM-DD-NNN-title.md`. SAP objects: `ZADT_<nn>_<name>`, `ZC
 
 | Area | Risk | Notes |
 |------|------|-------|
-| `pkg/graph/` | New, incomplete | Only parser adapter; SQL/ADT adapters pending |
-| `handlers_debugger.go` | WebSocket-only | REST breakpoints 403 on newer SAP; use ZADT_VSP |
+| `pkg/graph/` | Large, moving | This row said "only parser adapter; SQL/ADT adapters pending" for four months while contradicting this file's own Current Priorities section. `builder_sql.go`, `builder_transport.go`, `builder_config.go` and `builder_loads.go` all exist with tests |
+| `handlers_debugger.go` | ADT over a held session | Breakpoints and the debug loop both go through `/sap/bc/adt/debugger*` on the session in `handlers_debug_session.go`. The old "REST breakpoints 403 on newer SAP" was the stateless client, not the release |
 | `handlers_amdp.go` | Experimental | Session works, breakpoints unreliable |
-| `pkg/adt/ui5.go` | Read-only | Write needs `/UI5/CL_REPOSITORY_LOAD` |
+| `pkg/adt/ui5.go` | Writes, ungated by package | Not read-only, and has not been since v2.10.0 (2025-12-05): `UI5UploadFile:273`, `UI5DeleteFile:312`, `UI5CreateApp:345`, `UI5DeleteApp:387`, all MCP-reachable via `handlers_ui5.go`. They go through the ADT filestore, not `/UI5/CL_REPOSITORY_LOAD`. The real hazard is `mutation_gate.go:117` — with `--allowed-packages` set, every UI5 mutation is refused outright because app→package resolution is unimplemented |
 | `pkg/llvm2abap/`, `pkg/wasmcomp/` | Research | Not production; don't treat as stable |
-| `pkg/adt/debugger.go` (REST) | Deprecated | Prefer `websocket_debug.go` |
+| `pkg/adt/debugger.go` (REST) | Types and parsers only | Its *client* methods still assume a stateless session; the request builders and parsers are shared and exported via `debugger_parse.go` |
 | `docs/cli-agents/*` | Config drift | Codex TOML format may differ from Claude/Gemini JSON docs |
+| `pkg/adt/sso*.go` | Host-dependent | Browser step must be a Windows process under WSL (PRT/WAM); needs `vsp-sso.exe` from `make sso-helper` |

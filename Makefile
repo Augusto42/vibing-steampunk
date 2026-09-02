@@ -16,6 +16,8 @@ GOLINT=golangci-lint
 # Build directories
 BUILD_DIR=build
 CMD_DIR=./cmd/vsp
+SSO_HELPER_DIR=./cmd/vsp-sso
+SSO_HELPER=$(BUILD_DIR)/vsp-sso.exe
 
 # Version info
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -38,20 +40,43 @@ PLATFORMS_COMMON=linux/amd64 darwin/arm64 windows/amd64
 CURRENT_OS=$(shell go env GOOS)
 CURRENT_ARCH=$(shell go env GOARCH)
 
-.PHONY: all build clean test lint fmt deps tidy help install run
-.PHONY: build-all build-all-all build-linux build-darwin build-windows
-.PHONY: deploy-windows sync-embedded release refresh-deps
+# The local build carries its platform in the name, exactly like the
+# cross-compiled ones, and $(BUILD_DIR)/$(BINARY_NAME) is a link to it. Tool
+# configs (.mcp.json, .vsp.json, editor settings) point at one name or the
+# other; with a link they are the same file, so a single `make build` refreshes
+# whatever they reference. Before this, `build` wrote only ./build/vsp while
+# every MCP config pointed at ./build/vsp-<os>-<arch>, which only build-all
+# refreshed — so the binary the agents ran silently fell behind the source.
+EXE=$(if $(filter windows,$(CURRENT_OS)),.exe,)
+LOCAL_BINARY=$(BINARY_NAME)-$(CURRENT_OS)-$(CURRENT_ARCH)$(EXE)
+
+.PHONY: all build clean test lint fmt deps tidy help install install-user link local-alias run
+.PHONY: build-all build-all-all build-linux build-darwin build-windows build-win sso-helper
+.PHONY: deploy-windows sync-embedded release refresh-deps fetch-deps check-deps
 
 all: deps lint test build
 
 ## Build
 
-build: ## Build the binary for current platform
+build: ## Build for the current platform, as build/vsp-<os>-<arch> with build/vsp linked to it
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)
-	@echo "Built: $(BUILD_DIR)/$(BINARY_NAME)"
+	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(LOCAL_BINARY) $(CMD_DIR)
+	@$(MAKE) --no-print-directory local-alias
+	@echo "Built: $(BUILD_DIR)/$(LOCAL_BINARY) (also $(BUILD_DIR)/$(BINARY_NAME))"
 
-build-all: ## Build for common platforms (linux-amd64, darwin-arm64, windows-amd64) + local ./build/vsp
+local-alias: ## Point build/vsp at this platform's binary
+	@if [ "$(CURRENT_OS)" = "windows" ]; then \
+		cp $(BUILD_DIR)/$(LOCAL_BINARY) $(BUILD_DIR)/$(BINARY_NAME)$(EXE); \
+	else \
+		ln -sf $(LOCAL_BINARY) $(BUILD_DIR)/$(BINARY_NAME); \
+	fi
+
+sso-helper: ## Build the Windows SSO capture helper (needed for browser SSO under WSL)
+	@mkdir -p $(BUILD_DIR)
+	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(SSO_HELPER) $(SSO_HELPER_DIR)
+	@echo "Built: $(SSO_HELPER)"
+
+build-all: sso-helper ## Build for common platforms (linux-amd64, darwin-arm64, windows-amd64) + local ./build/vsp
 	@mkdir -p $(BUILD_DIR)
 	@for platform in $(PLATFORMS_COMMON); do \
 		os=$${platform%/*}; \
@@ -61,13 +86,13 @@ build-all: ## Build for common platforms (linux-amd64, darwin-arm64, windows-amd
 		echo "Building $$output..."; \
 		GOOS=$$os GOARCH=$$arch $(GOBUILD) $(LDFLAGS) -o $$output $(CMD_DIR) || exit 1; \
 	done
-	@echo "Copying current platform binary to $(BUILD_DIR)/$(BINARY_NAME)..."
-	@cp $(BUILD_DIR)/$(BINARY_NAME)-$(CURRENT_OS)-$(CURRENT_ARCH) $(BUILD_DIR)/$(BINARY_NAME) 2>/dev/null || \
+	@echo "Pointing $(BUILD_DIR)/$(BINARY_NAME) at this platform's binary..."
+	@$(MAKE) --no-print-directory local-alias 2>/dev/null || \
 		$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)
 	@echo "Build complete. Binaries in $(BUILD_DIR)/"
 	@ls -lh $(BUILD_DIR)/
 
-build-all-all: ## Build for ALL platforms (linux, darwin, windows - amd64, arm64, 386, arm)
+build-all-all: sso-helper ## Build for ALL platforms (linux, darwin, windows - amd64, arm64, 386, arm)
 	@mkdir -p $(BUILD_DIR)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
@@ -107,18 +132,42 @@ build-windows: ## Build for Windows (amd64, arm64, 386)
 		GOOS=windows GOARCH=$$arch $(GOBUILD) $(LDFLAGS) -o $$output $(CMD_DIR) || exit 1; \
 	done
 
-# WSL deployment directory
-WINDOWS_DEPLOY_DIR=/mnt/c/bin/vibing-steampunk
+# WSL deployment directory. Overridable:
+#   make deploy-windows WINDOWS_DEPLOY_DIR=/mnt/c/tools
+WINDOWS_DEPLOY_DIR ?= /mnt/c/bin
 
-deploy-windows: ## Build Windows amd64 and deploy to /mnt/c/bin/vibing-steampunk/
+build-win: build-windows ## Alias for build-windows
+
+deploy-windows: ## Build vsp.exe + vsp-sso.exe (amd64) and copy both to $(WINDOWS_DEPLOY_DIR)
 	@mkdir -p $(BUILD_DIR)
-	@echo "Building Windows amd64 binary..."
-	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_DIR)
+	@echo "Building windows/amd64..."
+	@GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_DIR)
+	@GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(SSO_HELPER) $(SSO_HELPER_DIR)
 	@mkdir -p $(WINDOWS_DEPLOY_DIR)
-	@echo "Deploying to $(WINDOWS_DEPLOY_DIR)..."
-	cp $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe
-	@echo "Deployed: $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe"
-	@ls -lh $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe
+	@# Both binaries go, not just vsp. FindSSOHelper looks beside the running
+	@# executable, so a vsp.exe deployed alone cannot do browser SSO at all —
+	@# and the failure surfaces later, as a capture that cannot start.
+	@# A running .exe cannot be overwritten on a Windows mount, so say which
+	@# one is held rather than leaving a half-finished deploy.
+	@for f in $(BINARY_NAME).exe vsp-sso.exe; do \
+		src=$(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe; \
+		[ "$$f" = "vsp-sso.exe" ] && src=$(SSO_HELPER); \
+		cp "$$src" "$(WINDOWS_DEPLOY_DIR)/$$f" || { \
+			echo "could not write $(WINDOWS_DEPLOY_DIR)/$$f — is it running on the Windows side?"; \
+			exit 1; }; \
+	done
+	@# Prove what landed. A silently mis-targeted cross-compile is the one
+	@# failure this target could otherwise hand on without noticing.
+	@echo
+	@for f in $(BINARY_NAME).exe vsp-sso.exe; do \
+		printf '  %-14s ' "$$f"; \
+		file -b "$(WINDOWS_DEPLOY_DIR)/$$f" | cut -d, -f1-2; \
+	done
+	@echo
+	@ls -lh $(WINDOWS_DEPLOY_DIR)/$(BINARY_NAME).exe $(WINDOWS_DEPLOY_DIR)/vsp-sso.exe
+	@echo
+	@# printf, not echo: echo eats the backslash in a Windows path and prints C:in.
+	@printf 'On the Windows side: %s\n' "$$(wslpath -w $(WINDOWS_DEPLOY_DIR) 2>/dev/null || echo $(WINDOWS_DEPLOY_DIR))"
 
 sync-embedded: build ## Export $ZADT_VSP from SAP to embedded/abap/ (requires SAP_* env vars)
 	@echo "Exporting ZADT_VSP package from SAP..."
@@ -130,7 +179,13 @@ sync-embedded: build ## Export $ZADT_VSP from SAP to embedded/abap/ (requires SA
 # SAP system for dependency refresh (override with: make release SAP_SYSTEM=prod)
 SAP_SYSTEM ?= a4h
 
-refresh-deps: ## Refresh embedded ZIPs from SAP (keeps old if SAP unavailable)
+fetch-deps: ## Build the embedded abapGit archive from upstream, reproducibly
+	go run ./tools/fetchdeps
+
+check-deps: ## Report what the embedded archive holds, and refuse an empty one
+	go run ./tools/fetchdeps -check
+
+refresh-deps: ## Refresh embedded ZIPs from SAP — prefer fetch-deps, which is reproducible
 	@echo "Refreshing embedded dependencies from SAP system '$(SAP_SYSTEM)'..."
 	@if ./build/vsp -s $(SAP_SYSTEM) export '$$ZGIT' -o embedded/deps/abapgit-full.zip.tmp 2>/dev/null; then \
 		mv embedded/deps/abapgit-full.zip.tmp embedded/deps/abapgit-full.zip; \
@@ -150,14 +205,28 @@ refresh-deps: ## Refresh embedded ZIPs from SAP (keeps old if SAP unavailable)
 release: build refresh-deps build-all ## Full release: build vsp, refresh deps from SAP, rebuild all platforms
 	@echo "Release build complete."
 
-install: ## Install the binary to GOPATH/bin
-	$(GOBUILD) $(LDFLAGS) -o $(GOPATH)/bin/$(BINARY_NAME) $(CMD_DIR)
+# GOPATH is a Go environment value, not a make variable: left as $(GOPATH) it
+# expanded to nothing and this target installed to /bin.
+GOPATH_BIN=$(shell go env GOPATH)/bin
 
-install-user: build ## Install to ~/.local/bin
+install: ## Install the binary to GOPATH/bin
+	@mkdir -p $(GOPATH_BIN)
+	$(GOBUILD) $(LDFLAGS) -o $(GOPATH_BIN)/$(BINARY_NAME) $(CMD_DIR)
+	@echo "Installed: $(GOPATH_BIN)/$(BINARY_NAME)"
+
+install-user: build ## Copy the binary to ~/.local/bin (independent of this checkout)
 	@mkdir -p ~/.local/bin
 	@cp $(BUILD_DIR)/$(BINARY_NAME) ~/.local/bin/$(BINARY_NAME)
 	@echo "Installed: ~/.local/bin/$(BINARY_NAME)"
-	@echo "Make sure ~/.local/bin is in your PATH"
+	@echo "A copy goes stale on the next build — use 'make link' while developing."
+
+link: build ## Symlink ~/.local/bin/vsp at this checkout, so every build is picked up
+	@mkdir -p ~/.local/bin
+	@ln -sf $(abspath $(BUILD_DIR)/$(BINARY_NAME)) ~/.local/bin/$(BINARY_NAME)
+	@echo "Linked: ~/.local/bin/$(BINARY_NAME) -> $(abspath $(BUILD_DIR)/$(BINARY_NAME))"
+	@echo "'make build' now updates what is on PATH; nothing to re-install."
+	@case ":$$PATH:" in *":$$HOME/.local/bin:"*) ;; \
+		*) echo "NOTE: ~/.local/bin is not on your PATH — on macOS it is not there by default." ;; esac
 
 ## Development
 

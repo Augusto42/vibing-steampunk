@@ -61,16 +61,12 @@ func (s *Server) handleDeployZip(ctx context.Context, request mcp.CallToolReques
 	}
 
 	// Get ZIP data
-	zipData := deps.GetDependencyZIP(source)
-	if zipData == nil {
-		available := deps.GetAvailableDependencies()
-		var names []string
-		for _, d := range available {
-			if d.Available {
-				names = append(names, d.Name)
-			}
-		}
-		return newToolResultError(fmt.Sprintf("Source '%s' not found. Available: %s", source, strings.Join(names, ", "))), nil
+	// An embedded archive can be known and still be empty, because it is baked in
+	// at build time; unpacking those zero bytes reports a successful deployment
+	// of nothing.
+	zipData, derr := deps.RequireDependencyZIP(source)
+	if derr != nil {
+		return newToolResultError(derr.Error()), nil
 	}
 
 	var sb strings.Builder
@@ -231,8 +227,21 @@ func (s *Server) handleDeployZip(ctx context.Context, request mcp.CallToolReques
 
 		fmt.Fprintf(&sb, "  [%d/%d] Upload %s %s... ", i+1, len(deployable), obj.Type, obj.Name)
 
+		// Run UpdateSource's own gate here, before the lock. Called from
+		// inside the lock window it resolves the object's package over the
+		// wire — a stateless request that retires the session the lock handle
+		// belongs to, so the upload comes back 423 (issue #91). The returned
+		// context carries the result of that check for this object only.
+		objCtx, err := s.adtClient.PrepareSourceUpdate(ctx, objectURL, "")
+		if err != nil {
+			fmt.Fprintf(&sb, "BLOCKED: %v\n", err)
+			uploadFailed++
+			uploadFailures = append(uploadFailures, fmt.Sprintf("%s %s: %v", obj.Type, obj.Name, err))
+			continue
+		}
+
 		// Lock
-		lockResult, err := s.adtClient.LockObject(ctx, objectURL, "MODIFY")
+		lockResult, err := s.adtClient.LockObject(objCtx, objectURL, "MODIFY")
 		if err != nil {
 			fmt.Fprintf(&sb, "LOCK FAIL: %v\n", err)
 			uploadFailed++
@@ -241,21 +250,29 @@ func (s *Server) handleDeployZip(ctx context.Context, request mcp.CallToolReques
 		}
 
 		// Upload source (no syntax check!)
-		err = s.adtClient.UpdateSource(ctx, sourceURL, obj.MainSource, lockResult.LockHandle, "")
+		err = s.adtClient.UpdateSource(objCtx, sourceURL, obj.MainSource, lockResult.LockHandle, "")
 		if err != nil {
 			// Always try to unlock even if upload fails
-			_ = s.adtClient.UnlockObject(ctx, objectURL, lockResult.LockHandle)
+			unlockErr := s.adtClient.UnlockObject(objCtx, objectURL, lockResult.LockHandle)
 			fmt.Fprintf(&sb, "UPLOAD FAIL: %v\n", err)
 			uploadFailed++
 			uploadFailures = append(uploadFailures, fmt.Sprintf("%s %s: upload failed: %v", obj.Type, obj.Name, err))
+			if unlockErr != nil {
+				uploadFailures = append(uploadFailures,
+					fmt.Sprintf("%s %s: LEFT LOCKED — unlock also failed: %v (clear it in SM12, or wait for the ADT session timeout)", obj.Type, obj.Name, unlockErr))
+			}
 			continue
 		}
 
 		// Unlock
-		err = s.adtClient.UnlockObject(ctx, objectURL, lockResult.LockHandle)
+		err = s.adtClient.UnlockObject(objCtx, objectURL, lockResult.LockHandle)
 		if err != nil {
+			// Not fatal for the source, which is written — but the object is
+			// left locked, so it is fatal for the next person to touch it and
+			// must not be swallowed into the summary as a success.
 			fmt.Fprintf(&sb, "UNLOCK FAIL: %v\n", err)
-			// Source was uploaded, just couldn't unlock - not fatal
+			uploadFailures = append(uploadFailures,
+				fmt.Sprintf("%s %s: source uploaded but LEFT LOCKED: %v (clear it in SM12, or wait for the ADT session timeout)", obj.Type, obj.Name, err))
 		}
 
 		fmt.Fprintf(&sb, "ok\n")

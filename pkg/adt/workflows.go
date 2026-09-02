@@ -27,13 +27,16 @@ func (c *Client) WriteProgram(ctx context.Context, programName string, source st
 	objectURL := fmt.Sprintf("/sap/bc/adt/programs/programs/%s", url.PathEscape(programName))
 	sourceURL := objectURL + "/source/main"
 
-	// Unified mutation policy gate (op type + package + transport)
-	if err := c.checkMutation(ctx, MutationContext{
+	// Unified mutation policy gate (op type + package + transport). The
+	// returned context carries the mark that stops UpdateSource resolving the
+	// same package again from inside the lock window (issue #91).
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteProgram",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -115,6 +118,88 @@ func (c *Client) WriteProgram(ctx context.Context, programName string, source st
 	return result, nil
 }
 
+// WriteIncludeResult represents the result of writing an ABAP include.
+type WriteIncludeResult struct {
+	Success      bool                `json:"success"`
+	IncludeName  string              `json:"includeName"`
+	ObjectURL    string              `json:"objectUrl"`
+	SyntaxErrors []SyntaxCheckResult `json:"syntaxErrors,omitempty"`
+	Activation   *ActivationResult   `json:"activation,omitempty"`
+	Message      string              `json:"message,omitempty"`
+}
+
+// WriteInclude performs Lock -> SyntaxCheck -> UpdateSource -> Unlock -> Activate for an ABAP include.
+func (c *Client) WriteInclude(ctx context.Context, includeName string, source string, transport string) (*WriteIncludeResult, error) {
+	includeName = strings.ToUpper(includeName)
+	objectURL := fmt.Sprintf("/sap/bc/adt/programs/includes/%s", url.PathEscape(includeName))
+	sourceURL := objectURL + "/source/main"
+
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:        OpWorkflow,
+		OpName:    "WriteInclude",
+		ObjectURL: objectURL,
+		Transport: transport,
+	}); err != nil {
+		return nil, err
+	}
+
+	result := &WriteIncludeResult{
+		IncludeName: includeName,
+		ObjectURL:   objectURL,
+	}
+
+	syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
+	if err != nil {
+		result.Message = fmt.Sprintf("Syntax check failed: %v", err)
+		return result, nil
+	}
+	for _, se := range syntaxErrors {
+		if se.Severity == "E" || se.Severity == "A" || se.Severity == "X" {
+			result.SyntaxErrors = syntaxErrors
+			result.Message = "Source has syntax errors - not saved"
+			return result, nil
+		}
+	}
+	result.SyntaxErrors = syntaxErrors
+
+	lock, err := c.LockObject(ctx, objectURL, "MODIFY")
+	if err != nil {
+		result.Message = fmt.Sprintf("Failed to lock object: %v", err)
+		return result, nil
+	}
+	defer func() {
+		if !result.Success {
+			c.UnlockObject(ctx, objectURL, lock.LockHandle)
+		}
+	}()
+
+	if err = c.UpdateSource(ctx, sourceURL, source, lock.LockHandle, transport); err != nil {
+		result.Message = fmt.Sprintf("Failed to update source: %v", err)
+		return result, nil
+	}
+
+	if err = c.UnlockObject(ctx, objectURL, lock.LockHandle); err != nil {
+		result.Message = fmt.Sprintf("Failed to unlock object: %v", err)
+		return result, nil
+	}
+
+	activation, err := c.Activate(ctx, objectURL, includeName)
+	if err != nil {
+		result.Message = fmt.Sprintf("Failed to activate: %v", err)
+		result.Activation = activation
+		return result, nil
+	}
+
+	result.Activation = activation
+	if activation.Success {
+		result.Success = true
+		result.Message = "Include updated and activated successfully"
+	} else {
+		result.Message = "Activation failed - check activation messages"
+	}
+	return result, nil
+}
+
 // WriteClassResult represents the result of writing a class.
 type WriteClassResult struct {
 	Success      bool                       `json:"success"`
@@ -131,13 +216,16 @@ func (c *Client) WriteClass(ctx context.Context, className string, source string
 	objectURL := fmt.Sprintf("/sap/bc/adt/oo/classes/%s", url.PathEscape(className))
 	sourceURL := objectURL + "/source/main"
 
-	// Unified mutation policy gate (op type + package + transport)
-	if err := c.checkMutation(ctx, MutationContext{
+	// Unified mutation policy gate (op type + package + transport). The
+	// returned context carries the mark that stops UpdateSource resolving the
+	// same package again from inside the lock window (issue #91).
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteClass",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -265,6 +353,12 @@ func (c *Client) CreateAndActivateProgram(ctx context.Context, programName strin
 		return result, nil
 	}
 
+	// The gate above accepted packageName, and CreateObject gated it a second
+	// time before asking SAP to put the program there — so the program's
+	// package is a package the whitelist allows. Record that for the object,
+	// or UpdateSource resolves it again from inside the lock (issue #91).
+	ctx = withMutationPackageChecked(ctx, objectURL)
+
 	// Step 2: Lock
 	lock, err := c.LockObject(ctx, objectURL, "MODIFY")
 	if err != nil {
@@ -357,6 +451,13 @@ func (c *Client) CreateClassWithTests(ctx context.Context, className string, des
 		result.Message = fmt.Sprintf("Failed to create class: %v", err)
 		return result, nil
 	}
+
+	// Same reasoning as CreateAndActivateProgram: packageName passed the gate
+	// twice and the class was created there, so the three mutators that run
+	// under the single lock below (UpdateSource, CreateTestInclude,
+	// UpdateClassInclude — all of which resolve to this class URL) need not
+	// each resolve the package again mid-window (issue #91).
+	ctx = withMutationPackageChecked(ctx, objectURL)
 
 	// Step 2: Lock
 	lock, err := c.LockObject(ctx, objectURL, "MODIFY")

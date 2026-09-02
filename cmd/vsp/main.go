@@ -37,7 +37,7 @@ Two modes of operation:
 
   MCP Server (default)  Connects Claude, Gemini CLI, Copilot, Codex, Qwen Code,
                         and other MCP-compatible agents to SAP systems.
-                        81 tools (focused), 122 (expert), or 1 universal tool (hyperfocused).
+                        102 tools (focused), 147 (expert), or 1 universal tool (hyperfocused).
 
   CLI Mode              Direct terminal access: search, source, export, debug.
                         Multi-system profiles. Useful for scripts and pipelines.
@@ -113,11 +113,16 @@ func init() {
 	rootCmd.Flags().String("cookie-save", "", "Save browser auth cookies to file for reuse with --cookie-file")
 
 	// Programmatic SAML SSO authentication (no browser required)
+	rootCmd.Flags().Bool("sso", false, "Authenticate through a browser SSO handshake, re-capturing the session automatically when it expires (ignores any SAP_USER/SAP_PASSWORD)")
+	rootCmd.Flags().String("sso-system", "", "Name the cached SSO session (defaults to the URL's host)")
+	rootCmd.Flags().String("sso-trigger-url", "", "Authentication-gated URL that starts the SSO redirect (default: this system's ADT root)")
+	rootCmd.Flags().String("sso-profile", "", "Browser profile directory for SSO (a Windows path when running under WSL)")
+	rootCmd.Flags().String("sso-helper", "", "Path to the Windows SSO capture helper (vsp-sso.exe), used under WSL")
+	rootCmd.Flags().String("sso-on-expiry", "window", "When a silent SSO refresh needs a human: 'window' opens a browser, 'error' reports what to run")
 	rootCmd.Flags().Bool("saml-auth", false, "Authenticate via programmatic SAML SSO (no browser, no MFA)")
 	rootCmd.Flags().String("saml-user", "", "SAML/IAS username (email)")
 	rootCmd.Flags().String("saml-password", "", "SAML/IAS password")
 	rootCmd.Flags().String("credential-cmd", "", "External command returning JSON {\"username\":...,\"password\":...} (space-separated argv, no shell quoting — use a wrapper script for paths with spaces)")
-
 
 	// Session keep-alive
 	rootCmd.Flags().Duration("keepalive", 5*time.Minute, "Session keep-alive interval (e.g., 60s, 5m). Prevents session timeout during idle periods. 0 = disabled")
@@ -134,7 +139,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&cfg.AllowTransportableEdits, "allow-transportable-edits", false, "Allow editing objects in transportable packages (requires transport parameter)")
 
 	// Mode options
-	rootCmd.Flags().StringVar(&cfg.Mode, "mode", "hyperfocused", "Tool mode: hyperfocused (single universal SAP tool), focused (100 tools), or expert (147 tools)")
+	rootCmd.Flags().StringVar(&cfg.Mode, "mode", "hyperfocused", "Tool mode: hyperfocused (single universal SAP tool), focused (102 tools), or expert (147 tools)")
 	rootCmd.Flags().StringVar(&cfg.DisabledGroups, "disabled-groups", "", "Disable tool groups: 5/U=UI5, T=Tests, H=HANA, D=Debug, GC=gCTS, N=i18n")
 
 	// Transport options
@@ -167,6 +172,12 @@ func init() {
 	viper.BindPFlag("cookie-string", rootCmd.Flags().Lookup("cookie-string"))
 	viper.BindPFlag("browser-auth", rootCmd.Flags().Lookup("browser-auth"))
 	viper.BindPFlag("browser-auth-timeout", rootCmd.Flags().Lookup("browser-auth-timeout"))
+	viper.BindPFlag("sso", rootCmd.Flags().Lookup("sso"))
+	viper.BindPFlag("sso-system", rootCmd.Flags().Lookup("sso-system"))
+	viper.BindPFlag("sso-trigger-url", rootCmd.Flags().Lookup("sso-trigger-url"))
+	viper.BindPFlag("sso-profile", rootCmd.Flags().Lookup("sso-profile"))
+	viper.BindPFlag("sso-helper", rootCmd.Flags().Lookup("sso-helper"))
+	viper.BindPFlag("sso-on-expiry", rootCmd.Flags().Lookup("sso-on-expiry"))
 	viper.BindPFlag("saml-auth", rootCmd.Flags().Lookup("saml-auth"))
 	viper.BindPFlag("saml-user", rootCmd.Flags().Lookup("saml-user"))
 	viper.BindPFlag("saml-password", rootCmd.Flags().Lookup("saml-password"))
@@ -223,6 +234,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Browser single sign-on (must run before processCookieAuth)
+	if err := processSSOAuth(cmd); err != nil {
+		return err
+	}
+
 	// Process cookie authentication
 	if err := processCookieAuth(cmd); err != nil {
 		return err
@@ -240,7 +256,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		if cfg.Username != "" {
 			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: Basic (user: %s)\n", cfg.Username)
 		} else if cfg.ReauthFunc != nil {
-			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: SAML (%d cookies, re-auth on 401)\n", len(cfg.Cookies))
+			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: SSO/SAML (%d cookies, re-authenticates when the session expires)\n", len(cfg.Cookies))
 		} else if len(cfg.Cookies) > 0 {
 			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: Cookie (%d cookies)\n", len(cfg.Cookies))
 		}
@@ -301,6 +317,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// The binary's own identity, so SAP() can say which build answered. An
+	// agent reporting a defect against "vsp" names nothing; against a commit it
+	// names something.
+	cfg.Build = sweepBuild()
+
 	// Create and start MCP server
 	srv := mcp.NewServer(cfg)
 
@@ -326,7 +347,7 @@ func resolveConfig(cmd *cobra.Command) {
 	hasBrowserAuth := browserAuth || viper.GetBool("BROWSER_AUTH")
 	samlAuth, _ := cmd.Flags().GetBool("saml-auth")
 	hasSAMLAuth := samlAuth || viper.GetBool("SAML_AUTH")
-	hasCookieAuth := cookieAuthViaCLI || cookieAuthViaEnv || hasBrowserAuth || hasSAMLAuth
+	hasCookieAuth := cookieAuthViaCLI || cookieAuthViaEnv || hasBrowserAuth || hasSAMLAuth || ssoRequested(cmd)
 
 	// URL: flag > SAP_URL env
 	if cfg.BaseURL == "" {
@@ -522,8 +543,14 @@ func processBrowserAuth(cmd *cobra.Command) error {
 		browserExec = viper.GetString("BROWSER_EXEC")
 	}
 
+	// Determine sap client
+	sapClient := cfg.Client
+	if sapClient == "" {
+		sapClient = viper.GetString("CLIENT")
+	}
+
 	ctx := cmd.Context()
-	cookies, err := adt.BrowserLogin(ctx, cfg.BaseURL, cfg.InsecureSkipVerify, timeout, browserExec, cfg.Verbose)
+	cookies, err := adt.BrowserLogin(ctx, cfg.BaseURL, cfg.InsecureSkipVerify, timeout, browserExec, cfg.Verbose, sapClient)
 	if err != nil {
 		return fmt.Errorf("browser authentication failed: %w", err)
 	}
@@ -543,6 +570,76 @@ func processBrowserAuth(cmd *cobra.Command) error {
 		}
 	}
 
+	return nil
+}
+
+// ssoRequested reports whether browser single sign-on was asked for.
+func ssoRequested(cmd *cobra.Command) bool {
+	sso, _ := cmd.Flags().GetBool("sso")
+	return sso || viper.GetBool("SSO")
+}
+
+// processSSOAuth sets up browser single sign-on for the server.
+//
+// Unlike the other auth flows, this one does not just hand over cookies and
+// retire: it leaves a way to capture new ones behind. A server that runs for
+// days will outlive any session it starts with, and the point of the exercise
+// is that nobody has to notice when it does.
+func processSSOAuth(cmd *cobra.Command) error {
+	if !ssoRequested(cmd) {
+		return nil
+	}
+	if cfg.BaseURL == "" {
+		return fmt.Errorf("--sso requires --url to be set")
+	}
+
+	// SSO is exclusive, and deliberately so. A username and password reaching
+	// the client alongside the cookies would not merely be redundant: basic
+	// auth wins in the transport, and the automatic recovery is switched off
+	// with it, because a client that can resend a password has no reason to go
+	// looking for a browser. Silently pairing the two would turn "session
+	// refreshes itself" into "session dies quietly at some point", so any
+	// credential that arrived by flag or environment is dropped here, loudly.
+	if cfg.Username != "" || cfg.Password != "" {
+		fmt.Fprintf(os.Stderr, "[SSO] ignoring the username/password supplied for %s — single sign-on is authoritative\n", cfg.BaseURL)
+		cfg.Username, cfg.Password = "", ""
+	}
+
+	stringOpt := func(flag, viperKey string) string {
+		if v, _ := cmd.Flags().GetString(flag); v != "" {
+			return v
+		}
+		return viper.GetString(viperKey)
+	}
+
+	onExpiry := stringOpt("sso-on-expiry", "SSO_ON_EXPIRY")
+	provider, err := adt.NewSSOProvider(adt.SSOConfig{
+		System:      stringOpt("sso-system", "SSO_SYSTEM"),
+		BaseURL:     cfg.BaseURL,
+		Client:      cfg.Client,
+		TriggerURL:  stringOpt("sso-trigger-url", "SSO_TRIGGER_URL"),
+		Profile:     stringOpt("sso-profile", "SSO_PROFILE"),
+		HelperPath:  stringOpt("sso-helper", "SSO_HELPER"),
+		Interactive: !strings.EqualFold(onExpiry, "error"),
+		Insecure:    cfg.InsecureSkipVerify,
+		Verbose:     cfg.Verbose,
+	})
+	if err != nil {
+		return err
+	}
+
+	cookies, err := provider.Cookies(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("browser SSO: %w", err)
+	}
+	cfg.Cookies = cookies
+	cfg.ReauthFunc = provider.Refresh
+	cfg.ReauthTimeout = provider.ReauthBudget()
+
+	if cfg.Verbose {
+		fmt.Fprintf(os.Stderr, "[SSO] session ready (%d cookies), cached at %s\n",
+			len(cookies), provider.CachePath())
+	}
 	return nil
 }
 

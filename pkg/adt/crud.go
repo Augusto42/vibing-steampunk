@@ -1,6 +1,7 @@
 package adt
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -57,17 +58,22 @@ func (c *Client) LockObject(ctx context.Context, objectURL string, accessMode st
 		return nil, err
 	}
 
-	// BTP / ABAP Cloud systems sometimes return a successful lock with
-	// MODIFICATION_SUPPORT="NoModification" — the lock acquired but the
-	// object is read-only via ADT (typical for SAP-delivered objects in
-	// hyperfocused mode, or systems where the user lacks the edit role).
-	// Without this guard the caller proceeds to PUT/POST and gets a
-	// confusing 423 InvalidLockHandle several seconds later. Surface it
-	// upfront so the user sees a clear, actionable error (issue #91).
-	if accessMode == "MODIFY" && strings.EqualFold(result.ModificationSupport, "NoModification") {
+	// MODIFICATION_SUPPORT="NoModification" alone does NOT mean "you cannot
+	// write". SAP returns it for local/customer objects that need no
+	// modification recording: verified against A4H, where LOCK on a local
+	// global class returns IS_LOCAL=X, MODIFICATION_SUPPORT=NoModification
+	// AND a valid LOCK_HANDLE — and the PUT of .../source/main that follows
+	// returns 200. Failing on the field alone (the original issue #91 guard)
+	// made every local object unwritable, and because the guard returned
+	// before unlocking, each attempt leaked the ENQUEUE it had just taken —
+	// the object then really was blocked, by our own orphan lock.
+	//
+	// A LOCK without a handle is the genuinely unusable case: nothing to
+	// write with, and nothing to release.
+	if accessMode == "MODIFY" && result.LockHandle == "" {
 		return nil, fmt.Errorf(
 			"object %s is not modifiable via ADT on this system "+
-				"(SAP returned modificationSupport=%q during LOCK). "+
+				"(SAP returned a LOCK with no lock handle, modificationSupport=%q). "+
 				"Common causes: read-only system class, missing developer/edit role, "+
 				"BTP ABAP Environment object outside the customer namespace, "+
 				"or hyperfocused mode locking the object as read-only",
@@ -95,6 +101,15 @@ func parseLockResult(data []byte) (*LockResult, error) {
 		Values values `xml:"values"`
 	}
 
+	// An ADT error comes back as an exception document, not a lock result —
+	// e.g. EU510 "User X is currently editing Y" when another session still
+	// holds the ENQUEUE. xml.Unmarshal parses that into an empty LockResult,
+	// which used to surface as a bogus modificationSupport="" / no handle
+	// instead of the real conflict. Report what SAP actually said.
+	if bytes.Contains(data, []byte("exc:exception")) {
+		return nil, lockExceptionError(data)
+	}
+
 	var resp abapResponse
 	if err := xml.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("parsing lock response: %w", err)
@@ -109,6 +124,27 @@ func parseLockResult(data []byte) (*LockResult, error) {
 		IsLinkUp:            resp.Values.Data.IsLinkUp == "X",
 		ModificationSupport: resp.Values.Data.ModSupport,
 	}, nil
+}
+
+// lockExceptionError turns an ADT exception document returned by _action=LOCK
+// into a Go error carrying SAP's own message (EU510 lock conflicts, missing
+// authorization, unknown object).
+func lockExceptionError(data []byte) error {
+	type adtException struct {
+		Type struct {
+			ID string `xml:"id,attr"`
+		} `xml:"type"`
+		Message string `xml:"message"`
+	}
+
+	var exc adtException
+	if err := xml.Unmarshal(data, &exc); err != nil || exc.Message == "" {
+		return errors.New("locking object: SAP returned an ADT exception")
+	}
+	if exc.Type.ID != "" {
+		return fmt.Errorf("locking object: %s: %s", exc.Type.ID, exc.Message)
+	}
+	return fmt.Errorf("locking object: %s", exc.Message)
 }
 
 // UnlockObject releases an edit lock on an ABAP object.
@@ -217,7 +253,8 @@ type CreateObjectOptions struct {
 	BindingType string `json:"bindingType,omitempty"`
 	// For SRVB: binding version ("V2" or "V4")
 	BindingVersion string `json:"bindingVersion,omitempty"`
-	// For SRVB: category ("0" for Web API, "1" for UI)
+	// For SRVB: category per SAP domain SRVB_BND_CATEGORY:
+	// "0" = UI (User Interface), "1" = A2X (Application to X users, i.e. Web API)
 	BindingCategory string `json:"bindingCategory,omitempty"`
 
 	// For BDEF: source code (required for creation - ADT API embeds source in creation request)
@@ -765,7 +802,7 @@ func buildCreateObjectBody(opts CreateObjectOptions, typeInfo objectTypeInfo, de
 		}
 		bindingCategory := opts.BindingCategory
 		if bindingCategory == "" {
-			bindingCategory = "0" // Web API
+			bindingCategory = "0" // UI (SRVB_BND_CATEGORY: 0=UI, 1=A2X/Web API)
 		}
 		return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <%s %s xmlns:adtcore="http://www.sap.com/adt/core"
@@ -910,6 +947,10 @@ func GetObjectURL(objectType CreatableObjectType, name string, parentName string
 		return fmt.Sprintf("/sap/bc/adt/bo/behaviordefinitions/%s", url.PathEscape(strings.ToLower(name)))
 	case ObjectTypeSRVD:
 		return fmt.Sprintf("/sap/bc/adt/ddic/srvd/sources/%s", url.PathEscape(strings.ToLower(name)))
+	case ObjectTypeTable:
+		// A DDIC table's source is its DDL, at the same shape as the CDS types
+		// above. Addressable all along; nothing asked for it.
+		return fmt.Sprintf("/sap/bc/adt/ddic/tables/%s", url.PathEscape(strings.ToLower(name)))
 	case ObjectTypeSRVB:
 		return fmt.Sprintf("/sap/bc/adt/businessservices/bindings/%s", url.PathEscape(strings.ToLower(name)))
 	default:
@@ -938,6 +979,31 @@ const (
 	ClassIncludeMacros          ClassIncludeType = "macros"
 	ClassIncludeTestClasses     ClassIncludeType = "testclasses"
 )
+
+// ClassIncludeForSection maps the suffix a cross-reference row carries to the
+// ADT address of that part of the class.
+//
+// The pairs are measured against a live 7.58, not inferred, and the set is
+// exactly this: includes/main, includes/localtypes and
+// includes/localimplementations do not answer — 404, 404 and 400 — so an
+// address cannot be invented from a suffix by pattern.
+//
+// The second return says whether the section has an address of its own at all.
+// CP, CU, CO, CI and the CM### method includes do not: their source is the main
+// source, and a caller must read that rather than guess a path.
+func ClassIncludeForSection(section string) (ClassIncludeType, bool) {
+	switch strings.ToUpper(strings.TrimSpace(section)) {
+	case "CCAU":
+		return ClassIncludeTestClasses, true
+	case "CCDEF":
+		return ClassIncludeDefinitions, true
+	case "CCIMP":
+		return ClassIncludeImplementations, true
+	case "CCMAC":
+		return ClassIncludeMacros, true
+	}
+	return ClassIncludeMain, false
+}
 
 // GetClassIncludeURL returns the URL for a class include.
 // Supports namespaced classes like /UI5/CL_REPOSITORY_LOAD.
@@ -1136,11 +1202,11 @@ func parsePublishResult(data []byte) (*PublishResult, error) {
 
 // CreateTableOptions defines options for creating a DDIC table.
 type CreateTableOptions struct {
-	Name          string       `json:"name"`          // Table name (uppercase, max 30 chars, must start with Z/Y)
-	Description   string       `json:"description"`   // Short description
-	Package       string       `json:"package"`       // Target package
-	Fields        []TableField `json:"fields"`        // Field definitions
-	Transport     string       `json:"transport,omitempty"` // Transport request (optional for $TMP)
+	Name          string       `json:"name"`                    // Table name (uppercase, max 30 chars, must start with Z/Y)
+	Description   string       `json:"description"`             // Short description
+	Package       string       `json:"package"`                 // Target package
+	Fields        []TableField `json:"fields"`                  // Field definitions
+	Transport     string       `json:"transport,omitempty"`     // Transport request (optional for $TMP)
 	DeliveryClass string       `json:"deliveryClass,omitempty"` // A=Application, C=Customizing, L=Temp, etc. (default: A)
 	TableCategory string       `json:"tableCategory,omitempty"` // TRANSPARENT (default), STRUCTURE, etc.
 }
@@ -1148,11 +1214,8 @@ type CreateTableOptions struct {
 // CreateTable creates a new DDIC transparent table from JSON-like options.
 // This is a high-level tool that handles the full workflow: create → set source → activate.
 func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error {
-	if err := c.checkSafety(OpCreate, "CreateTable"); err != nil {
-		return err
-	}
-
-	// Validate input
+	// Validate input first: the package default below is part of what the gate
+	// has to see.
 	opts.Name = strings.ToUpper(opts.Name)
 	if opts.Name == "" || len(opts.Name) > 30 {
 		return fmt.Errorf("table name must be 1-30 characters")
@@ -1168,6 +1231,19 @@ func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error
 	}
 	if opts.TableCategory == "" {
 		opts.TableCategory = "TRANSPARENT"
+	}
+
+	// Full mutation gate, not just the op-type half. CreateTable used to run
+	// checkSafety alone, so it created tables in any package the user could
+	// reach — SAP_ALLOWED_PACKAGES did not apply to it at all, and the source
+	// PUT below carried no gate either.
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:        OpCreate,
+		OpName:    "CreateTable",
+		Package:   opts.Package,
+		Transport: opts.Transport,
+	}); err != nil {
+		return err
 	}
 
 	// Generate DDL source
@@ -1203,34 +1279,44 @@ func (c *Client) CreateTable(ctx context.Context, opts CreateTableOptions) error
 	tableURL := fmt.Sprintf("/sap/bc/adt/ddic/tables/%s", strings.ToLower(opts.Name))
 	sourceURL := tableURL + "/source/main"
 
+	// The table was just created in opts.Package, which the gate above
+	// accepted, so UpdateSource does not have to resolve it again from inside
+	// the lock (issue #91).
+	ctx = withMutationPackageChecked(ctx, tableURL)
+
 	lock, err := c.LockObject(ctx, tableURL, "MODIFY")
 	if err != nil {
 		return fmt.Errorf("locking table: %w", err)
 	}
 
-	params = url.Values{}
-	params.Set("lockHandle", lock.LockHandle)
-	if opts.Transport != "" {
-		params.Set("corrNr", opts.Transport)
-	}
-
-	_, err = c.transport.Request(ctx, sourceURL, &RequestOptions{
-		Method:      http.MethodPut,
-		Query:       params,
-		Body:        []byte(ddlSource),
-		ContentType: "text/plain",
-	})
-	if err != nil {
-		c.UnlockObject(ctx, tableURL, lock.LockHandle)
+	// This used to be a hand-rolled transport.Request with no Stateful field,
+	// which meant the PUT that consumes the lock handle went out explicitly
+	// stateless — it retired the very session the handle was issued in, and
+	// creating a table failed with 423 InvalidLockHandle on every attempt, on
+	// any configuration. UpdateSource is the same request with Stateful: true
+	// and the mutation gate attached.
+	if err := c.UpdateSource(ctx, sourceURL, ddlSource, lock.LockHandle, opts.Transport); err != nil {
+		if unlockErr := c.releaseLockAfterFailure(ctx, tableURL, lock.LockHandle); unlockErr != nil {
+			return fmt.Errorf("updating table source: %w — %s", err, strandedLockAdvice(tableURL, unlockErr))
+		}
 		return fmt.Errorf("updating table source: %w", err)
 	}
 
 	// Unlock BEFORE activation
-	c.UnlockObject(ctx, tableURL, lock.LockHandle)
+	if err := c.UnlockObject(ctx, tableURL, lock.LockHandle); err != nil {
+		return fmt.Errorf("unlocking table before activation: %w — %s", err, strandedLockAdvice(tableURL, err))
+	}
 
 	// Step 3: Activate
-	if _, err := c.Activate(ctx, tableURL, opts.Name); err != nil {
+	activation, err := c.Activate(ctx, tableURL, opts.Name)
+	if err != nil {
 		return fmt.Errorf("activating table: %w", err)
+	}
+	// The refusal is a 200 with the reason in the body, and a table that did not
+	// activate does not exist as far as anything that reads it is concerned —
+	// returning nil here promised a table that was never there.
+	if !activation.Success {
+		return fmt.Errorf("table %s was created but did not activate: %s", opts.Name, strings.Join(activation.ProblemLines(), "; "))
 	}
 
 	return nil

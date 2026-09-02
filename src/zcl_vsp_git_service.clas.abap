@@ -103,11 +103,18 @@ CLASS zcl_vsp_git_service IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_get_types.
-    DATA: lt_types     TYPE zif_abapgit_objects=>ty_types_tt,
-          lv_types_json TYPE string.
+    DATA lv_types_json TYPE string.
 
     TRY.
-        lt_types = zcl_abapgit_objects=>supported_list( ).
+        " The table type moved between abapGit releases: older ones declare it
+        " inside ZCL_ABAPGIT_OBJECTS, newer ones in ZIF_ABAPGIT_OBJECTS. Naming
+        " either spelling makes this class refuse to compile on half the
+        " systems it is installed on — and because a syntax error in one class
+        " takes the whole APC application down, that failure is not local to
+        " this method: it costs the debugger, RFC over the tunnel and
+        " RunReport. Inferring the type asks the method what it returns and
+        " works on both.
+        DATA(lt_types) = zcl_abapgit_objects=>supported_list( ).
 
         " Build JSON array of types
         LOOP AT lt_types INTO DATA(lv_type).

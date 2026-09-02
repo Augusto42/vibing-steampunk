@@ -3,6 +3,7 @@ package adt
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -167,11 +168,17 @@ func (c *Client) getObjectPackage(ctx context.Context, objectURL string) (string
 func normalizeObjectURLForPackageCheck(objectURL string) string {
 	normalized := strings.TrimSuffix(objectURL, "/")
 
-	if idx := strings.Index(normalized, "/includes/"); idx >= 0 {
-		return normalized[:idx]
-	}
 	if strings.HasSuffix(normalized, "/source/main") {
-		return strings.TrimSuffix(normalized, "/source/main")
+		normalized = strings.TrimSuffix(normalized, "/source/main")
+	}
+
+	// Strip /includes/... only for class sub-resources (e.g. /oo/classes/ZCL_FOO/includes/locals_def).
+	// Program includes use /programs/includes/NAME where /includes/ is the collection path — don't strip.
+	if idx := strings.Index(normalized, "/includes/"); idx >= 0 {
+		prefix := normalized[:idx]
+		if !strings.HasSuffix(prefix, "/programs") {
+			return prefix
+		}
 	}
 
 	return normalized
@@ -244,17 +251,88 @@ func (c *Client) AllowPackageTemporarily(pkg string) func() {
 
 // --- Search Operations ---
 
+// SetCookies replaces the session this client authenticates with.
+func (c *Client) SetCookies(cookies map[string]string) {
+	c.transport.SetCookies(cookies)
+}
+
+// CurrentCookies returns the session this client is authenticating with now,
+// which is not necessarily the one it was given. See Transport.CurrentCookies.
+func (c *Client) CurrentCookies() map[string]string {
+	return c.transport.CurrentCookies()
+}
+
 // SearchObject searches for ABAP objects by name pattern.
 // The query parameter supports wildcards (* for multiple chars, ? for single char).
 func (c *Client) SearchObject(ctx context.Context, query string, maxResults int) ([]SearchResult, error) {
+	return c.SearchObjectByType(ctx, query, "", maxResults)
+}
+
+// CanonicalObjectType maps the documented short forms (CLAS, INTF, PROG, ...)
+// to the ADT-canonical group codes the SAP server expects on the
+// informationsystem/search endpoint. Unknown values pass through verbatim,
+// covering already-canonical input ("CLAS/OC"), namespaced types, or custom codes.
+// Exported so every caller (CLI, MCP, direct API) gets the same expansion;
+// SearchObjectByType applies it internally.
+func CanonicalObjectType(s string) string {
+	switch strings.ToUpper(s) {
+	case "":
+		return ""
+	case "CLAS":
+		return "CLAS/OC"
+	case "INTF":
+		return "INTF/OI"
+	case "PROG":
+		return "PROG/P"
+	case "INCL":
+		return "PROG/I"
+	case "FUGR":
+		return "FUGR/F"
+	case "FUNC":
+		return "FUGR/FF"
+	case "TABL":
+		return "TABL/DT"
+	case "DTEL":
+		return "DTEL/DE"
+	case "DOMA":
+		return "DOMA/DD"
+	case "TTYP":
+		return "TTYP/DA"
+	case "ENQU":
+		return "ENQU/DL"
+	case "DDLS":
+		return "DDLS/DF"
+	case "MSAG":
+		return "MSAG/N"
+	case "TRAN":
+		return "TRAN/T"
+	}
+	return s
+}
+
+// SearchObjectByType searches for ABAP objects by name pattern, optionally
+// constrained to a specific ADT object type code (e.g. "CLAS/OC", "PROG/P",
+// "INTF/OI"). An empty objectType means "any type" and behaves identically
+// to SearchObject. Server-side type filtering is required when combined with
+// maxResults: filtering after the fact silently drops results that didn't
+// fit in the pre-filter window.
+func (c *Client) SearchObjectByType(ctx context.Context, query, objectType string, maxResults int) ([]SearchResult, error) {
 	if maxResults <= 0 {
 		maxResults = 100
 	}
+
+	// Expand documented short forms (CLAS, FUNC, INCL, ...) to ADT-canonical
+	// group codes so callers can pass either form. No-op for already-canonical
+	// or unknown input.
+	objectType = CanonicalObjectType(objectType)
 
 	params := url.Values{}
 	params.Set("operation", "quickSearch")
 	params.Set("query", query)
 	params.Set("maxResults", fmt.Sprintf("%d", maxResults))
+	if objectType != "" {
+		params.Set("objectType", objectType)
+	}
 
 	resp, err := c.transport.Request(ctx, "/sap/bc/adt/repository/informationsystem/search", &RequestOptions{
 		Method: http.MethodGet,
@@ -281,10 +359,38 @@ func (c *Client) GetProgram(ctx context.Context, programName string) (string, er
 		Method: http.MethodGet,
 	})
 	if err != nil {
+		// TADIR calls an include a PROG, and ADT does not: an include lives at
+		// /programs/includes and answers 404 at /programs/programs. So a whole
+		// class of object listed in a package as a program cannot be read as
+		// one — 53 of them in SBRF on a stock 7.58, every one of which has
+		// source and is active, and every one of which was being reported as
+		// unreadable.
+		//
+		// Retrying rather than looking the type up first: REPOSRC.SUBC would
+		// answer authoritatively but costs a query for every program in a
+		// package to save one for the few that are includes. The 404 is the
+		// same information arriving later and for free.
+		if isNotFound(err) {
+			if src, incErr := c.GetInclude(ctx, programName); incErr == nil {
+				return src, nil
+			}
+		}
 		return "", fmt.Errorf("getting program source: %w", err)
 	}
 
 	return string(resp.Body), nil
+}
+
+// isNotFound reports whether an error is ADT saying the resource does not
+// exist, as against saying anything else. It matters that this is narrow: a
+// retry on an authorisation failure or a timeout would turn one clear error
+// into two vague ones.
+func isNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status 404") || strings.Contains(msg, "ExceptionResourceNotFound")
 }
 
 // --- Class Operations ---
@@ -447,6 +553,17 @@ func (c *Client) GetFunctionGroup(ctx context.Context, groupName string) (*Funct
 		return nil, fmt.Errorf("parsing function group: %w", err)
 	}
 
+	// The metadata document carries no modules, so the list is fetched
+	// separately — see functions_list.go. A group whose modules cannot be
+	// listed is still a group worth returning: the caller asked for the group,
+	// and losing its metadata to a failure of the second call would be the
+	// worse answer.
+	if modules, err := c.ListFunctionModules(ctx, groupName); err == nil {
+		fg.Functions = modules
+	} else if c.config.Verbose {
+		fmt.Fprintf(os.Stderr, "[WARN] function group %s: %v\n", groupName, err)
+	}
+
 	return &fg, nil
 }
 
@@ -459,7 +576,15 @@ func (c *Client) GetFunctionGroup(ctx context.Context, groupName string) (*Funct
 // FUGR/FF (function modules); we resolve each child's source/main URI and concatenate.
 // Individual sub-fetches that fail are skipped (best-effort) so a single broken include
 // does not hide deps from the rest of the group.
-func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName string) (string, error) {
+//
+// The second return value is what did not make it into the string, and callers
+// must not throw it away. This source is fetched to be searched for
+// dependencies, and an include that failed to load contributes no dependencies —
+// which is indistinguishable, downstream, from an include that has none. That is
+// how a boundary report comes back clean about code nobody read. The safety cap
+// below lands in the same list, because a caveat written only to stderr is no
+// caveat at all to an MCP caller.
+func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName string) (string, []Unsearched, error) {
 	groupName = strings.ToLower(groupName)
 
 	structPath := fmt.Sprintf("/sap/bc/adt/functions/groups/%s/objectstructure", url.PathEscape(groupName))
@@ -468,7 +593,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 		Accept: "application/vnd.sap.adt.objectstructure.v2+xml",
 	})
 	if err != nil {
-		return "", fmt.Errorf("getting function group structure: %w", err)
+		return "", nil, fmt.Errorf("getting function group structure: %w", err)
 	}
 
 	type atomLink struct {
@@ -483,7 +608,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	}
 	var root element
 	if err := xml.Unmarshal(resp.Body, &root); err != nil {
-		return "", fmt.Errorf("parsing function group structure: %w", err)
+		return "", nil, fmt.Errorf("parsing function group structure: %w", err)
 	}
 
 	seen := make(map[string]bool)
@@ -518,15 +643,24 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	}
 	sort.Strings(srcURIs)
 
+	var missed []Unsearched
+
 	// Safety cap. A pathological function group with hundreds of FMs would
 	// otherwise produce a sequential fetch storm that looks like a hang. 150
 	// is well above the largest normal FUGR (~50 modules) and keeps worst-
-	// case latency bounded. We log when we cut things short so the caller
-	// knows the analysis is partial.
+	// case latency bounded. The cut goes into missed as well as to stderr: an
+	// MCP caller has no stderr, and the whole point of the cap is that the
+	// analysis is partial.
 	const maxFUGRSubfetches = 150
 	if len(srcURIs) > maxFUGRSubfetches {
 		fmt.Fprintf(os.Stderr, "    [FUGR %s] capped at %d of %d sub-URIs\n",
 			strings.ToUpper(groupName), maxFUGRSubfetches, len(srcURIs))
+		for _, uri := range srcURIs[maxFUGRSubfetches:] {
+			missed = append(missed, Unsearched{
+				Object: uri,
+				Reason: fmt.Sprintf("not fetched: function group has %d sub-sources, capped at %d", len(srcURIs), maxFUGRSubfetches),
+			})
+		}
 		srcURIs = srcURIs[:maxFUGRSubfetches]
 	}
 	fmt.Fprintf(os.Stderr, "    [FUGR %s] fetching %d sub-sources\n",
@@ -535,6 +669,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	type fetchResult struct {
 		idx  int
 		body string
+		err  error
 	}
 	const fugrWorkers = 6
 	jobCh := make(chan int)
@@ -554,7 +689,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 					Accept: "text/plain",
 				})
 				if err != nil {
-					resCh <- fetchResult{idx: idx}
+					resCh <- fetchResult{idx: idx, err: err}
 					continue
 				}
 				resCh <- fetchResult{idx: idx, body: string(r.Body)}
@@ -571,13 +706,30 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 	}()
 
 	results := make([]string, len(srcURIs))
+	answered := make([]bool, len(srcURIs))
 	completed := 0
 	for res := range resCh {
 		results[res.idx] = res.body
+		answered[res.idx] = true
+		if res.err != nil {
+			missed = append(missed, Unsearched{Object: srcURIs[res.idx], Reason: res.err.Error()})
+		}
 		completed++
 		if completed == len(srcURIs) || completed%5 == 0 {
 			fmt.Fprintf(os.Stderr, "    [FUGR %s] %d/%d sub-sources fetched\n",
 				strings.ToUpper(groupName), completed, len(srcURIs))
+		}
+	}
+	// A cancelled context stops the workers mid-queue, so some URIs never come
+	// back at all — not even as an error. They are missing from the source just
+	// the same, and only this pass can tell.
+	for idx, ok := range answered {
+		if !ok {
+			reason := "not fetched: the fetch was cancelled before this sub-source was read"
+			if ctx.Err() != nil {
+				reason = "not fetched: " + ctx.Err().Error()
+			}
+			missed = append(missed, Unsearched{Object: srcURIs[idx], Reason: reason})
 		}
 	}
 
@@ -589,7 +741,7 @@ func (c *Client) GetFunctionGroupAllSources(ctx context.Context, groupName strin
 		combined.WriteString(body)
 		combined.WriteString("\n")
 	}
-	return combined.String(), nil
+	return combined.String(), missed, nil
 }
 
 // GetFunction retrieves the source code of a function module.
@@ -810,6 +962,33 @@ func (c *Client) GetMessageClass(ctx context.Context, msgClassName string) (*Mes
 }
 
 // --- Package Operations ---
+
+// PackageExists returns true if SAP has a package with the given name.
+// It probes /sap/bc/adt/packages/{name} directly: 200 → exists, 404 → not,
+// any other outcome (5xx, network, auth) is returned as an error so the
+// caller does not silently classify a transient failure as "missing".
+//
+// Unlike GetPackage, which reads the nodestructure API and cannot distinguish
+// "package does not exist" from "package exists but has no children" (both
+// return an empty tree), this is a definitive existence check.
+func (c *Client) PackageExists(ctx context.Context, packageName string) (bool, error) {
+	if packageName == "" {
+		return false, fmt.Errorf("empty package name")
+	}
+	objectURL := fmt.Sprintf("/sap/bc/adt/packages/%s", url.PathEscape(strings.ToUpper(packageName)))
+	_, err := c.transport.Request(ctx, objectURL, &RequestOptions{
+		Method: http.MethodGet,
+		Accept: "application/*",
+	})
+	if err == nil {
+		return true, nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return false, err
+}
 
 // GetPackage retrieves the contents of a package using the nodestructure API.
 func (c *Client) GetPackage(ctx context.Context, packageName string) (*PackageContent, error) {
@@ -1310,127 +1489,37 @@ type CallGraphNode struct {
 	Line        int             `json:"line,omitempty"`
 	Column      int             `json:"column,omitempty"`
 	Children    []CallGraphNode `json:"children,omitempty"`
+	// Unsearched names what could not be read while building this node. A
+	// child list is only as complete as the sources behind it, and an empty
+	// or short one means nothing until you know whether a source was missing.
+	Unsearched []Unsearched `json:"unsearched,omitempty"`
 }
 
 // CallGraphOptions configures call graph retrieval.
 type CallGraphOptions struct {
-	Direction  string // "callers" or "callees"
-	MaxDepth   int    // Maximum depth to traverse
-	MaxResults int    // Maximum results to return
+	Direction string // "callers" or "callees"
+	// MaxDepth is accepted and ignored. Both sources CallGraph reads are one
+	// hop by construction — see the note on CallGraph in callees.go — and a
+	// field that quietly does nothing is better than one that suggests a
+	// traversal happened.
+	MaxDepth   int
+	MaxResults int // Maximum results to return
 }
 
-// GetCallGraph retrieves the call graph for an ABAP object.
-// Direction can be "callers" (who calls this) or "callees" (what this calls).
-func (c *Client) GetCallGraph(ctx context.Context, objectURI string, opts *CallGraphOptions) (*CallGraphNode, error) {
-	if opts == nil {
-		opts = &CallGraphOptions{
-			Direction:  "callees",
-			MaxDepth:   3,
-			MaxResults: 100,
-		}
-	}
-
-	params := url.Values{}
-	if opts.Direction != "" {
-		params.Set("direction", opts.Direction)
-	}
-	if opts.MaxDepth > 0 {
-		params.Set("maxDepth", fmt.Sprintf("%d", opts.MaxDepth))
-	}
-	if opts.MaxResults > 0 {
-		params.Set("maxResults", fmt.Sprintf("%d", opts.MaxResults))
-	}
-
-	// Build request body with object URI
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<cai:callGraphRequest xmlns:cai="http://www.sap.com/adt/cai">
-  <cai:objectUri>%s</cai:objectUri>
-</cai:callGraphRequest>`, objectURI)
-
-	resp, err := c.transport.Request(ctx, "/sap/bc/adt/cai/callgraph", &RequestOptions{
-		Method:      http.MethodPost,
-		Query:       params,
-		Accept:      "application/xml",
-		ContentType: "application/xml",
-		Body:        []byte(body),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting call graph: %w", err)
-	}
-
-	return parseCallGraphResponse(resp.Body)
-}
-
-// callGraphNodeXML is used for parsing call graph XML responses.
-type callGraphNodeXML struct {
-	URI         string             `xml:"uri,attr"`
-	Name        string             `xml:"name,attr"`
-	Type        string             `xml:"type,attr"`
-	Description string             `xml:"description,attr"`
-	Line        int                `xml:"line,attr"`
-	Column      int                `xml:"column,attr"`
-	Children    []callGraphNodeXML `xml:"node"`
-}
-
-// parseCallGraphResponse parses the call graph XML response.
-func parseCallGraphResponse(data []byte) (*CallGraphNode, error) {
-	type callGraphXML struct {
-		XMLName xml.Name         `xml:"callGraph"`
-		Root    callGraphNodeXML `xml:"node"`
-	}
-
-	var cg callGraphXML
-	if err := xml.Unmarshal(data, &cg); err != nil {
-		return nil, fmt.Errorf("parsing call graph: %w", err)
-	}
-
-	return convertCallGraphNode(&cg.Root), nil
-}
-
-func convertCallGraphNode(n *callGraphNodeXML) *CallGraphNode {
-	if n == nil {
-		return nil
-	}
-	node := &CallGraphNode{
-		URI:         n.URI,
-		Name:        n.Name,
-		Type:        n.Type,
-		Description: n.Description,
-		Line:        n.Line,
-		Column:      n.Column,
-	}
-	for _, child := range n.Children {
-		childCopy := child
-		node.Children = append(node.Children, *convertCallGraphNode(&childCopy))
-	}
-	return node
-}
-
-// GetCallersOf returns who calls the specified object (up traversal).
-// This is a convenience wrapper around GetCallGraph with direction="callers".
-func (c *Client) GetCallersOf(ctx context.Context, objectURI string, maxDepth int) (*CallGraphNode, error) {
-	if maxDepth <= 0 {
-		maxDepth = 5
-	}
-	return c.GetCallGraph(ctx, objectURI, &CallGraphOptions{
-		Direction:  "callers",
-		MaxDepth:   maxDepth,
-		MaxResults: 500,
-	})
-}
-
-// GetCalleesOf returns what the specified object calls (down traversal).
-// This is a convenience wrapper around GetCallGraph with direction="callees".
-func (c *Client) GetCalleesOf(ctx context.Context, objectURI string, maxDepth int) (*CallGraphNode, error) {
-	if maxDepth <= 0 {
-		maxDepth = 5
-	}
-	return c.GetCallGraph(ctx, objectURI, &CallGraphOptions{
-		Direction:  "callees",
-		MaxDepth:   maxDepth,
-		MaxResults: 500,
-	})
-}
+// The three methods that used to stand here — GetCallGraph, GetCallersOf and
+// GetCalleesOf — asked /sap/bc/adt/cai/callgraph, and that resource does not
+// exist. It is in the discovery document of none of 7.50, 7.57 and 7.58 and
+// answers 404 "No suitable resource found" in both directions, checked with a
+// CSRF token in hand so it is the resource that is missing and not the
+// request. Everything built on them therefore reported that no object calls
+// anything, on every system, silently — which is the worst way for a
+// dependency query to be wrong.
+//
+// They are deleted rather than deprecated so that nothing can build on them
+// again. What replaces them is in callees.go: WhereUsed for the up direction
+// (the where-used list behind SE84), Callees for the down direction (the
+// CROSS and WBCROSSGT cross-reference tables), and CallGraph over the two for
+// callers who want the node shape below.
 
 // CallGraphEdge represents a single edge in the call graph.
 type CallGraphEdge struct {
@@ -1438,7 +1527,24 @@ type CallGraphEdge struct {
 	CallerName string `json:"caller_name"`
 	CalleeURI  string `json:"callee_uri"`
 	CalleeName string `json:"callee_name"`
+	// CalleeKind is what the cross-reference row said the callee is — method,
+	// function module, type, data. It decides whether an edge is something that
+	// could execute, which a coverage figure has to know: a reference to a type
+	// is not a path anything could take.
+	CalleeKind string `json:"callee_kind,omitempty"`
 	Line       int    `json:"line,omitempty"`
+}
+
+// IsExecutableKind reports whether a callee kind is something a run could
+// actually reach. The vocabulary is wbCrossKind's and crossKind's, kept in one
+// place so a coverage figure and a callee list cannot drift apart.
+func IsExecutableKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "method", "function module", "report", "transaction", "subroutine", "program", "dialog module":
+		return true
+	default:
+		return false
+	}
 }
 
 // FlattenCallGraph converts a hierarchical call graph to a flat list of edges.
@@ -1456,6 +1562,7 @@ func FlattenCallGraph(root *CallGraphNode) []CallGraphEdge {
 				CallerName: parent.Name,
 				CalleeURI:  child.URI,
 				CalleeName: child.Name,
+				CalleeKind: child.Type,
 				Line:       child.Line,
 			})
 			childCopy := child
@@ -1487,13 +1594,25 @@ func AnalyzeCallGraph(root *CallGraphNode) *CallGraphStats {
 	seen := make(map[string]bool)
 	var maxDepth int
 
+	// Keyed by identity, not by URI. The callee side builds children from
+	// cross-reference rows, which name an object but carry no ADT path, so every
+	// child arrived with URI "" — and a dedup on that key folded all of them
+	// into one. The result was a graph reporting two nodes beside its own list
+	// of twenty-seven edges, in an answer that showed both.
+	key := func(n *CallGraphNode) string {
+		if n.URI != "" {
+			return "uri:" + n.URI
+		}
+		return "name:" + n.Type + ":" + n.Name
+	}
+
 	var traverse func(node *CallGraphNode, depth int)
 	traverse = func(node *CallGraphNode, depth int) {
 		if depth > maxDepth {
 			maxDepth = depth
 		}
-		if !seen[node.URI] {
-			seen[node.URI] = true
+		if k := key(node); !seen[k] {
+			seen[k] = true
 			stats.TotalNodes++
 			stats.NodesByType[node.Type]++
 			stats.UniqueNodes = append(stats.UniqueNodes, node.Name)
@@ -1511,10 +1630,17 @@ func AnalyzeCallGraph(root *CallGraphNode) *CallGraphStats {
 
 // CallGraphComparison compares static and actual call graphs.
 type CallGraphComparison struct {
-	CommonEdges   []CallGraphEdge `json:"common_edges"`   // In both static and actual
-	StaticOnly    []CallGraphEdge `json:"static_only"`    // In static but not executed
-	ActualOnly    []CallGraphEdge `json:"actual_only"`    // Executed but not in static (dynamic calls)
-	CoverageRatio float64         `json:"coverage_ratio"` // Actual/Static ratio
+	CommonEdges []CallGraphEdge `json:"common_edges"` // In both static and actual
+	StaticOnly  []CallGraphEdge `json:"static_only"`  // In static but not executed
+	ActualOnly  []CallGraphEdge `json:"actual_only"`  // Executed but not in static (dynamic calls)
+	// CoverageRatio is executed invocations over recorded invocations, or -1
+	// when nothing callable was recorded at all — which is not the same as
+	// nothing having run.
+	CoverageRatio float64 `json:"coverage_ratio"`
+	// ExecutableEdges is how many of the static edges were invocations rather
+	// than type or data references. The denominator, stated so a reader can
+	// see what the ratio is of.
+	ExecutableEdges int `json:"executable_edges"`
 }
 
 // CompareCallGraphs compares a static call graph with an actual execution trace.
@@ -1551,8 +1677,29 @@ func CompareCallGraphs(staticEdges, actualEdges []CallGraphEdge) *CallGraphCompa
 	}
 
 	// Coverage ratio
-	if len(staticEdges) > 0 {
-		comp.CoverageRatio = float64(len(comp.CommonEdges)) / float64(len(staticEdges))
+	// Only the edges something could execute count towards coverage. Most of a
+	// class's static edges are type and data references — ABAP_BOOL, SYST,
+	// TADIR — and counting those as paths that were never taken produced
+	// figures like 0.037 for a run that exercised everything callable.
+	executable := 0
+	for _, e := range staticEdges {
+		if IsExecutableKind(e.CalleeKind) {
+			executable++
+		}
+	}
+	comp.ExecutableEdges = executable
+	commonExecutable := 0
+	for _, e := range comp.CommonEdges {
+		if IsExecutableKind(e.CalleeKind) {
+			commonExecutable++
+		}
+	}
+	if executable > 0 {
+		comp.CoverageRatio = float64(commonExecutable) / float64(executable)
+	} else if len(staticEdges) > 0 {
+		// Nothing callable was recorded, so there is no coverage to report. A
+		// zero here would read as "none of it ran".
+		comp.CoverageRatio = -1
 	}
 
 	return comp
@@ -1609,6 +1756,13 @@ type TraceExecutionResult struct {
 	// Statistics
 	StaticStats *CallGraphStats `json:"static_stats,omitempty"`
 
+	// Unsearched names the steps that did not run. Every field above is
+	// omitempty, so a run where nothing worked marshals to almost nothing and
+	// reads as "there was nothing to report". Comparison is the point of this
+	// call, and it is absent both when static and actual agree and when the
+	// trace never arrived.
+	Unsearched []Unsearched `json:"unsearched,omitempty"`
+
 	// Execution info
 	ExecutedTests []string `json:"executed_tests,omitempty"`
 	ExecutionTime int64    `json:"execution_time_us,omitempty"`
@@ -1637,17 +1791,22 @@ type TraceExecutionOptions struct {
 func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions) (*TraceExecutionResult, error) {
 	result := &TraceExecutionResult{}
 
-	// Step 1: Build static call graph (callees - what gets called from the starting point)
+	// Step 1: Build static call graph (callees - what gets called from the
+	// starting point). One hop, from the cross-reference tables: the recursive
+	// resource this used to ask does not exist, and the comparison below only
+	// needs the edges leaving the object under trace.
 	if opts.ObjectURI != "" {
-		depth := opts.MaxDepth
-		if depth <= 0 {
-			depth = 5
-		}
-
-		staticGraph, err := c.GetCalleesOf(ctx, opts.ObjectURI, depth)
+		staticGraph, err := c.CallGraph(ctx, opts.ObjectURI, &CallGraphOptions{
+			Direction:  "callees",
+			MaxResults: 500,
+		})
 		if err != nil {
-			// Non-fatal: continue without static graph
+			// Non-fatal for the run, but not for the reader: without the static
+			// half there is nothing to compare the trace against, and the
+			// comparison is simply absent rather than wrong.
 			result.StaticGraph = nil
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "static call graph", Reason: err.Error()})
 		} else {
 			result.StaticGraph = staticGraph
 			result.StaticStats = AnalyzeCallGraph(staticGraph)
@@ -1657,7 +1816,13 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 	// Step 2: Run unit tests if requested (to trigger execution)
 	if opts.RunTests && opts.TestObjectURI != "" {
 		testResult, err := c.RunUnitTests(ctx, opts.TestObjectURI, nil)
-		if err == nil && testResult != nil {
+		if err != nil || testResult == nil {
+			// The tests were asked for in order to make something run. If they
+			// did not, the trace below is of whatever else happened to execute,
+			// which is not what the caller asked to see.
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "unit tests " + opts.TestObjectURI, Reason: errOrEmpty(err, "no test result came back")})
+		} else {
 			// Collect test names that ran
 			for _, tc := range testResult.Classes {
 				for _, tm := range tc.TestMethods {
@@ -1679,13 +1844,23 @@ func (c *Client) TraceExecution(ctx context.Context, opts *TraceExecutionOptions
 		User:       traceUser,
 		MaxResults: 5,
 	})
-	if err == nil && len(traces) > 0 {
+	if err != nil || len(traces) == 0 {
+		// No trace means no actual edges, so the comparison cannot be made.
+		// Saying so is the difference between "the code ran as predicted" and
+		// "nobody looked".
+		result.Unsearched = append(result.Unsearched, Unsearched{
+			Object: "runtime trace for " + traceUser,
+			Reason: errOrEmpty(err, "no trace was recorded for this user; the code under trace may not have run")})
+	} else {
 		// Get the most recent trace
 		latestTrace := traces[0]
 
 		// Get hitlist analysis
 		analysis, err := c.GetTrace(ctx, latestTrace.ID, "hitlist")
-		if err == nil {
+		if err != nil {
+			result.Unsearched = append(result.Unsearched, Unsearched{
+				Object: "trace " + latestTrace.ID, Reason: err.Error()})
+		} else {
 			result.Trace = analysis
 			result.ExecutionTime = analysis.TotalTime
 
@@ -1712,115 +1887,49 @@ type ObjectExplorerNode struct {
 	Children    []ObjectExplorerNode `json:"children,omitempty"`
 }
 
-// GetObjectStructureCAI retrieves the object structure from Code Analysis Infrastructure.
-// This provides a hierarchical view of the object's components (methods, attributes, etc).
+// GetObjectStructureCAI returns an object's components as a tree.
+//
+// It used to ask /sap/bc/adt/cai/objectexplorer/objects, and that resource does
+// not exist. Not "not on older releases" — it is advertised in the discovery
+// document of none of 7.50, 7.57 or 7.58 and answers 404 on all of them, along
+// with the rest of the /cai/ namespace, which also took the call graph down
+// with it. So this had never returned anything, and its three callers —
+// analyze type=object_structure among them — had never worked.
+//
+// The replacement was already in this file. /sap/bc/adt/oo/classes/{name}/
+// objectstructure answers 200 with a richer document, and GetClassObjectStructure
+// already spoke it. The callers are left alone deliberately: the fix belongs
+// where the wrong URL was, not spread across everything that trusted it.
+//
+// maxResults is honoured because callers pass it, though the resource returns a
+// whole class in one answer and there is nothing to page.
 func (c *Client) GetObjectStructureCAI(ctx context.Context, objectName string, maxResults int) (*ObjectExplorerNode, error) {
 	if maxResults <= 0 {
 		maxResults = 100
 	}
-
-	params := url.Values{}
-	params.Set("objectName", objectName)
-	params.Set("maxResults", fmt.Sprintf("%d", maxResults))
-
-	resp, err := c.transport.Request(ctx, "/sap/bc/adt/cai/objectexplorer/objects", &RequestOptions{
-		Method: http.MethodGet,
-		Query:  params,
-		Accept: "application/xml",
-	})
+	structure, err := c.GetClassObjectStructure(ctx, objectName)
 	if err != nil {
-		return nil, fmt.Errorf("getting object structure: %w", err)
+		return nil, err
+	}
+	if structure == nil {
+		return nil, nil
 	}
 
-	return parseObjectExplorerResponse(resp.Body)
-}
-
-// GetObjectChildren retrieves the children of an object in the explorer tree.
-func (c *Client) GetObjectChildren(ctx context.Context, fullname string, childType string) ([]ObjectExplorerNode, error) {
-	path := fmt.Sprintf("/sap/bc/adt/cai/objectexplorer/%s/children", url.PathEscape(fullname))
-
-	params := url.Values{}
-	if childType != "" {
-		params.Set("type", childType)
+	root := &ObjectExplorerNode{
+		Name: structure.Name,
+		Type: structure.Type,
+		URI:  "/sap/bc/adt/oo/classes/" + strings.ToLower(objectName),
 	}
-
-	resp, err := c.transport.Request(ctx, path, &RequestOptions{
-		Method: http.MethodGet,
-		Query:  params,
-		Accept: "application/xml",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting object children: %w", err)
-	}
-
-	type childXML struct {
-		URI         string `xml:"uri,attr"`
-		Name        string `xml:"name,attr"`
-		Type        string `xml:"type,attr"`
-		Description string `xml:"description,attr"`
-	}
-	type childrenXML struct {
-		XMLName  xml.Name   `xml:"children"`
-		Children []childXML `xml:"child"`
-	}
-
-	var children childrenXML
-	if err := xml.Unmarshal(resp.Body, &children); err != nil {
-		return nil, fmt.Errorf("parsing children: %w", err)
-	}
-
-	result := make([]ObjectExplorerNode, len(children.Children))
-	for i, ch := range children.Children {
-		result[i] = ObjectExplorerNode{
-			URI:         ch.URI,
-			Name:        ch.Name,
-			Type:        ch.Type,
-			Description: ch.Description,
+	for i, el := range structure.Elements {
+		if i >= maxResults {
+			break
 		}
+		root.Children = append(root.Children, ObjectExplorerNode{
+			Name: el.Name,
+			Type: el.Type,
+		})
 	}
-
-	return result, nil
-}
-
-// GetObjectEntryPoints retrieves the entry points for an object.
-func (c *Client) GetObjectEntryPoints(ctx context.Context, fullname string) ([]ObjectExplorerNode, error) {
-	path := fmt.Sprintf("/sap/bc/adt/cai/objectexplorer/%s/entrypoints", url.PathEscape(fullname))
-
-	resp, err := c.transport.Request(ctx, path, &RequestOptions{
-		Method: http.MethodGet,
-		Accept: "application/xml",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting entry points: %w", err)
-	}
-
-	type entryXML struct {
-		URI         string `xml:"uri,attr"`
-		Name        string `xml:"name,attr"`
-		Type        string `xml:"type,attr"`
-		Description string `xml:"description,attr"`
-	}
-	type entriesXML struct {
-		XMLName xml.Name   `xml:"entrypoints"`
-		Entries []entryXML `xml:"entrypoint"`
-	}
-
-	var entries entriesXML
-	if err := xml.Unmarshal(resp.Body, &entries); err != nil {
-		return nil, fmt.Errorf("parsing entry points: %w", err)
-	}
-
-	result := make([]ObjectExplorerNode, len(entries.Entries))
-	for i, e := range entries.Entries {
-		result[i] = ObjectExplorerNode{
-			URI:         e.URI,
-			Name:        e.Name,
-			Type:        e.Type,
-			Description: e.Description,
-		}
-	}
-
-	return result, nil
+	return root, nil
 }
 
 // objectExplorerNodeXML is used for parsing object explorer XML responses.
@@ -1870,238 +1979,21 @@ func convertObjectExplorerNode(n *objectExplorerNodeXML) *ObjectExplorerNode {
 }
 
 // --- Short Dumps / Runtime Errors (RABAX) Operations ---
-
-// RuntimeDump represents an ABAP runtime error (short dump).
-type RuntimeDump struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Category      string `json:"category"`
-	ExceptionType string `json:"exceptionType"`
-	Program       string `json:"program"`
-	Include       string `json:"include,omitempty"`
-	Line          int    `json:"line,omitempty"`
-	User          string `json:"user"`
-	Client        string `json:"client"`
-	Host          string `json:"host,omitempty"`
-	Timestamp     string `json:"timestamp"`
-	URI           string `json:"uri"`
-}
-
-// DumpDetails contains full details of a runtime error.
-type DumpDetails struct {
-	RuntimeDump
-	StackTrace   []StackFrame      `json:"stackTrace,omitempty"`
-	Variables    []DumpVariable    `json:"variables,omitempty"`
-	SourceCode   string            `json:"sourceCode,omitempty"`
-	ErrorDetails map[string]string `json:"errorDetails,omitempty"`
-	RawHTML      string            `json:"rawHtml,omitempty"`
-}
-
-// StackFrame represents a single frame in the stack trace.
-type StackFrame struct {
-	Program string `json:"program"`
-	Include string `json:"include,omitempty"`
-	Line    int    `json:"line"`
-	Event   string `json:"event,omitempty"`
-}
-
-// DumpVariable represents a variable captured in the dump.
-type DumpVariable struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-	Type  string `json:"type,omitempty"`
-}
-
-// DumpQueryOptions configures the dump list query.
-type DumpQueryOptions struct {
-	User          string // Filter by user
-	ExceptionType string // Filter by exception type (e.g., "CX_SY_ZERODIVIDE")
-	Program       string // Filter by program name
-	Package       string // Filter by package
-	DateFrom      string // Date from (YYYYMMDD format)
-	DateTo        string // Date to (YYYYMMDD format)
-	MaxResults    int    // Maximum results (default 100)
-}
-
-// GetDumps retrieves a list of runtime errors (short dumps) from the SAP system.
-func (c *Client) GetDumps(ctx context.Context, opts *DumpQueryOptions) ([]RuntimeDump, error) {
-	if opts == nil {
-		opts = &DumpQueryOptions{MaxResults: 100}
-	}
-
-	params := url.Values{}
-
-	// Build FQL (Filter Query Language) filter
-	var filters []string
-	if opts.User != "" {
-		filters = append(filters, fmt.Sprintf("user eq '%s'", opts.User))
-	}
-	if opts.ExceptionType != "" {
-		filters = append(filters, fmt.Sprintf("exceptionType eq '%s'", opts.ExceptionType))
-	}
-	if opts.Program != "" {
-		filters = append(filters, fmt.Sprintf("program eq '%s'", opts.Program))
-	}
-	if opts.Package != "" {
-		filters = append(filters, fmt.Sprintf("package eq '%s'", opts.Package))
-	}
-	if opts.DateFrom != "" {
-		filters = append(filters, fmt.Sprintf("datetime ge '%s000000'", opts.DateFrom))
-	}
-	if opts.DateTo != "" {
-		filters = append(filters, fmt.Sprintf("datetime le '%s235959'", opts.DateTo))
-	}
-
-	if len(filters) > 0 {
-		params.Set("$filter", strings.Join(filters, " and "))
-	}
-
-	if opts.MaxResults > 0 {
-		params.Set("$top", fmt.Sprintf("%d", opts.MaxResults))
-	}
-
-	endpoint := "/sap/bc/adt/runtime/dumps"
-	if len(params) > 0 {
-		endpoint = endpoint + "?" + params.Encode()
-	}
-
-	resp, err := c.transport.Request(ctx, endpoint, &RequestOptions{
-		Method: http.MethodGet,
-		Accept: "application/atom+xml;type=feed",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting dumps: %w", err)
-	}
-
-	return parseDumpsFeed(resp.Body)
-}
-
-// GetDump retrieves full details of a specific runtime error.
-// dumpID can be either a full URI path (from GetDumps) or just the dump identifier.
-func (c *Client) GetDump(ctx context.Context, dumpID string) (*DumpDetails, error) {
-	var endpoint string
-	// GetDumps returns IDs like /sap/bc/adt/vit/runtime/dumps/{id}
-	// But the detail endpoint is /sap/bc/adt/runtime/dump/{id} (singular, no vit)
-	if strings.Contains(dumpID, "/runtime/dumps/") {
-		// Extract ID from full path and use correct endpoint
-		parts := strings.Split(dumpID, "/runtime/dumps/")
-		if len(parts) == 2 {
-			endpoint = fmt.Sprintf("/sap/bc/adt/runtime/dump/%s", parts[1])
-		} else {
-			endpoint = fmt.Sprintf("/sap/bc/adt/runtime/dump/%s", dumpID)
-		}
-	} else if strings.HasPrefix(dumpID, "/sap/bc/adt/runtime/dump/") {
-		// Already correct path
-		endpoint = dumpID
-	} else {
-		// Just the ID - construct path
-		endpoint = fmt.Sprintf("/sap/bc/adt/runtime/dump/%s", dumpID)
-	}
-
-	resp, err := c.transport.Request(ctx, endpoint, &RequestOptions{
-		Method: http.MethodGet,
-		Accept: "text/html",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting dump %s: %w", dumpID, err)
-	}
-
-	return parseDumpDetails(resp.Body, dumpID)
-}
-
-// dumpEntryXML is used for parsing dump feed entries.
-type dumpEntryXML struct {
-	ID       string `xml:"id"`
-	Title    string `xml:"title"`
-	Updated  string `xml:"updated"`
-	Category struct {
-		Term string `xml:"term,attr"`
-	} `xml:"category"`
-	Link struct {
-		Href string `xml:"href,attr"`
-	} `xml:"link"`
-	Content struct {
-		Type   string `xml:"type,attr"`
-		Source struct {
-			Line    string `xml:"line,attr"`
-			Program string `xml:"program,attr"`
-			Include string `xml:"include,attr"`
-		} `xml:"source"`
-		Exception struct {
-			Type string `xml:"type,attr"`
-		} `xml:"exception"`
-		Runtime struct {
-			User   string `xml:"user,attr"`
-			Client string `xml:"client,attr"`
-			Host   string `xml:"host,attr"`
-		} `xml:"runtime"`
-	} `xml:"content"`
-}
-
-// parseDumpsFeed parses the Atom feed of runtime errors.
-func parseDumpsFeed(data []byte) ([]RuntimeDump, error) {
-	type feedXML struct {
-		XMLName xml.Name       `xml:"feed"`
-		Entries []dumpEntryXML `xml:"entry"`
-	}
-
-	var feed feedXML
-	if err := xml.Unmarshal(data, &feed); err != nil {
-		return nil, fmt.Errorf("parsing dumps feed: %w", err)
-	}
-
-	result := make([]RuntimeDump, 0, len(feed.Entries))
-	for _, entry := range feed.Entries {
-		line := 0
-		if entry.Content.Source.Line != "" {
-			fmt.Sscanf(entry.Content.Source.Line, "%d", &line)
-		}
-
-		dump := RuntimeDump{
-			ID:            entry.ID,
-			Title:         entry.Title,
-			Category:      entry.Category.Term,
-			ExceptionType: entry.Content.Exception.Type,
-			Program:       entry.Content.Source.Program,
-			Include:       entry.Content.Source.Include,
-			Line:          line,
-			User:          entry.Content.Runtime.User,
-			Client:        entry.Content.Runtime.Client,
-			Host:          entry.Content.Runtime.Host,
-			Timestamp:     entry.Updated,
-			URI:           entry.Link.Href,
-		}
-		result = append(result, dump)
-	}
-
-	return result, nil
-}
-
-// parseDumpDetails parses the HTML dump details response.
-func parseDumpDetails(data []byte, dumpID string) (*DumpDetails, error) {
-	html := string(data)
-
-	details := &DumpDetails{
-		RuntimeDump: RuntimeDump{
-			ID: dumpID,
-		},
-		RawHTML: html,
-	}
-
-	// Extract basic info from HTML (simplified parsing)
-	// The actual HTML structure varies, so we store the raw HTML
-	// and extract what we can
-
-	// Try to extract title
-	if idx := strings.Index(html, "<title>"); idx >= 0 {
-		endIdx := strings.Index(html[idx:], "</title>")
-		if endIdx > 0 {
-			details.Title = strings.TrimSpace(html[idx+7 : idx+endIdx])
-		}
-	}
-
-	return details, nil
-}
+//
+// The client methods that lived here — GetDumps, GetDump, DumpQueryOptions and
+// the RuntimeDump/DumpDetails types — are gone, and none of them worked as
+// advertised. GetDumps built an OData $filter that /sap/bc/adt/runtime/dumps
+// ignores: checked on 7.58, a filter naming a user and a package that exist
+// nowhere still returns every dump on the system, so everything but $top was
+// decoration. Its feed parser read one Atom category and left the error type,
+// the program and the user empty. GetDump asked for the dump as HTML and
+// returned the whole page — 45 KB to nearly a megabyte — with only the <title>
+// pulled out of it.
+//
+// The replacements are in this package and are structured rather than hopeful:
+// Dumps + DumpFilter (dumps.go) for the listing, GroupDumps for what keeps
+// failing, DumpDetail (dumpdetail.go) and DumpStack (dumpstack.go) for one
+// dump, CorrelateDump (correlate.go) for the log around it.
 
 // --- ABAP Profiler / Runtime Traces (ATRA) Operations ---
 
@@ -2330,14 +2222,74 @@ func parseTraceAnalysis(data []byte, traceID, toolType string) (*TraceAnalysis, 
 
 // --- SQL Trace (ST05) Operations ---
 
-// SQLTraceState represents the current state of SQL tracing.
+// The ST05 model, rewritten against what the server sends.
+//
+// Everything here was previously modelled from a guess and never corrected,
+// because the request carried a concrete Accept that this resource answers with
+// 406. Both calls failed on every invocation they had ever made, so no response
+// was ever parsed and no parser was ever contradicted. Fixing the Accept made
+// the requests succeed and the parsers wrong in the same minute.
+//
+// What the resource actually returns is broader than "is SQL trace on": a row
+// per application server instance, each carrying eight independent trace types.
+// SQL is one of them.
+
+// SQLTraceState is the trace state of one application server instance.
 type SQLTraceState struct {
-	Active     bool   `json:"active"`
-	User       string `json:"user,omitempty"`
-	TraceType  string `json:"traceType,omitempty"`
-	StartTime  string `json:"startTime,omitempty"`
-	MaxRecords int    `json:"maxRecords,omitempty"`
-	TraceFile  string `json:"traceFile,omitempty"`
+	Instance   string `json:"instance"`
+	Host       string `json:"host,omitempty"`
+	IsLocal    bool   `json:"isLocal"`
+	IsSelected bool   `json:"isSelected"`
+	// ModifiedBy and ModifiedAt are who last changed this instance's trace
+	// settings, which is the only "when" the resource offers — there is no
+	// start time for a running trace.
+	ModifiedBy string `json:"modifiedBy,omitempty"`
+	ModifiedAt string `json:"modifiedAt,omitempty"`
+
+	// Types is the eight switches, by their own names. A map rather than eight
+	// fields because callers ask "is anything on" far more often than they ask
+	// about one, and because the set has grown before.
+	Types map[string]bool `json:"types"`
+
+	// Filter narrows what is recorded. Empty strings mean unfiltered, which is
+	// the ordinary state and is why they are omitted.
+	TraceUser       string `json:"traceUser,omitempty"`
+	TransactionCode string `json:"transactionCode,omitempty"`
+	Program         string `json:"program,omitempty"`
+	RFCFunction     string `json:"rfcFunction,omitempty"`
+	URL             string `json:"url,omitempty"`
+	WorkProcessID   string `json:"workProcessId,omitempty"`
+
+	StackTrace     bool `json:"stackTrace"`
+	AuthErrorsOnly bool `json:"authErrorsOnly"`
+}
+
+// Active reports whether any trace type is switched on for this instance.
+func (s *SQLTraceState) Active() bool {
+	for _, on := range s.Types {
+		if on {
+			return true
+		}
+	}
+	return false
+}
+
+// SQLTraceOn reports whether the SQL trace specifically is on.
+func (s *SQLTraceState) SQLTraceOn() bool { return s.Types["sql"] }
+
+// SQLTraceDirectory is what the trace directory resource returns.
+//
+// On 7.58 it returns no entries at all: one URI, pointing at the STMC web
+// application where the traces are read. Modelling it as a list of files and
+// returning an empty one would say "this system has no traces", which is a
+// different statement and not one this resource makes.
+type SQLTraceDirectory struct {
+	// Entries is what the resource lists, where it lists anything.
+	Entries []SQLTraceEntry `json:"entries"`
+	// AnalysisURL is where the release directs a reader instead. When it is set
+	// and Entries is empty, the absence of entries is a property of the
+	// resource and not of the system.
+	AnalysisURL string `json:"analysisUrl,omitempty"`
 }
 
 // SQLTraceEntry represents a trace file in the directory.
@@ -2352,11 +2304,17 @@ type SQLTraceEntry struct {
 	URI         string `json:"uri"`
 }
 
-// GetSQLTraceState checks if SQL trace is currently active.
-func (c *Client) GetSQLTraceState(ctx context.Context) (*SQLTraceState, error) {
+// GetSQLTraceState returns the trace state of every application server
+// instance this system reports.
+func (c *Client) GetSQLTraceState(ctx context.Context) ([]SQLTraceState, error) {
+	// Measured on 7.58: this resource answers */* and refuses everything else
+	// with 406 — application/xml, text/plain, and both spellings of the vendor
+	// type it might plausibly want. The concrete type here made GetSQLTraceState
+	// fail on every call it had ever made. Third place this week; the debugger
+	// and the RFC tunnel were the first two.
 	resp, err := c.transport.Request(ctx, "/sap/bc/adt/st05/trace/state", &RequestOptions{
 		Method: http.MethodGet,
-		Accept: "application/xml",
+		Accept: "*/*",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("getting SQL trace state: %w", err)
@@ -2366,7 +2324,7 @@ func (c *Client) GetSQLTraceState(ctx context.Context) (*SQLTraceState, error) {
 }
 
 // ListSQLTraces retrieves a list of SQL trace files.
-func (c *Client) ListSQLTraces(ctx context.Context, user string, maxResults int) ([]SQLTraceEntry, error) {
+func (c *Client) ListSQLTraces(ctx context.Context, user string, maxResults int) (*SQLTraceDirectory, error) {
 	params := url.Values{}
 	if user != "" {
 		params.Set("user", user)
@@ -2380,9 +2338,12 @@ func (c *Client) ListSQLTraces(ctx context.Context, user string, maxResults int)
 		endpoint = endpoint + "?" + params.Encode()
 	}
 
+	// Same measurement, same answer: the trace directory refuses
+	// application/atom+xml with a 406 and answers */*. Both ST05 resources were
+	// unreachable, and only one of them was being probed.
 	resp, err := c.transport.Request(ctx, endpoint, &RequestOptions{
 		Method: http.MethodGet,
-		Accept: "application/atom+xml",
+		Accept: "*/*",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing SQL traces: %w", err)
@@ -2391,39 +2352,87 @@ func (c *Client) ListSQLTraces(ctx context.Context, user string, maxResults int)
 	return parseSQLTraceDirectory(resp.Body)
 }
 
-// parseSQLTraceState parses the SQL trace state XML.
-func parseSQLTraceState(data []byte) (*SQLTraceState, error) {
-	type stateXML struct {
-		XMLName    xml.Name `xml:"traceState"`
-		Active     string   `xml:"active,attr"`
-		User       string   `xml:"user,attr"`
-		TraceType  string   `xml:"traceType,attr"`
-		StartTime  string   `xml:"startTime,attr"`
-		MaxRecords string   `xml:"maxRecords,attr"`
-		TraceFile  string   `xml:"traceFile,attr"`
+// parseSQLTraceState reads the instance table the resource actually sends.
+func parseSQLTraceState(data []byte) ([]SQLTraceState, error) {
+	type flags struct {
+		SQL  string `xml:"sqlOn"`
+		Buf  string `xml:"bufOn"`
+		Enq  string `xml:"enqOn"`
+		RFC  string `xml:"rfcOn"`
+		HTTP string `xml:"httpOn"`
+		APC  string `xml:"apcOn"`
+		AMC  string `xml:"amcOn"`
+		Auth string `xml:"authOn"`
 	}
-
-	var state stateXML
-	if err := xml.Unmarshal(data, &state); err != nil {
+	type props struct {
+		AuthErrorsOnly string `xml:"authErrorsOnly"`
+		StackTraceOn   string `xml:"stackTraceOn"`
+	}
+	type filter struct {
+		TraceUser       string `xml:"traceUser"`
+		TransactionCode string `xml:"transactionCode"`
+		Program         string `xml:"program"`
+		RFCFunction     string `xml:"rfcFunction"`
+		URL             string `xml:"url"`
+		WpID            string `xml:"wpId"`
+	}
+	type instance struct {
+		Instance   string `xml:"instance"`
+		Host       string `xml:"host"`
+		IsLocal    string `xml:"isLocal"`
+		IsSelected string `xml:"isSelected"`
+		ModUser    string `xml:"modificationUser"`
+		ModAt      string `xml:"modificationDateTime"`
+		Types      flags  `xml:"traceTypes"`
+		Props      props  `xml:"traceProperties"`
+		Filter     filter `xml:"traceFilter"`
+	}
+	var table struct {
+		XMLName   xml.Name   `xml:"traceStateInstanceTable"`
+		Instances []instance `xml:"traceStateInstance"`
+	}
+	if err := xml.Unmarshal(data, &table); err != nil {
 		return nil, fmt.Errorf("parsing SQL trace state: %w", err)
 	}
 
-	var maxRecords int
-	if state.MaxRecords != "" {
-		fmt.Sscanf(state.MaxRecords, "%d", &maxRecords)
+	out := make([]SQLTraceState, 0, len(table.Instances))
+	for _, in := range table.Instances {
+		out = append(out, SQLTraceState{
+			Instance:   strings.TrimSpace(in.Instance),
+			Host:       strings.TrimSpace(in.Host),
+			IsLocal:    xmlBool(in.IsLocal),
+			IsSelected: xmlBool(in.IsSelected),
+			ModifiedBy: strings.TrimSpace(in.ModUser),
+			ModifiedAt: strings.TrimSpace(in.ModAt),
+			Types: map[string]bool{
+				"sql": xmlBool(in.Types.SQL), "buffer": xmlBool(in.Types.Buf),
+				"enqueue": xmlBool(in.Types.Enq), "rfc": xmlBool(in.Types.RFC),
+				"http": xmlBool(in.Types.HTTP), "apc": xmlBool(in.Types.APC),
+				"amc": xmlBool(in.Types.AMC), "authorization": xmlBool(in.Types.Auth),
+			},
+			TraceUser:       strings.TrimSpace(in.Filter.TraceUser),
+			TransactionCode: strings.TrimSpace(in.Filter.TransactionCode),
+			Program:         strings.TrimSpace(in.Filter.Program),
+			RFCFunction:     strings.TrimSpace(in.Filter.RFCFunction),
+			URL:             strings.TrimSpace(in.Filter.URL),
+			WorkProcessID:   strings.TrimSpace(in.Filter.WpID),
+			StackTrace:      xmlBool(in.Props.StackTraceOn),
+			AuthErrorsOnly:  xmlBool(in.Props.AuthErrorsOnly),
+		})
 	}
-
-	return &SQLTraceState{
-		Active:     state.Active == "true" || state.Active == "X",
-		User:       state.User,
-		TraceType:  state.TraceType,
-		StartTime:  state.StartTime,
-		MaxRecords: maxRecords,
-		TraceFile:  state.TraceFile,
-	}, nil
+	return out, nil
 }
 
-// sqlTraceEntryXML is used for parsing SQL trace directory.
+// xmlBool reads the several ways SAP writes a flag.
+func xmlBool(v string) bool {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "TRUE", "X", "1":
+		return true
+	}
+	return false
+}
+
+// sqlTraceEntryXML is one entry of the Atom-feed shape.
 type sqlTraceEntryXML struct {
 	ID      string `xml:"id"`
 	Title   string `xml:"title"`
@@ -2445,43 +2454,54 @@ type sqlTraceEntryXML struct {
 	} `xml:"content"`
 }
 
-// parseSQLTraceDirectory parses the SQL trace directory feed.
-func parseSQLTraceDirectory(data []byte) ([]SQLTraceEntry, error) {
-	type feedXML struct {
+// parseSQLTraceDirectory reads the directory document.
+//
+// Two shapes, and which one arrives is a property of the release. Older systems
+// answer with an Atom feed of trace files. 7.58 answers with a single URI
+// pointing at the STMC web application, and lists nothing at all — the traces
+// are there, they are simply not offered through this resource.
+//
+// The distinction is the whole reason this returns a struct and not a slice. An
+// empty slice from here would read as "this system has no traces", which is a
+// claim about the system. What is true is a claim about the resource, and the
+// caller is handed the URL so the answer is still useful.
+func parseSQLTraceDirectory(data []byte) (*SQLTraceDirectory, error) {
+	var feed struct {
 		XMLName xml.Name           `xml:"feed"`
 		Entries []sqlTraceEntryXML `xml:"entry"`
 	}
+	if err := xml.Unmarshal(data, &feed); err == nil {
+		out := &SQLTraceDirectory{Entries: make([]SQLTraceEntry, 0, len(feed.Entries))}
+		for _, entry := range feed.Entries {
+			var recordCount int
+			var size int64
+			fmt.Sscanf(entry.Content.Trace.RecordCount, "%d", &recordCount)
+			fmt.Sscanf(entry.Content.Trace.Size, "%d", &size)
+			out.Entries = append(out.Entries, SQLTraceEntry{
+				ID:          entry.ID,
+				User:        entry.Author.Name,
+				StartTime:   entry.Content.Trace.StartTime,
+				EndTime:     entry.Content.Trace.EndTime,
+				TraceType:   entry.Content.Trace.TraceType,
+				RecordCount: recordCount,
+				Size:        size,
+				URI:         entry.Link.Href,
+			})
+		}
+		return out, nil
+	}
 
-	var feed feedXML
-	if err := xml.Unmarshal(data, &feed); err != nil {
+	var dir struct {
+		XMLName xml.Name `xml:"traceDirectory"`
+		URI     string   `xml:"uri"`
+	}
+	if err := xml.Unmarshal(data, &dir); err != nil {
 		return nil, fmt.Errorf("parsing SQL trace directory: %w", err)
 	}
-
-	result := make([]SQLTraceEntry, 0, len(feed.Entries))
-	for _, entry := range feed.Entries {
-		var recordCount int
-		var size int64
-		if entry.Content.Trace.RecordCount != "" {
-			fmt.Sscanf(entry.Content.Trace.RecordCount, "%d", &recordCount)
-		}
-		if entry.Content.Trace.Size != "" {
-			fmt.Sscanf(entry.Content.Trace.Size, "%d", &size)
-		}
-
-		trace := SQLTraceEntry{
-			ID:          entry.ID,
-			User:        entry.Author.Name,
-			StartTime:   entry.Content.Trace.StartTime,
-			EndTime:     entry.Content.Trace.EndTime,
-			TraceType:   entry.Content.Trace.TraceType,
-			RecordCount: recordCount,
-			Size:        size,
-			URI:         entry.Link.Href,
-		}
-		result = append(result, trace)
-	}
-
-	return result, nil
+	return &SQLTraceDirectory{
+		Entries:     []SQLTraceEntry{},
+		AnalysisURL: strings.TrimSpace(dir.URI),
+	}, nil
 }
 
 // --- API Release State (Clean Core) ---

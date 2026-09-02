@@ -77,6 +77,11 @@ node_modules/
 
 # Transient files
 *.jsonl
+# …except recorded debugger conversations, which are test fixtures on purpose.
+# They are taken from a live system, so the recorder drops Set-Cookie and every
+# other header that carries a session or names a server before writing one, and
+# a test in pkg/saprfc re-checks the committed files on every run.
+!pkg/saprfc/testdata/cassettes/*.jsonl
 2026-*-last-login-*
 
 # GoReleaser artifacts
@@ -102,3 +107,9 @@ cookie-*
 # Third-party source drops evaluated in place
 quickjs/
 quickjs.zip
+
+# Local scratch, never committed (see .private/README.md)
+.private/
+
+# Isolated worktrees for background agents
+.claude/worktrees/

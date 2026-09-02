@@ -29,9 +29,85 @@ type SystemConfig struct {
 	CookieFile   string `json:"cookie_file,omitempty"`   // Path to Netscape-format cookie file
 	CookieString string `json:"cookie_string,omitempty"` // Inline cookie string
 
+	// Auth names the authentication method explicitly. Empty infers one from
+	// the fields above: cookies if present, otherwise user/password. Set it to
+	// "sso" to authenticate through a browser single sign-on handshake.
+	Auth string `json:"auth,omitempty"`
+
+	// SSO tunes browser single sign-on. Every field is optional — with auth set
+	// to "sso" and nothing else configured, vsp derives a trigger URL from this
+	// system's URL and lets the capture pick its own browser profile.
+	SSO *SSOSettings `json:"sso,omitempty"`
+
+	// Classic RFC (open-rfc-go) settings. The host defaults to the URL's host and
+	// the gateway port to 3300 + system number; set rfc_port to override directly.
+	// Credentials default to the RFC environment (SAP_USER/SAP_PASSWORD), then to
+	// this system's user/password.
+	RFCHost     string `json:"rfc_host,omitempty"`
+	RFCSysnr    string `json:"rfc_sysnr,omitempty"`
+	RFCPort     int    `json:"rfc_port,omitempty"`
+	RFCUser     string `json:"rfc_user,omitempty"`
+	RFCPassword string `json:"rfc_password,omitempty"`
+
 	// Optional safety settings per system
 	ReadOnly        bool     `json:"read_only,omitempty"`
 	AllowedPackages []string `json:"allowed_packages,omitempty"`
+
+	// Transport safety, per system. These exist here and not only as server
+	// flags because the command line has no other way to reach them: the flags
+	// belong to the root command, which is the MCP server, so a subcommand that
+	// tried to pass one was told the flag does not exist. Without these fields
+	// `vsp transport list` could never succeed, whatever the caller typed.
+	EnableTransports        bool     `json:"enable_transports,omitempty"`
+	TransportReadOnly       bool     `json:"transport_read_only,omitempty"`
+	AllowedTransports       []string `json:"allowed_transports,omitempty"`
+	AllowTransportableEdits bool     `json:"allow_transportable_edits,omitempty"`
+	BlockFreeSQL            bool     `json:"block_free_sql,omitempty"`
+}
+
+// SSOSettings configures browser single sign-on for one system.
+type SSOSettings struct {
+	// TriggerURL is the authentication-gated page whose loading starts the SSO
+	// redirect chain. Defaults to this system's ADT root, which every system
+	// vsp can talk to has. Point it elsewhere — a Fiori launchpad, say — on
+	// systems that gate single sign-on at a different entry point.
+	TriggerURL string `json:"trigger_url,omitempty"`
+
+	// Profile is the browser profile directory. A persistent one lets later
+	// refreshes reuse the identity provider's session. Under WSL the browser
+	// runs on the Windows side, so this must be a Windows path.
+	Profile string `json:"profile,omitempty"`
+
+	// Helper overrides the path to the Windows capture helper (vsp-sso.exe),
+	// which is how the browser step runs under WSL.
+	Helper string `json:"helper,omitempty"`
+
+	// OnExpiry decides what happens when a silent refresh cannot finish because
+	// the identity provider wants a human: "window" (the default) opens a
+	// browser window to sign in, "error" reports it and names the command to
+	// run instead. Prefer "error" where nobody is watching the screen.
+	OnExpiry string `json:"on_expiry,omitempty"`
+
+	// SilentTimeout and InteractiveTimeout override the capture budgets, as Go
+	// durations ("45s", "5m").
+	SilentTimeout      string `json:"silent_timeout,omitempty"`
+	InteractiveTimeout string `json:"interactive_timeout,omitempty"`
+}
+
+// UsesSSO reports whether this system authenticates through browser SSO.
+func (s *SystemConfig) UsesSSO() bool {
+	return strings.EqualFold(s.Auth, "sso")
+}
+
+// InteractiveOnExpiry reports whether a failed silent refresh may open a
+// browser window. Opening one is the default: the alternative leaves a session
+// broken until someone notices and runs a command by hand. A nil receiver means
+// nothing was configured, so the default applies.
+func (s *SSOSettings) InteractiveOnExpiry() bool {
+	if s == nil || s.OnExpiry == "" {
+		return true
+	}
+	return !strings.EqualFold(s.OnExpiry, "error")
 }
 
 // SystemsConfig is the root configuration containing all systems.
@@ -127,6 +203,25 @@ func (c *SystemsConfig) GetSystem(name string) (*SystemConfig, error) {
 		sys.TransportAttribute = strings.ToUpper(strings.TrimSpace(sys.TransportAttribute))
 	}
 
+	// Resolve RFC credentials: VSP_<SYSTEM>_RFC_PASSWORD, then the RFC
+	// environment (SAP_USER/SAP_PASSWORD) used by the open-rfc-go tooling.
+	if sys.RFCPassword == "" {
+		envKey := fmt.Sprintf("VSP_%s_RFC_PASSWORD", strings.ToUpper(name))
+		if pwd := os.Getenv(envKey); pwd != "" {
+			sys.RFCPassword = pwd
+		}
+	}
+	if sys.RFCPassword == "" {
+		if pwd := os.Getenv("SAP_PASSWORD"); pwd != "" {
+			sys.RFCPassword = pwd
+		}
+	}
+	if sys.RFCUser == "" {
+		if u := os.Getenv("SAP_USER"); u != "" {
+			sys.RFCUser = u
+		}
+	}
+
 	// Resolve cache from env if not set in config
 	if !sys.Cache {
 		envKey := fmt.Sprintf("VSP_%s_CACHE", strings.ToUpper(name))
@@ -188,6 +283,11 @@ func ExampleConfig() string {
 				ReadOnly:        true,
 				AllowedPackages: []string{"Z*", "Y*"},
 			},
+			"sso": {
+				URL:    "https://sso.example.com",
+				Client: "100",
+				Auth:   "sso",
+			},
 		},
 	}
 
@@ -246,11 +346,11 @@ func DefaultDisabledTools() []string {
 		// AMDP/HANA Debugger - session management issues
 		"AMDPDebuggerStart", "AMDPDebuggerResume", "AMDPDebuggerStop",
 		"AMDPDebuggerStep", "AMDPGetVariables", "AMDPSetBreakpoint", "AMDPGetBreakpoints",
-		// ABAP Debugger - requires ZADT_VSP WebSocket, HTTP unreliable
-		"DebuggerListen", "DebuggerAttach", "DebuggerDetach",
-		"DebuggerStep", "DebuggerGetStack", "DebuggerGetVariables",
-		// Breakpoints - requires ZADT_VSP WebSocket
-		"SetBreakpoint", "GetBreakpoints", "DeleteBreakpoint",
+		// The ABAP debugger and its breakpoints were here until 2026-08-21,
+		// disabled because a stateless client cannot hold a debug session. The
+		// server holds one now (internal/mcp/handlers_debug_session.go) and both
+		// halves run against SAP's own ADT resources, over the RFC tunnel or over
+		// stateful HTTPS, with no ZADT_VSP and no Z code at all.
 		// UI5 write operations - need alternate API
 		"UI5CreateApp", "UI5DeleteApp", "UI5DeleteFile", "UI5UploadFile",
 	}

@@ -1,6 +1,9 @@
 package deps
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestGetDependencyZIP(t *testing.T) {
 	tests := []struct {
@@ -25,5 +28,30 @@ func TestGetDependencyZIP(t *testing.T) {
 				t.Fatalf("expected nil for %q, got %d bytes", tt.input, len(got))
 			}
 		})
+	}
+}
+
+// The archives are embedded at build time, so a build can know a dependency and
+// still carry zero bytes of it — which is the state this repository is in for
+// abapGit. A nil check let that through, the caller unpacked nothing, and the
+// install reported success.
+func TestRequireDependencyZIPRejectsAnEmptyArchive(t *testing.T) {
+	for _, name := range []string{"abapgit-standalone", "abapgit-full"} {
+		if len(GetDependencyZIP(name)) > 0 {
+			t.Skipf("%s is embedded in this build, nothing to prove", name)
+		}
+		_, err := RequireDependencyZIP(name)
+		if err == nil {
+			t.Fatalf("%s is empty and must be refused", name)
+		}
+		if !strings.Contains(err.Error(), "vsp rfc export") {
+			t.Fatalf("the error must say how to produce the archive, got: %v", err)
+		}
+	}
+}
+
+func TestRequireDependencyZIPRejectsAnUnknownName(t *testing.T) {
+	if _, err := RequireDependencyZIP("not-a-dependency"); err == nil {
+		t.Fatal("an unknown dependency must be refused")
 	}
 }

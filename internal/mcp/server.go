@@ -3,21 +3,27 @@ package mcp
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	openrfc "github.com/oisee/open-rfc-go/rfc"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
 // AsyncTask represents a background task status.
 type AsyncTask struct {
 	ID        string      `json:"id"`
-	Type      string      `json:"type"`       // "report", "export", etc.
-	Status    string      `json:"status"`     // "running", "completed", "error"
+	Type      string      `json:"type"`   // "report", "export", etc.
+	Status    string      `json:"status"` // "running", "completed", "error"
 	StartedAt time.Time   `json:"started_at"`
 	EndedAt   *time.Time  `json:"ended_at,omitempty"`
 	Result    interface{} `json:"result,omitempty"`
@@ -26,13 +32,24 @@ type AsyncTask struct {
 
 // Server wraps the MCP server with ADT client.
 type Server struct {
-	mcpServer      *server.MCPServer
-	adtClient      *adt.Client
-	amdpWSClient   *adt.AMDPWebSocketClient   // WebSocket-based AMDP client (ZADT_VSP)
-	debugWSClient  *adt.DebugWebSocketClient  // WebSocket-based debug client (ZADT_VSP)
-	config         *Config                    // Server configuration for session manager creation
-	featureProber  *adt.FeatureProber         // Feature detection system (safety network)
-	featureConfig  adt.FeatureConfig          // Feature configuration
+	mcpServer     *server.MCPServer
+	adtClient     *adt.Client
+	amdpWSClient  *adt.AMDPWebSocketClient  // WebSocket-based AMDP client (ZADT_VSP)
+	debugWSClient *adt.DebugWebSocketClient // WebSocket-based debug client (ZADT_VSP)
+	config        *Config                   // Server configuration for session manager creation
+	featureProber *adt.FeatureProber        // Feature detection system (safety network)
+	featureConfig adt.FeatureConfig         // Feature configuration
+
+	// Shared classic-RFC client (lazily dialled, reused across tool calls, and
+	// pinged while idle so a gateway timeout does not kill it)
+	rfcMu       sync.Mutex
+	rfcShared   *openrfc.Client
+	rfcLastUsed time.Time
+
+	// The one debug session this server holds across tool calls (see
+	// handlers_debug_session.go); nil until the first debugger call.
+	debugMu   sync.Mutex
+	debugSess *debugSession
 
 	// Async task management
 	asyncTasks   map[string]*AsyncTask
@@ -53,6 +70,13 @@ type Config struct {
 	// Cookie authentication (alternative to basic auth)
 	Cookies map[string]string
 
+	// Build names the binary, as "v2.52.0 (commit abc1234, built ...)".
+	//
+	// It is a string the caller composes rather than three fields, because the
+	// only thing this package does with it is print it, and three fields would
+	// be three chances for one of them to go unset.
+	Build string
+
 	// Verbose output
 	Verbose bool
 
@@ -65,11 +89,11 @@ type Config struct {
 	DisabledGroups string
 
 	// Safety configuration
-	ReadOnly         bool
-	BlockFreeSQL     bool
-	AllowedOps       string
-	DisallowedOps    string
-	AllowedPackages  []string
+	ReadOnly                bool
+	BlockFreeSQL            bool
+	AllowedOps              string
+	DisallowedOps           string
+	AllowedPackages         []string
 	EnableTransports        bool     // Explicitly enable transport management (default: disabled)
 	TransportReadOnly       bool     // Only allow read operations on transports (list, get)
 	AllowedTransports       []string // Whitelist specific transports (supports wildcards like "A4HK*")
@@ -93,6 +117,11 @@ type Config struct {
 	// ReauthFunc is called on 401 to re-authenticate (e.g., re-run SAML dance).
 	// Returns fresh cookies. Passed through to adt.Config.
 	ReauthFunc func(ctx context.Context) (map[string]string, error)
+
+	// ReauthTimeout caps one re-authentication attempt. Zero uses the client
+	// default, which assumes the flow runs unattended; a browser sign-in that
+	// stops to ask for a second factor needs considerably longer.
+	ReauthTimeout time.Duration
 
 	// Session keep-alive interval (0 = disabled)
 	// Sends periodic pings to prevent session timeout during idle periods.
@@ -129,6 +158,9 @@ func NewServer(cfg *Config) *Server {
 	if cfg.ReauthFunc != nil {
 		opts = append(opts, adt.WithReauthFunc(cfg.ReauthFunc))
 	}
+	if cfg.ReauthTimeout > 0 {
+		opts = append(opts, adt.WithReauthTimeout(cfg.ReauthTimeout))
+	}
 
 	// Configure safety settings
 	safety := adt.UnrestrictedSafetyConfig() // Default: unrestricted for backwards compatibility
@@ -162,7 +194,17 @@ func NewServer(cfg *Config) *Server {
 	opts = append(opts, adt.WithSafety(safety))
 
 	adtClient := adt.NewClient(cfg.BaseURL, cfg.Username, cfg.Password, opts...)
+	return NewServerWithClient(cfg, adtClient)
+}
 
+// NewServerWithClient builds a server around a client the caller already holds.
+//
+// The CLI resolves a system into a client of its own — carrying that system's
+// cookies, its browser single sign-on with the refresh hook attached, and its
+// declared safety — and none of that survives a round trip through Config.
+// `vsp sweep` has to call handlers through the real dispatch path on the real
+// connection, so it hands the client over rather than describing it.
+func NewServerWithClient(cfg *Config, adtClient *adt.Client) *Server {
 	// Set terminal ID for debugger operations
 	// Priority: 1) Custom ID (SAP GUI), 2) User-based ID
 	if cfg.TerminalID != "" {
@@ -225,13 +267,117 @@ func parseFeatureMode(s string) adt.FeatureMode {
 
 // ServeStdio starts the MCP server on stdin/stdout.
 func (s *Server) ServeStdio() error {
+	// A debuggee left attached when the server exits stays suspended in a work
+	// process until its caller times out, so the session is released here as
+	// well as on an explicit detach.
+	defer s.closeDebugSession(context.Background())
 	return server.ServeStdio(s.mcpServer)
 }
 
 // ServeHTTP starts the MCP server as a Streamable HTTP endpoint.
+//
+// The endpoint exposes the whole ADT tool surface under the operator's SAP
+// credentials, so it is guarded twice:
+//
+//   - an API key (VSP_HTTP_API_KEY), compared in constant time. Without it a
+//     bind to anything but a loopback address is refused outright, because an
+//     unauthenticated remote caller would inherit those credentials.
+//   - Origin validation, so a page the operator merely visits cannot drive a
+//     loopback endpoint through DNS rebinding. Requests without an Origin (a
+//     normal API client) pass; a cross-origin browser request does not.
+//
+// GET /health answers without either check, for liveness probes.
 func (s *Server) ServeHTTP(addr string) error {
-	httpServer := server.NewStreamableHTTPServer(s.mcpServer)
-	return httpServer.Start(addr)
+	apiKey := strings.TrimSpace(os.Getenv("VSP_HTTP_API_KEY"))
+	if apiKey == "" && !isLoopbackAddr(addr) {
+		return fmt.Errorf("refusing to serve %s without authentication: set VSP_HTTP_API_KEY (it exposes every ADT tool under your SAP credentials)", addr)
+	}
+	if apiKey == "" {
+		fmt.Fprintf(os.Stderr, "[WARN] HTTP transport on %s has no API key: set VSP_HTTP_API_KEY. Loopback only, and Origin is still validated.\n", addr)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.Handle("/", requireAPIKey(apiKey, validateOrigin(server.NewStreamableHTTPServer(s.mcpServer))))
+
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return httpServer.ListenAndServe()
+}
+
+// requireAPIKey rejects requests without a matching bearer token. An empty key
+// disables the check (only reachable on a loopback bind, see ServeHTTP).
+func requireAPIKey(apiKey string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apiKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		presented := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if presented == "" {
+			presented = r.Header.Get("X-API-Key")
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(apiKey)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="vsp"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// validateOrigin blocks cross-origin browser requests, which is what makes a
+// loopback endpoint immune to DNS rebinding. A request with no Origin header is
+// not a browser page and passes through.
+func validateOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		u, err := url.Parse(origin)
+		if err != nil || !sameHost(u.Host, r.Host) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameHost compares an Origin's host with the request's Host, ignoring a
+// missing port on either side.
+func sameHost(originHost, requestHost string) bool {
+	strip := func(h string) string {
+		if host, _, err := net.SplitHostPort(h); err == nil {
+			return host
+		}
+		return h
+	}
+	return strings.EqualFold(strip(originHost), strip(requestHost))
+}
+
+// isLoopbackAddr reports whether a listen address is bound to loopback only.
+// An empty or wildcard host (":8080", "0.0.0.0:8080", "[::]:8080") is not.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // GetMCPServer returns the underlying MCP server (for custom transport setup).
@@ -246,6 +392,28 @@ func newToolResultError(message string) *mcp.CallToolResult {
 	return result
 }
 
+// applyWSAuth hands a WebSocket client the browser session, when the server is
+// running on one.
+//
+// The WebSocket clients were built with a password as their only credential, so
+// on a system reached through single sign-on — where no password exists — every
+// feature behind ZADT_VSP was unreachable for a client-side reason. The upgrade
+// request carries a cookie like any other HTTP request; this passes it on.
+func (s *Server) applyWSAuth(setCookies func(map[string]string)) {
+	// Ask the ADT client rather than the config. A session that expires is
+	// replaced wholesale, and the config holds the map handed over at startup —
+	// so a server that has been running long enough to re-authenticate would
+	// open every WebSocket with the dead session while its ordinary calls
+	// carried on working, which is a confusing way to fail.
+	if live := s.adtClient.CurrentCookies(); len(live) > 0 {
+		setCookies(live)
+		return
+	}
+	if len(s.config.Cookies) > 0 {
+		setCookies(s.config.Cookies)
+	}
+}
+
 // ensureWSConnected ensures the WebSocket client is connected, creating it if needed.
 // Returns error result if connection fails, nil on success.
 func (s *Server) ensureWSConnected(ctx context.Context, toolName string) *mcp.CallToolResult {
@@ -253,6 +421,7 @@ func (s *Server) ensureWSConnected(ctx context.Context, toolName string) *mcp.Ca
 		s.amdpWSClient = adt.NewAMDPWebSocketClient(
 			s.config.BaseURL, s.config.Client, s.config.Username, s.config.Password, s.config.InsecureSkipVerify,
 		)
+		s.applyWSAuth(s.amdpWSClient.SetCookies)
 		if err := s.amdpWSClient.Connect(ctx); err != nil {
 			s.amdpWSClient = nil
 			return newToolResultError(fmt.Sprintf("%s: WebSocket connect failed: %v", toolName, err))

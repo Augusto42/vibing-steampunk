@@ -41,7 +41,28 @@ type systemParams struct {
 	CookieFile   string
 	CookieString string
 
+	// Auth names the authentication method ("sso" for browser single sign-on).
+	Auth string
+	// SSO carries this system's single sign-on settings, if any.
+	SSO *config.SSOSettings
+
 	TransportAttribute string
+
+	// Safety, as declared for this system. The CLI used to drop these on the
+	// floor: a system marked read_only in .vsp.json was fully writable from
+	// every subcommand, because only the MCP server ever applied a safety
+	// config to its client.
+	ReadOnly        bool
+	AllowedPackages []string
+
+	// Transport safety. The command line reaches these only through the system
+	// config or the environment; the equivalent flags live on the root command
+	// and are rejected by every subcommand.
+	EnableTransports        bool
+	TransportReadOnly       bool
+	AllowedTransports       []string
+	AllowTransportableEdits bool
+	BlockFreeSQL            bool
 
 	Cache     bool
 	CachePath string
@@ -81,10 +102,11 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			return nil, err
 		}
 
-		// Require either password or cookie auth
+		// Require some way to authenticate. An SSO system needs no stored
+		// credential at all: the browser handshake produces one on demand.
 		hasCookieAuth := sys.CookieFile != "" || sys.CookieString != ""
-		if sys.Password == "" && !hasCookieAuth {
-			return nil, fmt.Errorf("auth not found for system '%s'. Set VSP_%s_PASSWORD env var or use cookie_file/cookie_string", effectiveName, strings.ToUpper(effectiveName))
+		if sys.Password == "" && !hasCookieAuth && !sys.UsesSSO() {
+			return nil, fmt.Errorf("auth not found for system '%s'. Set VSP_%s_PASSWORD env var, use cookie_file/cookie_string, or set \"auth\": \"sso\"", effectiveName, strings.ToUpper(effectiveName))
 		}
 
 		verbose, _ := cmd.Flags().GetBool("verbose")
@@ -103,9 +125,19 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			Insecure:           sys.Insecure,
 			CookieFile:         sys.CookieFile,
 			CookieString:       sys.CookieString,
+			Auth:               sys.Auth,
+			SSO:                sys.SSO,
 			TransportAttribute: sys.TransportAttribute,
-			Cache:              sys.Cache,
-			CachePath:          sys.CachePath,
+			ReadOnly:           sys.ReadOnly,
+			AllowedPackages:    sys.AllowedPackages,
+
+			EnableTransports:        sys.EnableTransports || envFlag("SAP_ENABLE_TRANSPORTS"),
+			TransportReadOnly:       sys.TransportReadOnly || envFlag("SAP_TRANSPORT_READ_ONLY"),
+			AllowedTransports:       firstNonEmptyList(sys.AllowedTransports, splitList(os.Getenv("SAP_ALLOWED_TRANSPORTS"))),
+			AllowTransportableEdits: sys.AllowTransportableEdits || envFlag("SAP_ALLOW_TRANSPORTABLE_EDITS"),
+			BlockFreeSQL:            sys.BlockFreeSQL || envFlag("SAP_BLOCK_FREE_SQL"),
+			Cache:                   sys.Cache,
+			CachePath:               sys.CachePath,
 		}, nil
 	}
 
@@ -135,6 +167,8 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 		Language:           getEnvOrDefault("SAP_LANGUAGE", "EN"),
 		Insecure:           os.Getenv("SAP_INSECURE") == "true",
 		TransportAttribute: resolveTransportAttributeFromEnv(),
+		ReadOnly:           strings.EqualFold(os.Getenv("SAP_READ_ONLY"), "true"),
+		AllowedPackages:    splitList(os.Getenv("SAP_ALLOWED_PACKAGES")),
 		Cache:              cacheEnabled,
 		CachePath:          cachePath,
 	}, nil
@@ -147,14 +181,104 @@ func resolveTransportAttributeFromEnv() string {
 	return ""
 }
 
+// envFlag reads a boolean environment variable, accepting the spellings people
+// actually type.
+func envFlag(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// firstNonEmptyList returns the configured list, falling back to the environment.
+func firstNonEmptyList(configured, fromEnv []string) []string {
+	if len(configured) > 0 {
+		return configured
+	}
+	return fromEnv
+}
+
+// splitList parses a comma-separated environment value into a list.
+func splitList(v string) []string {
+	var out []string
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // getClient creates an ADT client from system params.
 func getClient(params *systemParams) (*adt.Client, error) {
 	opts := []adt.Option{
 		adt.WithClient(params.Client),
 		adt.WithLanguage(params.Language),
 	}
+
+	// Carry the system's declared safety into the client. Without this a
+	// read_only system is only read-only when the MCP server is talking; every
+	// CLI subcommand wrote happily, which is the opposite of what the setting
+	// says and the opposite of what a careful person would assume.
+	safety := adt.UnrestrictedSafetyConfig()
+	restricted := false
+	if params.ReadOnly {
+		safety.ReadOnly, restricted = true, true
+	}
+	if len(params.AllowedPackages) > 0 {
+		safety.AllowedPackages, restricted = params.AllowedPackages, true
+	}
+	if params.BlockFreeSQL {
+		safety.BlockFreeSQL, restricted = true, true
+	}
+	// Transport safety is opt-in, so enabling it is not a restriction — but it
+	// still has to reach the client, or the transport commands stay blocked no
+	// matter how the system is configured.
+	if params.EnableTransports {
+		safety.EnableTransports = true
+		restricted = true
+	}
+	if params.TransportReadOnly {
+		safety.TransportReadOnly, restricted = true, true
+	}
+	if len(params.AllowedTransports) > 0 {
+		safety.AllowedTransports, restricted = params.AllowedTransports, true
+	}
+	if params.AllowTransportableEdits {
+		safety.AllowTransportableEdits = true
+		restricted = true
+	}
+	if restricted {
+		opts = append(opts, adt.WithSafety(safety))
+	}
 	if params.Insecure {
 		opts = append(opts, adt.WithInsecureSkipVerify())
+	}
+
+	// Browser single sign-on: cookies are fetched on demand and refreshed
+	// automatically, so this is checked before the static cookie sources.
+	if params.UsesSSO() {
+		provider, err := newSSOProvider(params)
+		if err != nil {
+			return nil, err
+		}
+		cookies, err := provider.Cookies(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts,
+			adt.WithCookies(cookies),
+			// The HTTP layer calls this when a request comes back
+			// unauthenticated, then retries. That is what keeps a long-running
+			// session alive across cookie expiry without anyone intervening.
+			adt.WithReauthFunc(provider.Refresh),
+			// A recovery that may open a sign-in window has to outlast the
+			// person using it; the default budget assumes nobody is asked
+			// anything.
+			adt.WithReauthTimeout(provider.ReauthBudget()),
+		)
+		return adt.NewClient(params.URL, "", "", opts...), nil
 	}
 
 	// Use cookie auth if available
@@ -175,6 +299,24 @@ func getClient(params *systemParams) (*adt.Client, error) {
 	return adt.NewClient(params.URL, params.User, params.Password, opts...), nil
 }
 
+// systemCookies returns the browser session a system authenticates with, if it
+// uses one. A system on a password has none, and that is not an error.
+func systemCookies(ctx context.Context, params *systemParams) (map[string]string, error) {
+	switch {
+	case params.UsesSSO():
+		provider, err := newSSOProvider(params)
+		if err != nil {
+			return nil, err
+		}
+		return provider.Cookies(ctx)
+	case params.CookieFile != "":
+		return adt.LoadCookiesFromFile(params.CookieFile)
+	case params.CookieString != "":
+		return adt.ParseCookieString(params.CookieString), nil
+	}
+	return nil, nil
+}
+
 // getWSClient creates an AMDP WebSocket client for GitExport.
 func getWSClient(ctx context.Context, params *systemParams) (*adt.AMDPWebSocketClient, error) {
 	// NewAMDPWebSocketClient(baseURL, client, user, password, insecure)
@@ -185,6 +327,16 @@ func getWSClient(ctx context.Context, params *systemParams) (*adt.AMDPWebSocketC
 		params.Password,
 		params.Insecure,
 	)
+
+	// A system reached through single sign-on has no password to offer, and the
+	// upgrade request carries a cookie as readily as any other.
+	cookies, err := systemCookies(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if len(cookies) > 0 {
+		wsClient.SetCookies(cookies)
+	}
 
 	if err := wsClient.Connect(ctx); err != nil {
 		return nil, fmt.Errorf("failed to connect WebSocket: %w", err)
@@ -285,17 +437,25 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	query := args[0]
 	ctx := context.Background()
 
-	results, err := client.SearchObject(ctx, query, maxResults)
+	adtType := adt.CanonicalObjectType(objectType)
+	if v, _ := cmd.Flags().GetBool("verbose"); v {
+		fmt.Fprintf(os.Stderr, "[DEBUG] search: query=%q objectType=%q maxResults=%d\n",
+			query, adtType, maxResults)
+	}
+
+	results, err := client.SearchObjectByType(ctx, query, adtType, maxResults)
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}
 
-	// Filter by type if specified
+	// Filter by type if specified. Compare against the canonical type, since
+	// the server returns canonical codes (e.g. FUNC -> FUGR/FF, INCL -> PROG/I)
+	// where the short form is not a prefix of the result type.
 	filtered := results
-	if objectType != "" {
+	if adtType != "" {
 		filtered = make([]adt.SearchResult, 0)
 		for _, r := range results {
-			if strings.EqualFold(r.Type, objectType) || strings.HasPrefix(r.Type, objectType+"/") {
+			if strings.EqualFold(r.Type, adtType) || strings.HasPrefix(r.Type, adtType+"/") {
 				filtered = append(filtered, r)
 			}
 		}

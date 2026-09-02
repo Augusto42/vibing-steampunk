@@ -18,26 +18,36 @@ func (s *Server) routeGrepAction(ctx context.Context, action, objectType, object
 	}
 
 	// GrepObjects (multiple objects)
-	if _, ok := params["object_urls"]; ok {
+	if hasAnyParam(params, "object_urls") {
 		return s.callHandler(ctx, s.handleGrepObjects, params)
 	}
 
 	// GrepPackages (multiple packages)
-	if _, ok := params["packages"]; ok {
+	if hasAnyParam(params, "packages") {
 		return s.callHandler(ctx, s.handleGrepPackages, params)
 	}
 
-	// GrepPackage (single package)
-	if pkgName := getStringParam(params, "package_name"); pkgName != "" {
-		return s.callHandler(ctx, s.handleGrepPackage, params)
+	// GrepPackage (single package). `package` is the CLI's own flag name and
+	// the one a caller reaches for; only `package_name` was accepted, so the
+	// natural call fell off the end of the chain and was answered with "no
+	// handler found for action=grep" — of an action that works.
+	if pkgName := firstParam(params, "package_name", "package"); pkgName != "" {
+		args := copyParams(params)
+		args["package_name"] = pkgName
+		return s.callHandler(ctx, s.handleGrepPackage, args)
 	}
 
 	// GrepObject (single object)
-	if objectURL := getStringParam(params, "object_url"); objectURL != "" {
-		return s.callHandler(ctx, s.handleGrepObject, params)
+	if objectURL := firstParam(params, "object_url", "object"); objectURL != "" {
+		args := copyParams(params)
+		args["object_url"] = objectURL
+		return s.callHandler(ctx, s.handleGrepObject, args)
 	}
 
-	return nil, false, nil
+	return needParams("grep", params,
+		[]string{"package_name (or package)", "object_url (or object)", "packages", "object_urls"},
+		`SAP(action="grep", params={"pattern": "SELECT", "package": "$TMP"})
+  SAP(action="grep", params={"pattern": "TODO", "object_url": "/sap/bc/adt/oo/classes/zcl_demo"})`), true, nil
 }
 
 // --- Grep/Search Handlers ---

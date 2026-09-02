@@ -12,15 +12,15 @@ import (
 
 // DeployResult contains the result of a file deployment operation.
 type DeployResult struct {
-	ObjectURL     string   `json:"objectUrl"`
-	ObjectName    string   `json:"objectName"`
-	ObjectType    string   `json:"objectType"`
-	FilePath      string   `json:"filePath"`
-	Success       bool     `json:"success"`
-	Created       bool     `json:"created"` // true if created, false if updated
-	SyntaxErrors  []string `json:"syntaxErrors,omitempty"`
-	Errors        []string `json:"errors,omitempty"`
-	Message       string   `json:"message,omitempty"`
+	ObjectURL    string   `json:"objectUrl"`
+	ObjectName   string   `json:"objectName"`
+	ObjectType   string   `json:"objectType"`
+	FilePath     string   `json:"filePath"`
+	Success      bool     `json:"success"`
+	Created      bool     `json:"created"` // true if created, false if updated
+	SyntaxErrors []string `json:"syntaxErrors,omitempty"`
+	Errors       []string `json:"errors,omitempty"`
+	Message      string   `json:"message,omitempty"`
 }
 
 // CreateFromFile creates a new ABAP object from a file and activates it.
@@ -31,7 +31,8 @@ type DeployResult struct {
 // and content. Supported file extensions: .clas.abap, .prog.abap, .intf.abap
 //
 // Example:
-//   result, err := client.CreateFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
+//
+//	result, err := client.CreateFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
 func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, transport string) (*DeployResult, error) {
 	// Safety check
 	if err := c.checkSafety(OpCreate, "CreateFromFile"); err != nil {
@@ -77,7 +78,31 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 		return nil, err
 	}
 
-	// 5. Lock object
+	// CreateObject accepted packageName against the whitelist and SAP put the
+	// object there, so UpdateSource below need not resolve the same package
+	// again — which it would do from inside the lock, ending the session the
+	// lock handle belongs to (issue #91).
+	ctx = withMutationPackageChecked(ctx, objectURL)
+
+	// 5. Syntax check, before the lock and deliberately so. A syntax check does
+	// not need one, and it is a *stateless* request: sent while a lock is held it
+	// ends the stateful session the lock lives in, and the write that follows
+	// fails with 423 InvalidLockHandle. EditSource has always had this order;
+	// the deploy path did not, which is where the 423 reports came from.
+	syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
+	if err != nil {
+		return &DeployResult{
+			FilePath:   filePath,
+			ObjectURL:  objectURL,
+			ObjectName: info.ObjectName,
+			ObjectType: string(info.ObjectType),
+			Success:    false,
+			Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
+			Message:    fmt.Sprintf("Object created but syntax check failed: %v", err),
+		}, nil
+	}
+
+	// 6. Lock object
 	lockResult, err := c.LockObject(ctx, objectURL, "MODIFY")
 	if err != nil {
 		return &DeployResult{
@@ -99,20 +124,6 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 		}
 	}()
 
-	// 6. Syntax check (optional pre-check)
-	syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
-	if err != nil {
-		return &DeployResult{
-			FilePath:   filePath,
-			ObjectURL:  objectURL,
-			ObjectName: info.ObjectName,
-			ObjectType: string(info.ObjectType),
-			Success:    false,
-			Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
-			Message:    fmt.Sprintf("Object created but syntax check failed: %v", err),
-		}, nil
-	}
-
 	if len(syntaxErrors) > 0 {
 		// Convert syntax errors to strings
 		errorMsgs := make([]string, len(syntaxErrors))
@@ -131,7 +142,7 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 	}
 
 	// 7. Write source (need source URL, not object URL)
-	sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName)
+	sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName, info.ParentName)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +175,7 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 	}
 
 	// 9. Activate
-	_, err = c.Activate(ctx, objectURL, info.ObjectName)
+	activation, err := c.Activate(ctx, objectURL, info.ObjectName)
 	if err != nil {
 		return &DeployResult{
 			FilePath:   filePath,
@@ -174,6 +185,22 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 			Success:    false,
 			Errors:     []string{fmt.Sprintf("activation failed: %v", err)},
 			Message:    fmt.Sprintf("Source written but activation failed: %v", err),
+		}, nil
+	}
+	// A refusal is not an err: SAP answers 200 and puts the reason in the
+	// checklist. Reading only err reported "Successfully created and activated"
+	// over an object left sitting inactive — the syntax check above catches most
+	// of it, but only the source it was given, and activation is the step that
+	// has the last word.
+	if !activation.Success {
+		return &DeployResult{
+			FilePath:     filePath,
+			ObjectURL:    objectURL,
+			ObjectName:   info.ObjectName,
+			ObjectType:   string(info.ObjectType),
+			Success:      false,
+			SyntaxErrors: activation.ProblemLines(),
+			Message:      fmt.Sprintf("Source written but %s %s did not activate", info.ObjectType, info.ObjectName),
 		}, nil
 	}
 
@@ -193,7 +220,8 @@ func (c *Client) CreateFromFile(ctx context.Context, filePath, packageName, tran
 // Workflow: Parse → Lock → SyntaxCheck → Write → Unlock → Activate
 //
 // Example:
-//   result, err := client.UpdateFromFile(ctx, "/path/to/zcl_test.clas.abap", "")
+//
+//	result, err := client.UpdateFromFile(ctx, "/path/to/zcl_test.clas.abap", "")
 func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string) (*DeployResult, error) {
 	// Safety check
 	if err := c.checkSafety(OpUpdate, "UpdateFromFile"); err != nil {
@@ -218,13 +246,64 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	}
 	source := string(sourceBytes)
 
-	// 3. Build object URL (for class includes, this is the parent class URL)
-	objectURL, err := c.buildObjectURL(info.ObjectType, info.ObjectName)
+	// 3. Build object URL (for class includes, this is the parent class URL).
+	// The parent goes with it: DeployFromFile delegates here whenever the object
+	// already exists, so dropping it made every update of a function module fail.
+	objectURL, err := c.buildObjectURLWithParent(info.ObjectType, info.ObjectName, info.ParentName)
 	if err != nil {
 		return nil, err
 	}
 
-	// 4. Lock object
+	// The full mutation gate for the object, run here — above the lock — for
+	// the same reason the syntax check moved above it: the package lookup it
+	// performs is a stateless request, and the write under the lock would
+	// otherwise trigger it mid-window and lose the handle (issue #91).
+	// UpdateFromFile previously only ran the op-type check, so this also
+	// closes the path's package check rather than leaving it to the inner
+	// mutator.
+	ctx, err = c.gateAndMark(ctx, MutationContext{
+		Op:        OpUpdate,
+		OpName:    "UpdateFromFile",
+		ObjectURL: objectURL,
+		Transport: transport,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Syntax check first — see the note above: a stateless request sent while
+	// the object is locked ends the session the lock belongs to.
+	if !isClassInclude {
+		syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
+		if err != nil {
+			return &DeployResult{
+				FilePath:   filePath,
+				ObjectURL:  objectURL,
+				ObjectName: info.ObjectName,
+				ObjectType: string(info.ObjectType),
+				Success:    false,
+				Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
+				Message:    fmt.Sprintf("Syntax check failed: %v", err),
+			}, nil
+		}
+		if len(syntaxErrors) > 0 {
+			errorMsgs := make([]string, len(syntaxErrors))
+			for i, e := range syntaxErrors {
+				errorMsgs[i] = fmt.Sprintf("Line %d: %s", e.Line, e.Text)
+			}
+			return &DeployResult{
+				FilePath:     filePath,
+				ObjectURL:    objectURL,
+				ObjectName:   info.ObjectName,
+				ObjectType:   string(info.ObjectType),
+				Success:      false,
+				SyntaxErrors: errorMsgs,
+				Message:      fmt.Sprintf("Source has %d syntax errors", len(syntaxErrors)),
+			}, nil
+		}
+	}
+
+	// 5. Lock object
 	lockResult, err := c.LockObject(ctx, objectURL, "MODIFY")
 	if err != nil {
 		return &DeployResult{
@@ -262,39 +341,6 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 		}, nil
 	}
 
-	// 5. Syntax check (skip for class includes - will check after update)
-	if !isClassInclude {
-		syntaxErrors, err := c.SyntaxCheck(ctx, objectURL, source)
-		if err != nil {
-			return &DeployResult{
-				FilePath:   filePath,
-				ObjectURL:  objectURL,
-				ObjectName: info.ObjectName,
-				ObjectType: string(info.ObjectType),
-				Success:    false,
-				Errors:     []string{fmt.Sprintf("syntax check failed: %v", err)},
-				Message:    fmt.Sprintf("Syntax check failed: %v", err),
-			}, nil
-		}
-
-		if len(syntaxErrors) > 0 {
-			// Convert syntax errors to strings
-			errorMsgs := make([]string, len(syntaxErrors))
-			for i, e := range syntaxErrors {
-				errorMsgs[i] = fmt.Sprintf("Line %d: %s", e.Line, e.Text)
-			}
-			return &DeployResult{
-				FilePath:     filePath,
-				ObjectURL:    objectURL,
-				ObjectName:   info.ObjectName,
-				ObjectType:   string(info.ObjectType),
-				Success:      false,
-				SyntaxErrors: errorMsgs,
-				Message:      fmt.Sprintf("Source has %d syntax errors", len(syntaxErrors)),
-			}, nil
-		}
-	}
-
 	// 6. Write source
 	if isClassInclude {
 		// For class includes, use UpdateClassInclude
@@ -323,7 +369,7 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 		}
 	} else {
 		// Regular source update
-		sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName)
+		sourceURL, err := c.buildSourceURL(info.ObjectType, info.ObjectName, info.ParentName)
 		if err != nil {
 			return nil, err
 		}
@@ -357,7 +403,7 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 	}
 
 	// 8. Activate
-	_, err = c.Activate(ctx, objectURL, info.ObjectName)
+	activation, err := c.Activate(ctx, objectURL, info.ObjectName)
 	if err != nil {
 		return &DeployResult{
 			FilePath:   filePath,
@@ -367,6 +413,21 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 			Success:    false,
 			Errors:     []string{fmt.Sprintf("activation failed: %v", err)},
 			Message:    fmt.Sprintf("Source written but activation failed: %v", err),
+		}, nil
+	}
+	// Same trap as in CreateFromFile: the refusal arrives inside a 200, and an
+	// update that leaves the object inactive has overwritten working source with
+	// source that does not compile. That is the last moment anyone would want it
+	// reported as a success.
+	if !activation.Success {
+		return &DeployResult{
+			FilePath:     filePath,
+			ObjectURL:    objectURL,
+			ObjectName:   info.ObjectName,
+			ObjectType:   string(info.ObjectType),
+			Success:      false,
+			SyntaxErrors: activation.ProblemLines(),
+			Message:      fmt.Sprintf("Source written but %s %s did not activate", info.ObjectType, info.ObjectName),
 		}, nil
 	}
 
@@ -398,8 +459,9 @@ func (c *Client) UpdateFromFile(ctx context.Context, filePath, transport string)
 // For class includes, the parent class must already exist.
 //
 // Example:
-//   result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
-//   result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.testclasses.abap", "$TMP", "")
+//
+//	result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.abap", "$TMP", "")
+//	result, err := client.DeployFromFile(ctx, "/path/to/zcl_test.clas.testclasses.abap", "$TMP", "")
 func (c *Client) DeployFromFile(ctx context.Context, filePath, packageName, transport string) (*DeployResult, error) {
 	// 1. Parse file
 	info, err := ParseABAPFile(filePath)
@@ -497,9 +559,15 @@ func (c *Client) buildObjectURLWithParent(objType CreatableObjectType, name, par
 	}
 }
 
-// buildSourceURL constructs the source URL for an object (object URL + /source/main)
-func (c *Client) buildSourceURL(objType CreatableObjectType, name string) (string, error) {
-	objectURL, err := c.buildObjectURL(objType, name)
+// buildSourceURL constructs the source URL for an object (object URL + /source/main).
+//
+// The parent is not optional for every type: a function module lives under its
+// group and is addressable no other way. This used to drop it, so a module
+// parsed correctly out of {group}.fugr.{name}.func.abap — group and all —
+// failed with "function module requires parent function group name", the one
+// thing the filename had just supplied.
+func (c *Client) buildSourceURL(objType CreatableObjectType, name, parentName string) (string, error) {
+	objectURL, err := c.buildObjectURLWithParent(objType, name, parentName)
 	if err != nil {
 		return "", err
 	}

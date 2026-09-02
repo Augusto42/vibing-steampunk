@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"encoding/json"
 
@@ -102,9 +103,31 @@ Examples:
   vsp execute --file script.abap
   echo "WRITE sy-datum." | vsp execute --stdin
 
+Code that dies is reported as a failure and exits non-zero. Two different
+things have to be looked at for that, because a failing run leaves its
+evidence in one of two places:
+
+  in the response   ABAP Unit catches what the code raises — a zero divide,
+                    an uncaught exception — and says so in the test result.
+                    Nothing reaches ST22 in that case.
+  in ST22           what the code starts elsewhere is not caught: SUBMIT of a
+                    report that writes a list has no screen to write to in a
+                    background session, and dumps in SAPMSSY0 a moment later,
+                    long after this request was answered 200.
+
+The second is found by reading the runtime error feed before and after the
+run and reporting what appeared in between, which makes it circumstantial:
+--no-dump-check turns it off, --dump-wait changes how long to keep looking
+(2s by default, since the dump is written after the request was answered;
+--dump-wait 0 looks once and moves on).
+
 Note: If ExecuteABAP is blocked by safety settings, you'll see
 a clear message explaining what's needed.`,
-	RunE: runExecute,
+	// The failure report is printed in full before the error is returned, and
+	// a usage screen after it helps nobody.
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runExecute,
 }
 
 // --- graph command ---
@@ -121,7 +144,19 @@ Subcommands:
 Direct usage (call graph):
   vsp graph CLAS ZCL_MY_CLASS
   vsp graph CLAS ZCL_MY_CLASS --direction callers
-  vsp graph CLAS ZCL_MY_CLASS --direction callees --depth 2`,
+  vsp graph FUNC Z_MY_FM --direction callers
+  vsp graph CLAS ZCL_MY_CLASS --direction callees
+
+--direction callers reads the where-used list SE84 uses, so it reports the
+package and the object type rather than a bare list of include names.
+
+--direction callees reads the CROSS and WBCROSSGT cross-reference tables, which
+SAP fills at activation. They record references and not calls: a dynamic
+CALL METHOD (name) is in no row, and a reference in dead code is in every one.
+Rows are marked call or reference so the difference is visible. This direction
+needs free SQL; --block-free-sql turns it off and it says so.
+
+Both directions are one hop. --depth is accepted and ignored.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runGraph,
 }
@@ -271,7 +306,12 @@ func init() {
 
 	// Graph flags
 	graphCmd.Flags().String("direction", "callees", "Direction: callees, callers, or both")
-	graphCmd.Flags().Int("depth", 1, "Maximum traversal depth")
+	// --depth is kept so a scripted invocation does not start failing, and it
+	// is marked for what it is. Neither source is recursive: the where-used
+	// list is one hop by nature and the cross-reference tables are keyed by
+	// include, so there was never a traversal for this number to bound.
+	graphCmd.Flags().Int("depth", 1, "Accepted and ignored: both directions are one hop")
+	_ = graphCmd.Flags().MarkDeprecated("depth", "both directions are one hop; the flag does nothing")
 	rootCmd.AddCommand(graphCmd)
 
 	// Graph co-change subcommand
@@ -306,6 +346,8 @@ func init() {
 	// Execute flags
 	executeCmd.Flags().String("file", "", "Read ABAP code from file")
 	executeCmd.Flags().Bool("stdin", false, "Read ABAP code from stdin")
+	executeCmd.Flags().Bool("no-dump-check", false, "Do not look in ST22 for a runtime error this run may have caused")
+	executeCmd.Flags().Duration("dump-wait", 2*time.Second, "How long to keep looking for that runtime error after the code returns")
 
 	// System subcommands
 	systemCmd.AddCommand(systemInfoCmd)
@@ -334,6 +376,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	table := args[0]
 	top, _ := cmd.Flags().GetInt("top")
 	skip, _ := cmd.Flags().GetInt("skip")
+	topExplicit := cmd.Flags().Changed("top")
 	where, _ := cmd.Flags().GetString("where")
 	fields, _ := cmd.Flags().GetString("fields")
 	orderBy, _ := cmd.Flags().GetString("order")
@@ -351,10 +394,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		sql += " ORDER BY " + orderBy
 	}
 
-	maxRows := 100
-	if top > 0 {
-		maxRows = top + skip
-	}
+	maxRows := adt.ResolveRowLimit(topExplicit && top == 0, top) + skip
 
 	ctx := context.Background()
 	result, err := client.RunQuery(ctx, sql, maxRows)
@@ -608,6 +648,21 @@ func runExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx := context.Background()
+
+	// What ST22 already held before any of this ran. It has to be read first —
+	// afterwards there is no way to tell an old dump from a new one — and it is
+	// only ever advisory, so a system that will not answer for its runtime
+	// errors still gets to run the code.
+	var watch *adt.DumpWatch
+	if skip, _ := cmd.Flags().GetBool("no-dump-check"); !skip {
+		w, werr := client.WatchDumps(ctx, strings.ToUpper(strings.TrimSpace(params.User)))
+		if werr != nil {
+			fmt.Fprintf(os.Stderr, "! ST22 will not be checked for runtime errors: %v\n", werr)
+		} else {
+			watch = w
+		}
+	}
+
 	result, err := client.ExecuteABAP(ctx, code, nil)
 	if err != nil {
 		errStr := err.Error()
@@ -622,10 +677,133 @@ func runExecute(cmd *cobra.Command, args []string) error {
 			fmt.Println(line)
 		}
 	}
-	if result.Message != "" {
+	// ST22 is consulted before anything is said about the failure, because what
+	// is said depends on the answer: "ABAP Unit caught this and there is no
+	// dump" is a useful thing to know and a wrong thing to claim when a dump is
+	// sitting there.
+	var dumped []adt.Dump
+	st22Read := false
+	if watch != nil {
+		wait, _ := cmd.Flags().GetDuration("dump-wait")
+		fresh, derr := client.AwaitDumps(ctx, watch, wait)
+		if derr != nil {
+			fmt.Fprintf(os.Stderr, "! ST22 could not be read again: %v\n", derr)
+		} else {
+			st22Read = true
+		}
+		dumped = fresh
+	}
+
+	// The failure report says all of this and says it better, so the one-line
+	// summary would only be the same sentence twice.
+	if result.Message != "" && result.Failure == nil {
 		fmt.Fprintf(os.Stderr, "%s\n", result.Message)
 	}
+	if result.Failure != nil {
+		reportExecuteFailure(result.Failure, st22Read && len(dumped) == 0)
+	}
+	if watch != nil {
+		reportDumpsAfterRun(dumped, result.ProgramName, watch.User)
+	}
+
+	// The exit code is the part scripts read, so both kinds of failure have to
+	// reach it. The detail is on stderr already; this only has to be short and
+	// true.
+	switch {
+	case result.Failure != nil && result.Failure.Kind == adt.ExecuteFailureSyntax:
+		// Said apart from "did not finish", because it did not start. That
+		// distinction is the whole of this fix, and the exit line is where a
+		// script reads it.
+		return fmt.Errorf("the code did not compile, so none of it ran")
+	case result.Failure != nil && result.Failure.Kind == adt.ExecuteFailureNotRun:
+		return fmt.Errorf("the code cannot be shown to have run")
+	case result.Failure != nil && len(dumped) > 0:
+		return fmt.Errorf("the code did not finish, and a runtime error appeared while it ran")
+	case result.Failure != nil:
+		return fmt.Errorf("the code did not finish")
+	case len(dumped) > 0:
+		return fmt.Errorf("a runtime error appeared while this ran")
+	}
 	return nil
+}
+
+// reportExecuteFailure prints what ABAP Unit caught. This is the certain half:
+// the failure was raised inside the code we submitted, and SAP said so in the
+// same response.
+//
+// st22Clear says the runtime error feed was read afterwards and had nothing
+// new in it, which is worth passing on — for most of these failures ABAP Unit
+// is the only witness and going to look in ST22 finds nothing.
+func reportExecuteFailure(failure *adt.ExecuteFailure, st22Clear bool) {
+	fmt.Fprintln(os.Stderr)
+	title := failure.Title
+	where := ""
+	if failure.Line > 0 {
+		// A syntax message from SAP is a finished sentence and ends in a full
+		// stop, which reads as a typo once a clause is bolted onto it.
+		title = strings.TrimRight(title, ". ")
+		where = fmt.Sprintf(" at line %d of the code you gave me", failure.Line)
+	}
+	fmt.Fprintf(os.Stderr, "%s%s\n", title, where)
+	for _, detail := range failure.Details {
+		fmt.Fprintf(os.Stderr, "  %s\n", detail)
+	}
+	switch failure.Kind {
+	case adt.ExecuteFailureSyntax:
+		// The sentence below would be a lie here — ABAP Unit caught nothing,
+		// because ABAP Unit was never reached. SAP refused the program at
+		// activation, so not one statement of the payload was executed, and
+		// saying so is what stops the reader hunting for a runtime cause.
+		fmt.Fprintln(os.Stderr, "\nSAP refused to activate the generated program, so none of this code ran.")
+	case adt.ExecuteFailureNotRun:
+		fmt.Fprintln(os.Stderr, "\nThe program activated but no test was reported, so this is not a result — it is a gap.")
+	default:
+		if st22Clear {
+			// Worth saying, because the obvious next move — go and look in ST22
+			// — finds nothing at all for this kind of failure: ABAP Unit caught
+			// the exception, so no work process ever terminated.
+			fmt.Fprintln(os.Stderr, "\nABAP Unit caught this and nothing new reached ST22, so there is no dump to look up.")
+		}
+	}
+}
+
+// reportDumpsAfterRun prints runtime errors that were not in ST22 before the
+// run and were after it.
+//
+// The wording is deliberately weaker than the one above. Nothing here proves
+// causation: the evidence is that a dump by this user appeared in the window
+// this ran in, which on a busy system is a coincidence waiting to happen. The
+// one exception is a dump that names the throwaway program we generated —
+// nobody else could have run that — and that one is stated as fact.
+func reportDumpsAfterRun(dumps []adt.Dump, programName, user string) {
+	if len(dumps) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr)
+	ours := false
+	for _, d := range dumps {
+		if strings.EqualFold(d.Program, programName) {
+			ours = true
+		}
+	}
+	if ours {
+		fmt.Fprintln(os.Stderr, "This code dumped:")
+	} else {
+		fmt.Fprintln(os.Stderr, "A runtime error appeared while this ran:")
+	}
+	for _, d := range dumps {
+		fmt.Fprintf(os.Stderr, "  %s  %s in %s (user %s)\n", stamp(d.At), d.ErrorType, d.Program, d.User)
+		if d.Message != "" {
+			fmt.Fprintf(os.Stderr, "      %s\n", d.Message)
+		}
+	}
+	if !ours {
+		who := "the same user"
+		if user == "" {
+			who = "some user"
+		}
+		fmt.Fprintf(os.Stderr, "\nThat is a dump by %s inside the window this ran in, which is an\nargument, not a proof — this code may only have started whatever died.\nSee it whole with: vsp dumps --explain latest\n", who)
+	}
 }
 
 func runGraph(cmd *cobra.Command, args []string) error {
@@ -642,7 +820,6 @@ func runGraph(cmd *cobra.Command, args []string) error {
 	objType := strings.ToUpper(args[0])
 	name := strings.ToUpper(args[1])
 	direction, _ := cmd.Flags().GetString("direction")
-	depth, _ := cmd.Flags().GetInt("depth")
 
 	// Build object URI (url.PathEscape handles namespaced objects like /UI5/CL_REPOSITORY)
 	encodedName := url.PathEscape(strings.ToLower(name))
@@ -662,6 +839,22 @@ func runGraph(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
+	// FUNC used to fall into the default and be asked for as a class, which is
+	// a 404 that then looks like a call graph the system declined to give. A
+	// module is addressed under its group, and only TFDIR knows which group
+	// that is.
+	if objType == "FUNC" {
+		res, qerr := client.RunQuery(ctx,
+			fmt.Sprintf("SELECT PNAME FROM TFDIR WHERE FUNCNAME = '%s'", name), 1)
+		if qerr != nil || res == nil || len(res.Rows) == 0 {
+			return fmt.Errorf("function module %s is not in TFDIR, so its group is unknown", name)
+		}
+		pool := strings.TrimSpace(fmt.Sprintf("%v", res.Rows[0]["PNAME"]))
+		group := strings.TrimPrefix(pool, "SAPL")
+		objURI = "/sap/bc/adt/functions/groups/" + url.PathEscape(strings.ToLower(group)) +
+			"/fmodules/" + encodedName
+	}
+
 	// For transactions: resolve TCODE → program name first
 	if objType == "TRAN" || objType == "TCODE" {
 		result, err := client.RunQuery(ctx,
@@ -677,61 +870,126 @@ func runGraph(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Try ADT call graph first, fallback to WBCROSSGT
-	adtFailed := false
-
+	// Both directions now read a source that exists. The ADT call-graph
+	// resource this command used to try first — /sap/bc/adt/cai/callgraph —
+	// is advertised on none of 7.50, 7.57 and 7.58 and answers 404, so every
+	// run paid for two doomed requests before reaching the tables. What is
+	// left is one query per direction and a fallback that only fires on a real
+	// failure.
+	//
+	// An answer of zero is an answer and is not retried. Falling through on an
+	// empty list would send more requests to say the same thing under a banner
+	// reading "not available" — which would describe a query that had in fact
+	// succeeded.
 	switch direction {
 	case "callers":
-		node, err := client.GetCallersOf(ctx, objURI, depth)
+		callers, err := whereUsedCallers(ctx, client, objURI)
 		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(node, 0)
+			fmt.Fprintf(os.Stderr, "The where-used list could not be read (%v); falling back to the cross-reference tables.\n\n", err)
+			return graphFromCross(ctx, client, name, objType, "callers")
 		}
-	case "both":
-		fmt.Println("=== CALLEES (uses) ===")
-		callees, err := client.GetCalleesOf(ctx, objURI, depth)
-		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(callees, 0)
-		}
-		fmt.Println("\n=== CALLERS (used by) ===")
-		callers, err := client.GetCallersOf(ctx, objURI, depth)
-		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(callers, 0)
-		}
-	default: // callees
-		node, err := client.GetCalleesOf(ctx, objURI, depth)
-		if err != nil {
-			adtFailed = true
-		} else {
-			printGraphNode(node, 0)
-		}
-	}
-
-	if !adtFailed {
+		printWhereUsedCallers(callers)
 		return nil
-	}
-
-	// Fallback: use WBCROSSGT table
-	fmt.Fprintf(os.Stderr, "ADT call graph not available, using WBCROSSGT table fallback\n\n")
-
-	switch direction {
-	case "callers":
-		return graphFromCross(ctx, client, name, objType, "callers")
 	case "both":
-		fmt.Println("=== USES (callees from WBCROSSGT) ===")
-		graphFromCross(ctx, client, name, objType, "callees")
-		fmt.Println("\n=== USED BY (callers from WBCROSSGT) ===")
-		return graphFromCross(ctx, client, name, objType, "callers")
-	default:
-		return graphFromCross(ctx, client, name, objType, "callees")
+		fmt.Println("=== CALLEES (what this uses) ===")
+		if err := printCalleesOf(ctx, client, objURI, name, objType); err != nil {
+			return err
+		}
+		fmt.Println("\n=== CALLERS (what uses this) ===")
+		callers, err := whereUsedCallers(ctx, client, objURI)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "The where-used list could not be read (%v); falling back to the cross-reference tables.\n\n", err)
+			return graphFromCross(ctx, client, name, objType, "callers")
+		}
+		printWhereUsedCallers(callers)
+		return nil
+	default: // callees
+		return printCalleesOf(ctx, client, objURI, name, objType)
 	}
 }
 
+// printCalleesOf prints what an object reaches, from the cross-reference
+// tables. The --depth flag does not reach here on purpose: the tables are keyed
+// by include and a second hop means a fresh pair of queries per child, for an
+// answer that gets less useful the wider it grows.
+func printCalleesOf(ctx context.Context, client *adt.Client, objURI, name, objType string) error {
+	callees, gaps, err := client.Callees(ctx, objURI)
+	if err != nil {
+		// No fallback here, and the reason is worth stating because the code
+		// that used to be here looked like resilience.
+		//
+		// A fallback is only a fallback if it takes a different route. The
+		// callee reader is free SQL over CROSS and WBCROSSGT; the scan it fell
+		// back to is free SQL over CROSS and WBCROSSGT. It cannot succeed where
+		// the first failed — measured: with free SQL blocked, the first call
+		// returns a message naming both tables and the reason, and then the
+		// scan runs and fails identically with a worse one. Six object types in
+		// both directions never reached it at all.
+		//
+		// The caller path keeps its fallback and should: there the first route
+		// is the ADT where-used resource, so the tables really are a second
+		// opinion.
+		return err
+	}
+	if note := adt.UnsearchedNote(gaps, 2, "cross-reference table"); note != "" {
+		// Printed before the rows, not after: a reader who sees a plausible
+		// table first has already drawn the conclusion by the time a footnote
+		// tells them it was partial.
+		fmt.Printf("  %s\n\n", note)
+	}
+	if len(callees) == 0 {
+		if n := client.InactiveReferenceCount(ctx, objURI); n > 0 {
+			// One of the three readings below, decided rather than listed.
+			fmt.Printf("  No row for this object's includes — but %d are recorded "+
+				"against an inactive version of it, in the index SAP keeps for "+
+				"objects with unactivated changes. So this object does reference "+
+				"things; the version that was activated here does not.\n", n)
+			return nil
+		}
+		// Empty here is often true. The tables record global types, classes,
+		// methods and external calls; a class doing only local work has no
+		// row, and neither has a routine that calls nothing outside its own
+		// program. The other readings are "never activated on this system" and
+		// "no such object", and the sentence names all three because the empty
+		// list looks the same in every case.
+		fmt.Println("  No row for this object's includes. It may genuinely reference nothing global — " +
+			"the tables hold global types, classes, methods and external calls, nothing local. " +
+			"It may also never have been activated here, or not exist. Ask about a neighbour that " +
+			"should have references to tell which.")
+		return nil
+	}
+	rows := make([][]string, 0, len(callees))
+	for _, c := range callees {
+		what := "reference"
+		if c.Calls {
+			what = "call"
+		}
+		rows = append(rows, []string{c.Name, c.Kind, what, c.Component, c.Source})
+	}
+	fmt.Print(formatTable([]string{"Object", "Kind", "Call?", "Component", "Table"}, rows))
+	fmt.Fprintf(os.Stderr, "\n%d references, recorded at activation — not observed calls.\n", len(callees))
+	return nil
+}
+
+// graphFromCross is the fallback, reached only when the good reader has already
+// failed. Two things are worth knowing before adding anything to it.
+//
+// It answers at object level. Upward it could do better: WBCROSSGTX.LONG_NAME
+// accepts LIKE despite being a STRG column — checked live on 7.58, and the
+// table exists on 7.50 too — so a search there yields the hashes under which
+// long names are stored in WBCROSSGT, and those rows are otherwise unreachable
+// by name. Their includes then decode to methods through DecodeMethodIncludes.
+// That was written and deleted rather than shipped, and the reason is the
+// second thing.
+//
+// Nobody knows how often this branch is taken. What is known is what happened
+// to it: usage_examples for function modules, SUBMIT and programs came through
+// here and returned nothing for its entire existence, because a CROSS query
+// asked for 'FU' in a C(1) column and the 400 was read as "no callers found".
+// A branch entered rarely rots unwatched. So enriching it puts more code where
+// nothing checks it — and if it ever seems worth doing, measure how often
+// execution actually lands here first, rather than assuming as this codebase
+// has now done three times in a day.
 func graphFromCross(ctx context.Context, client *adt.Client, name, objType, direction string) error {
 	// Build queries for BOTH cross-reference tables
 	// WBCROSSGT: OO references (classes, interfaces, methods, types)
@@ -770,14 +1028,30 @@ func graphFromCross(ctx context.Context, client *adt.Client, name, objType, dire
 		}
 	}
 
-	// Execute all queries and merge
+	// Execute all queries and merge.
+	//
+	// The rows are collected before anything is printed, so a query that failed
+	// can be reported ahead of them. This used to skip failures silently, and
+	// this is the *fallback* path — reached when the good reader has already
+	// failed — so a second silent failure here left the object looking as if it
+	// referenced nothing at all.
 	seen := map[string]bool{}
+	var found []string
+	var gaps []adt.Unsearched
 	for _, sql := range queries {
 		result, err := client.RunQuery(ctx, sql, 200)
-		if err != nil {
-			continue // skip failed queries silently
-		}
-		if result == nil {
+		if err != nil || result == nil {
+			table := "cross-reference table"
+			for _, t := range []string{"WBCROSSGT", "CROSS"} {
+				if strings.Contains(sql, " FROM "+t+" ") {
+					table = t
+				}
+			}
+			reason := "the query returned nothing at all"
+			if err != nil {
+				reason = err.Error()
+			}
+			gaps = append(gaps, adt.Unsearched{Object: table, Reason: reason})
 			continue
 		}
 		for _, row := range result.Rows {
@@ -796,9 +1070,16 @@ func graphFromCross(ctx context.Context, client *adt.Client, name, objType, dire
 			}
 			if key != "" && key != name && !seen[key] {
 				seen[key] = true
-				fmt.Printf("  %s\n", key)
+				found = append(found, key)
 			}
 		}
+	}
+
+	if note := adt.UnsearchedNote(gaps, len(queries), "query"); note != "" {
+		fmt.Printf("  %s\n\n", note)
+	}
+	for _, key := range found {
+		fmt.Printf("  %s\n", key)
 	}
 
 	if len(seen) == 0 {
@@ -845,22 +1126,29 @@ func crossToADTType(crossType string) string {
 	}
 }
 
-func printGraphNode(node *adt.CallGraphNode, indent int) {
-	if node == nil {
+// whereUsedCallers asks the SE84 where-used list who calls an object.
+func whereUsedCallers(ctx context.Context, client *adt.Client, objURI string) ([]adt.ExposedCaller, error) {
+	return client.WhereUsed(ctx, objURI)
+}
+
+func printWhereUsedCallers(callers []adt.ExposedCaller) {
+	if len(callers) == 0 {
+		// Checked live: a name that does not exist gets the same 200 and the
+		// same empty list as a real object nobody calls. The list cannot tell
+		// them apart, so neither should the sentence printed about it.
+		fmt.Println("The where-used list answered and it is empty: nobody calls this — or the name does not exist, which reads identically here.")
 		return
 	}
-	prefix := strings.Repeat("  ", indent)
-	label := node.Name
-	if node.Type != "" {
-		label = node.Type + " " + label
+	rows := make([][]string, 0, len(callers))
+	for _, c := range callers {
+		kind := "code"
+		if c.IsTest {
+			kind = "test"
+		}
+		rows = append(rows, []string{c.Name, c.Type, c.Package, kind, c.Component})
 	}
-	if node.Description != "" {
-		label += " — " + node.Description
-	}
-	fmt.Printf("%s%s\n", prefix, label)
-	for i := range node.Children {
-		printGraphNode(&node.Children[i], indent+1)
-	}
+	fmt.Print(formatTable([]string{"Object", "Type", "Package", "Kind", "References in"}, rows))
+	fmt.Fprintf(os.Stderr, "\n%d callers, from the where-used list.\n", len(callers))
 }
 
 func readStdin() ([]byte, error) {
@@ -1222,38 +1510,72 @@ func runRenamePreview(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	fmt.Fprintf(os.Stderr, "Scanning references to %s %s...\n", objType, oldName)
+	oldNameUpper := strings.ToUpper(strings.TrimSpace(oldName))
 
-	// Query WBCROSSGT: who references this object name?
+	// Who references this object name.
+	//
+	// This is not a report, it is the thing somebody reads before renaming, so
+	// every way it can be wrong is a way somebody breaks a system. The version
+	// this replaces could be wrong in three:
+	//
+	//   Both queries were guarded by `err == nil`, so two failed reads produced
+	//   an empty impact list — "nothing references this" — in front of a
+	//   destructive operation.
+	//
+	//   NAME LIKE 'ZCL_ORDER%' also matches ZCL_ORDER_ITEM, so a sibling's
+	//   callers were listed as this object's. That overstates, which is the
+	//   safer direction and still wrong.
+	//
+	//   A reference whose name does not fit WBCROSSGT's CHAR(120) is stored
+	//   under a SHA-1, so it matches no prefix of the real name and was absent
+	//   entirely. That understates, before a rename, which is the direction
+	//   that breaks things.
 	var allRefs []graph.RenameRefRow
+	var unread []adt.Unsearched
 
-	wbQuery := fmt.Sprintf("SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGT WHERE NAME LIKE '%s%%'", oldName)
-	wbResult, err := client.RunQuery(ctx, wbQuery, 2000)
-	if err == nil && wbResult != nil {
-		for _, row := range wbResult.Rows {
+	addRows := func(rows []map[string]interface{}, typeCol, source string) {
+		for _, row := range rows {
+			name := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["NAME"])))
+			// Exactly this object, or this object followed by the backslash
+			// that introduces a component. Never merely starting with it.
+			if name != oldNameUpper && !strings.HasPrefix(name, oldNameUpper+`\`) {
+				continue
+			}
 			allRefs = append(allRefs, graph.RenameRefRow{
 				CallerInclude: strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"])),
-				TargetName:    strings.TrimSpace(fmt.Sprintf("%v", row["NAME"])),
-				RefType:       strings.TrimSpace(fmt.Sprintf("%v", row["OTYPE"])),
-				Source:        "WBCROSSGT",
+				TargetName:    name,
+				RefType:       strings.TrimSpace(fmt.Sprintf("%v", row[typeCol])),
+				Source:        source,
 			})
 		}
 	}
 
-	// Query CROSS: procedural references
-	crossQuery := fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME LIKE '%s%%'", oldName)
-	crossResult, err := client.RunQuery(ctx, crossQuery, 2000)
-	if err == nil && crossResult != nil {
-		for _, row := range crossResult.Rows {
-			allRefs = append(allRefs, graph.RenameRefRow{
-				CallerInclude: strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"])),
-				TargetName:    strings.TrimSpace(fmt.Sprintf("%v", row["NAME"])),
-				RefType:       strings.TrimSpace(fmt.Sprintf("%v", row["TYPE"])),
-				Source:        "CROSS",
-			})
-		}
+	wbResult, wbErr := client.RunQuery(ctx,
+		fmt.Sprintf("SELECT INCLUDE, OTYPE, NAME FROM WBCROSSGT WHERE NAME LIKE '%s%%'", oldName), 2000)
+	if wbErr != nil {
+		unread = append(unread, adt.Unsearched{Object: "WBCROSSGT", Reason: wbErr.Error()})
+	} else if wbResult != nil {
+		// Decode before matching: a hashed name matches no prefix, so without
+		// this the rows exist and the filter above drops every one of them.
+		_ = client.ResolveLongNames(ctx, wbResult.Rows)
+		addRows(wbResult.Rows, "OTYPE", "WBCROSSGT")
 	}
 
-	fmt.Fprintf(os.Stderr, "Found %d cross-references.\n", len(allRefs))
+	crossResult, crossErr := client.RunQuery(ctx,
+		fmt.Sprintf("SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME LIKE '%s%%'", oldName), 2000)
+	if crossErr != nil {
+		unread = append(unread, adt.Unsearched{Object: "CROSS", Reason: crossErr.Error()})
+	} else if crossResult != nil {
+		addRows(crossResult.Rows, "TYPE", "CROSS")
+	}
+
+	if len(unread) == 2 {
+		return fmt.Errorf("neither cross-reference table could be read, so this is not an impact "+
+			"assessment and must not be used as one: %s; %s", unread[0].Reason, unread[1].Reason)
+	}
+	if note := adt.UnsearchedNote(unread, 2, "cross-reference table"); note != "" {
+		fmt.Fprintf(os.Stderr, "%s\nReferences recorded only there are missing from the list below.\n\n", note)
+	}
 
 	// Compute preview
 	result := graph.ComputeRenamePreview(objType, oldName, newName, allRefs)
@@ -1372,13 +1694,18 @@ func runSlim(cmd *cobra.Command, args []string) error {
 				classNames = append(classNames, obj.Name)
 			}
 		}
+		var uninspected []adt.Unsearched
 		if len(classNames) > 0 {
 			fmt.Fprintf(os.Stderr, "Fetching class structures (%d classes)...\n", len(classNames))
 			for i, cls := range classNames {
 				fmt.Fprintf(os.Stderr, "\r  [%d/%d] %-40s", i+1, len(classNames), cls)
 				structure, err := client.GetClassObjectStructure(ctx, cls)
 				if err != nil {
-					continue // skip classes we can't inspect
+					// A class whose structure will not load keeps its entry and
+					// gets no methods, which is indistinguishable from a class
+					// that has none — and this report is about what is unused.
+					uninspected = append(uninspected, adt.Unsearched{Object: "CLAS " + cls, Reason: err.Error()})
+					continue
 				}
 				methods := structure.GetMethods()
 				var methodNames []string
@@ -1396,6 +1723,9 @@ func runSlim(cmd *cobra.Command, args []string) error {
 				}
 			}
 			fmt.Fprintf(os.Stderr, "\r\n")
+		}
+		if note := adt.UnsearchedNote(uninspected, len(classNames), "class"); note != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", note)
 		}
 	}
 
@@ -1521,9 +1851,15 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, "...")
 
 	// Query WBCROSSGT + CROSS for who references this object
+	// The section travels with the name because a caller found through a class's
+	// test include is not in that class's main source, and reading main is
+	// reading the wrong half of the object. Every one of the 186 callers of
+	// CL_ABAP_UNIT_ASSERT=>ASSERT_EQUALS is a CCAU row; the command returned
+	// zero examples and said "0 of 15" as though that were an answer.
 	var callerNames []struct {
 		name    string
 		objType string
+		section string
 	}
 	seen := make(map[string]bool)
 
@@ -1557,13 +1893,19 @@ func runExamples(cmd *cobra.Command, args []string) error {
 				if strings.EqualFold(cName, objName) {
 					continue
 				}
-				key := cType + ":" + cName
+				// Keyed by the document that will be read, not by the object:
+				// a class calling the target from both its main source and its
+				// test include is two reads, and keeping only the first drops
+				// half the answer.
+				section := graph.SectionOfInclude(include)
+				key := sourceRef{Type: cType, Name: cName, Section: section}.Address()
 				if !seen[key] {
 					seen[key] = true
 					callerNames = append(callerNames, struct {
 						name    string
 						objType string
-					}{cName, cType})
+						section string
+					}{cName, cType, section})
 				}
 			}
 		}
@@ -1581,13 +1923,19 @@ func runExamples(cmd *cobra.Command, args []string) error {
 				if cType == "FUGR" || strings.EqualFold(cName, objName) {
 					continue
 				}
-				key := cType + ":" + cName
+				// Keyed by the document that will be read, not by the object:
+				// a class calling the target from both its main source and its
+				// test include is two reads, and keeping only the first drops
+				// half the answer.
+				section := graph.SectionOfInclude(include)
+				key := sourceRef{Type: cType, Name: cName, Section: section}.Address()
 				if !seen[key] {
 					seen[key] = true
 					callerNames = append(callerNames, struct {
 						name    string
 						objType string
-					}{cName, cType})
+						section string
+					}{cName, cType, section})
 				}
 			}
 		}
@@ -1612,9 +1960,23 @@ func runExamples(cmd *cobra.Command, args []string) error {
 	// Step 2: Fetch source for each caller
 	fmt.Fprintf(os.Stderr, "Fetching source for %d callers...\n", len(callerNames))
 	var callers []graph.CallerSource
+	var unread []adt.Unsearched
+	refs := make([]sourceRef, 0, len(callerNames))
 	for _, c := range callerNames {
-		source, err := client.GetSource(ctx, c.objType, c.name, nil)
+		refs = append(refs, sourceRef{Type: c.objType, Name: c.name, Section: c.section})
+	}
+	for i, r := range fetchSources(ctx, client, refs, "") {
+		c := callerNames[i]
+		source, err := r.Source, r.Err
 		if err != nil || source == "" {
+			// It still called the target; only the snippet is missing. Dropping
+			// it silently makes the example list look like the whole of the
+			// usage rather than the part that could be shown.
+			reason := "the source came back empty"
+			if err != nil {
+				reason = err.Error()
+			}
+			unread = append(unread, adt.Unsearched{Object: c.objType + " " + c.name, Reason: reason})
 			continue
 		}
 		isTest := graph.IsTestCaller(c.name, "")
@@ -1626,6 +1988,10 @@ func runExamples(cmd *cobra.Command, args []string) error {
 			IsTest:  isTest,
 			Source:  source,
 		})
+	}
+
+	if note := adt.UnsearchedNote(unread, len(callerNames), "caller"); note != "" {
+		fmt.Fprintf(os.Stderr, "%s\n", note)
 	}
 
 	// Step 3: Extract examples
@@ -1688,19 +2054,15 @@ func runGraphWhereUsedConfig(cmd *cobra.Command, args []string) error {
 	doGrep := !noGrep
 	ctx := context.Background()
 
-	// Step 1: Find programs that reference TVARVC table
-	fmt.Fprintf(os.Stderr, "Querying CROSS for TVARVC references...\n")
-	crossQuery := "SELECT INCLUDE, TYPE, NAME FROM CROSS WHERE NAME = 'TVARVC' AND TYPE = 'DA'"
-	crossResult, err := client.RunQuery(ctx, crossQuery, 500)
-	if err != nil {
-		return fmt.Errorf("CROSS query failed: %w", err)
-	}
-	if crossResult == nil || len(crossResult.Rows) == 0 {
-		fmt.Println("No programs reference the TVARVC table.")
-		return nil
-	}
-
-	// Step 2: Normalize includes → deduplicate to object level
+	// Step 1: Find the includes whose code touches the TVARVC table.
+	//
+	// WBCROSSGT OTYPE='TY' covers OO code, CROSS TYPE='S' covers classic
+	// procedural code, and neither alone covers both — the same pairing
+	// queryTableReaderIncludes uses. The query that used to be here,
+	// CROSS TYPE='DA', could never return a row: CROSS.TYPE is C(1), 'DA' is
+	// two characters, and SAP answers 400. 'DA' belongs to WBCROSSGT's C(2)
+	// OTYPE column and means a data object rather than a table.
+	fmt.Fprintf(os.Stderr, "Querying WBCROSSGT and CROSS for TVARVC references...\n")
 	type candidate struct {
 		objType string
 		objName string
@@ -1708,30 +2070,64 @@ func runGraphWhereUsedConfig(cmd *cobra.Command, args []string) error {
 	seen := make(map[string]bool)
 	var candidates []candidate
 
-	for _, row := range crossResult.Rows {
-		include := strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"]))
-		if include == "" {
-			continue
+	collect := func(label, query string) error {
+		res, err := client.RunQuery(ctx, query, 500)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
 		}
-		_, objType, objName := graph.NormalizeInclude(include)
-		key := objType + ":" + objName
-		if !seen[key] {
-			seen[key] = true
-			candidates = append(candidates, candidate{objType, objName})
+		if res == nil {
+			return nil
 		}
+		for _, row := range res.Rows {
+			include := strings.TrimSpace(fmt.Sprintf("%v", row["INCLUDE"]))
+			if include == "" {
+				continue
+			}
+			_, objType, objName := graph.NormalizeInclude(include)
+			key := objType + ":" + objName
+			if !seen[key] {
+				seen[key] = true
+				candidates = append(candidates, candidate{objType, objName})
+			}
+		}
+		return nil
+	}
+
+	wbErr := collect("WBCROSSGT", "SELECT INCLUDE FROM WBCROSSGT WHERE OTYPE = 'TY' AND NAME = 'TVARVC'")
+	crossErr := collect("CROSS", "SELECT INCLUDE FROM CROSS WHERE TYPE = 'S' AND NAME = 'TVARVC'")
+	if wbErr != nil && crossErr != nil {
+		return fmt.Errorf("neither cross-reference table could be read, so this is not an answer: %v; %v", wbErr, crossErr)
+	}
+	// Half an answer is worth printing, but not worth printing silently.
+	if wbErr != nil {
+		fmt.Fprintf(os.Stderr, "WARN: object-oriented callers were not searched: %v\n", wbErr)
+	}
+	if crossErr != nil {
+		fmt.Fprintf(os.Stderr, "WARN: classic procedural callers were not searched: %v\n", crossErr)
+	}
+	if len(candidates) == 0 {
+		fmt.Println("No programs reference the TVARVC table.")
+		return nil
 	}
 	fmt.Fprintf(os.Stderr, "Found %d candidate programs. ", len(candidates))
 
 	// Step 3: Grep each candidate for the variable name
 	var refs []graph.TVARVCReference
 	grepCount := 0
+	grepFailed := 0
 	for _, c := range candidates {
 		confirmed := false
 		if doGrep {
 			objURL := cliADTObjectURL(c.objType, c.objName)
 			if objURL != "" {
 				grepResult, err := client.GrepObject(ctx, objURL, variable, true, 0)
-				if err == nil && grepResult != nil && len(grepResult.Matches) > 0 {
+				switch {
+				case err != nil:
+					// Unconfirmed already means "read it, the name is not
+					// there". A grep that failed must not be filed under it.
+					grepFailed++
+					fmt.Fprintf(os.Stderr, "WARN: %s %s could not be grepped: %v\n", c.objType, c.objName, err)
+				case grepResult != nil && len(grepResult.Matches) > 0:
 					confirmed = true
 					grepCount++
 				}
@@ -1746,6 +2142,10 @@ func runGraphWhereUsedConfig(cmd *cobra.Command, args []string) error {
 	}
 	if doGrep {
 		fmt.Fprintf(os.Stderr, "Grep confirmed %d.\n", grepCount)
+		if grepFailed > 0 {
+			fmt.Fprintf(os.Stderr, "WARN: %d of %d candidates could not be grepped, so an unconfirmed row below may only mean unread.\n",
+				grepFailed, len(candidates))
+		}
 	} else {
 		fmt.Fprintf(os.Stderr, "Grep skipped.\n")
 	}

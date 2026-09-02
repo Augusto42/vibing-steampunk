@@ -5,17 +5,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/oisee/vibing-steampunk/pkg/graph"
 )
 
 // AnalysisLayer identifies which analysis method found a dependency.
 type AnalysisLayer int
 
 const (
-	LayerRegex    AnalysisLayer = iota // 3b: Go regex (ctxcomp) — filesystem, fastest
-	LayerParser                        // 3:  abaplint parser — filesystem or SAP, deep
-	LayerScan                          // 2:  SCAN ABAP-SOURCE — SAP kernel tokenizer
-	LayerCross                         // 1b: CROSS/WBCROSSGT — SAP index, instant
-	LayerWhereUsed                     // 1:  ADT Where-Used — SAP full cross-ref
+	LayerRegex     AnalysisLayer = iota // 3b: Go regex (ctxcomp) — filesystem, fastest
+	LayerParser                         // 3:  abaplint parser — filesystem or SAP, deep
+	LayerScan                           // 2:  SCAN ABAP-SOURCE — SAP kernel tokenizer
+	LayerCross                          // 1b: CROSS/WBCROSSGT — SAP index, instant
+	LayerWhereUsed                      // 1:  ADT Where-Used — SAP full cross-ref
 )
 
 func (l AnalysisLayer) String() string {
@@ -47,13 +49,13 @@ type AnalyzedDep struct {
 
 // AnalysisResult holds the combined output.
 type AnalysisResult struct {
-	ObjectName    string
-	TotalLines    int
-	Dependencies  []AnalyzedDep
-	TrueDeps      int // confirmed by 2+ layers or high confidence
+	ObjectName     string
+	TotalLines     int
+	Dependencies   []AnalyzedDep
+	TrueDeps       int // confirmed by 2+ layers or high confidence
 	FalsePositives int
-	Layers        []AnalysisLayer // which layers were used
-	Duration      time.Duration
+	Layers         []AnalysisLayer // which layers were used
+	Duration       time.Duration
 	LayerDurations map[AnalysisLayer]time.Duration
 }
 
@@ -78,13 +80,14 @@ type ScanToken struct {
 // Analyzer combines all layers for comprehensive code intelligence.
 //
 // Confidence model:
-//   1.0  — parser + SAP layer (scan or cross) agree
-//   0.95 — parser + regex agree (no SAP needed)
-//   0.9  — parser only (authoritative — reads actual source)
-//   0.85 — SCAN ABAP-SOURCE only (SAP kernel, reliable)
-//   0.8  — CROSS index + regex agree
-//   0.6  — CROSS index only (may be stale — only updated on activation)
-//   0.3  — regex only (likely false positive — found in string/comment)
+//
+//	1.0  — parser + SAP layer (scan or cross) agree
+//	0.95 — parser + regex agree (no SAP needed)
+//	0.9  — parser only (authoritative — reads actual source)
+//	0.85 — SCAN ABAP-SOURCE only (SAP kernel, reliable)
+//	0.8  — CROSS index + regex agree
+//	0.6  — CROSS index only (may be stale — only updated on activation)
+//	0.3  — regex only (likely false positive — found in string/comment)
 //
 // Key insight: CROSS/WBCROSSGT tables can be stale (inactive objects,
 // $TMP, unactivated changes). The abaplint parser is the real-time
@@ -121,10 +124,20 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		addOrMerge(merged, d.Name, d.Kind, d.Line, LayerRegex)
 	}
 
-	// Layer 3: Parser-based (runs in Go — simulate by checking token context)
-	// Uses the same regex scan but validates against string/comment patterns
+	// Layer 3: the ABAP statement parser.
+	//
+	// This layer was named for the parser and did not use it: it ran the same
+	// regex again with string and comment filtering, and the comment said
+	// "simulate". That made the corroboration below a fiction — an answer
+	// marked found_by [regex, parser] told a reader two independent analyses
+	// agreed, when it was one analysis run twice and filtered once.
+	//
+	// It is the parser now. Measured on one real class before the change, the
+	// two disagreed by three dependencies out of nine; the parser also sees
+	// what a regex cannot — a static call on the right of an assignment, the
+	// exception classes in a CATCH, the RAISING in a signature.
 	t0 = time.Now()
-	parserDeps := extractWithValidation(source)
+	parserDeps := parserLayerDeps(source, objectName)
 	result.LayerDurations[LayerParser] = time.Since(t0)
 	result.Layers = append(result.Layers, LayerParser)
 
@@ -132,16 +145,49 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		addOrMerge(merged, d.name, d.kind, d.line, LayerParser)
 	}
 
-	// Mark false positives: found by regex but NOT by parser
-	for name, dep := range merged {
-		foundByRegex := containsLayer(dep.FoundBy, LayerRegex)
-		foundByParser := containsLayer(dep.FoundBy, LayerParser)
-		if foundByRegex && !foundByParser {
-			dep.InString = true // likely in string or comment
+	// A dependency found by one layer and not the other is not thereby false.
+	//
+	// The rule here used to be "found by regex, not by parser ⇒ it is in a
+	// string or a comment", which assumes the parser is a superset of the
+	// regex. It is not. The parser layer is the graph's edge extractor: it
+	// models calls and references it draws edges for. The regex layer reads
+	// declarations — INHERITING FROM, INTERFACES, TYPE REF TO, CREATE OBJECT.
+	// The two answer different questions, so their disagreement is not
+	// evidence about either one.
+	//
+	// What that rule produced, measured on this repo's own ABAP: in
+	// ZCL_VSP_APC_HANDLER, whose whole job is to dispatch to them, every one of
+	// ZCL_VSP_GIT_SERVICE, ZCL_VSP_DEBUG_SERVICE, ZCL_VSP_RFC_SERVICE,
+	// ZCL_VSP_AMDP_SERVICE and ZCL_VSP_REPORT_SERVICE was reported as a likely
+	// false positive at confidence 0.3 — along with its superclass and every
+	// interface it implements. Twenty such across thirteen files, and the names
+	// dismissed were in every case the most important ones in the file.
+	//
+	// So the claim is now made from evidence rather than from absence: a name is
+	// marked as being in a string or a comment when every occurrence of it in
+	// the source is, which is exactly what the field says.
+	for _, dep := range merged {
+		// A function module is named in a literal by construction — CALL
+		// FUNCTION 'SSFC_BASE64_DECODE' — so "it only ever appears in quotes"
+		// is true of every real one. Applying the check to them turned four
+		// genuine dependencies in this repo's own ABAP into false positives,
+		// which is the check making the same mistake as the rule it replaced,
+		// in the other direction.
+		if dep.Kind == KindFunction {
+			continue
+		}
+		if occursOnlyInStringsOrComments(source, dep.Name) {
+			dep.InComment = true
 			dep.Confidence = 0.3
 			result.FalsePositives++
+			continue
 		}
-		_ = name
+		// Corroboration still raises confidence — two layers seeing the same
+		// name is worth more than one — but its absence no longer lowers it
+		// below what a single layer's own evidence supports.
+		if len(dep.FoundBy) > 1 {
+			dep.Confidence = 0.95
+		}
 	}
 
 	// Layer 2: SCAN ABAP-SOURCE (if SAP connected)
@@ -171,11 +217,24 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		}
 	}
 
-	// Calculate confidence — parser is the authority, CROSS is supplementary
-	// Parser-confirmed = real. Regex-only = suspect. CROSS-only = stale but notable.
+	// Confidence: corroboration raises it, and no single layer's silence lowers
+	// it below what that layer's own evidence supports.
+	//
+	// The regex-only case used to end `dep.Confidence = 0.3; dep.InString =
+	// true` — the same inference as the false-positive pass above, written
+	// twice. It is wrong for the same reason: the parser layer is the graph's
+	// edge extractor and models calls, while the regex reads declarations, so
+	// "the parser did not see it" is a fact about what the parser looks for.
+	// An INHERITING FROM is not a suspected string literal.
 	for _, dep := range merged {
+		if dep.InString || dep.InComment {
+			continue // decided by the direct check, on evidence
+		}
 		if dep.Confidence > 0 {
-			continue // already set (e.g., false positive)
+			if dep.Confidence >= 0.5 {
+				result.TrueDeps++
+			}
+			continue
 		}
 
 		hasParser := containsLayer(dep.FoundBy, LayerParser)
@@ -185,21 +244,26 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 
 		switch {
 		case hasParser && (hasScan || hasCross):
-			dep.Confidence = 1.0 // confirmed by parser + SAP layer
+			dep.Confidence = 1.0 // parser plus a SAP-side layer
 		case hasParser && hasRegex:
-			dep.Confidence = 0.95 // confirmed by parser (regex agrees)
+			dep.Confidence = 0.95 // two independent readers agree
+		case hasScan && hasRegex:
+			dep.Confidence = 0.95 // the kernel tokenizer and the regex agree
 		case hasParser:
-			dep.Confidence = 0.9 // parser says yes (authoritative)
+			dep.Confidence = 0.9 // a call the parser resolved
 		case hasScan:
-			dep.Confidence = 0.85 // SAP kernel tokenizer says yes
+			dep.Confidence = 0.85 // the SAP kernel tokenizer saw it
 		case hasCross && hasRegex:
-			dep.Confidence = 0.8 // CROSS index + regex agree
-		case hasCross:
-			dep.Confidence = 0.6 // CROSS only — might be stale but notable
-			dep.InComment = false // not a false positive, just from index
+			dep.Confidence = 0.8 // the index and the source agree
 		case hasRegex:
-			dep.Confidence = 0.3 // regex only — likely false positive
-			dep.InString = true
+			// A declaration — INHERITING FROM, INTERFACES, TYPE REF TO,
+			// CREATE OBJECT. Only this layer reads them, so only this layer can
+			// report them, and that is evidence rather than the absence of it.
+			dep.Confidence = 0.8
+		case hasCross:
+			// The index says so and the source does not show it. Notable, and
+			// possibly stale — the one case where a single layer earns less.
+			dep.Confidence = 0.6
 		default:
 			dep.Confidence = 0.1
 		}
@@ -232,6 +296,49 @@ type parsedDep struct {
 	name string
 	kind DependencyKind
 	line int
+}
+
+// parserLayerDeps runs the shared statement parser and speaks its answer in the
+// terms this package merges in.
+//
+// It is deliberately a translation and not a second implementation. The reason
+// this layer had its own extraction at all was that pkg/graph carried no line
+// numbers; the lexer always knew them and nothing asked, so the fix was one
+// field there rather than a parser here.
+func parserLayerDeps(source, objectName string) []parsedDep {
+	name := strings.ToUpper(strings.TrimSpace(objectName))
+	if name == "" {
+		name = "SOURCE"
+	}
+	var out []parsedDep
+	seen := map[string]bool{}
+	for _, e := range graph.ExtractDepsFromSource(source, graph.NodeID("CLAS", name)) {
+		parts := strings.SplitN(e.To, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		kind, target := parts[0], strings.ToUpper(parts[1])
+		if target == "" || target == name || seen[target] {
+			continue
+		}
+		seen[target] = true
+		out = append(out, parsedDep{name: target, kind: dependencyKindOf(kind), line: e.Line})
+	}
+	return out
+}
+
+// dependencyKindOf maps a graph node type to the three kinds this package
+// distinguishes. Anything else is a class as far as a contract lookup is
+// concerned, and guessing more precisely would be inventing.
+func dependencyKindOf(nodeType string) DependencyKind {
+	switch strings.ToUpper(nodeType) {
+	case "INTF":
+		return KindInterface
+	case "FUGR", "FUNC":
+		return KindFunction
+	default:
+		return KindClass
+	}
 }
 
 // extractWithValidation does regex extraction but skips matches inside strings and comments.
@@ -420,4 +527,85 @@ func extractFromScanTokens(tokens []ScanToken) []parsedDep {
 	}
 
 	return deps
+}
+
+// occursOnlyInStringsOrComments reports whether every occurrence of name in the
+// source is inside a comment or a string literal.
+//
+// This is the direct measurement of what InString and InComment claim, and it
+// replaces an inference from one layer not having seen the name. It is
+// deliberately conservative: a single occurrence in real code is enough to
+// treat the dependency as real, because dropping a genuine dependency from a
+// reader's context is worse than carrying an extra one.
+func occursOnlyInStringsOrComments(source, name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	found := false
+	for _, line := range strings.Split(source, "\n") {
+		upper := strings.ToUpper(line)
+		idx := strings.Index(upper, name)
+		if idx < 0 {
+			continue
+		}
+		found = true
+		if !occurrenceIsQuotedOrCommented(line, upper, name) {
+			return false
+		}
+	}
+	// A name that does not occur at all came from an index rather than from the
+	// text — CROSS or where-used — and says nothing about strings.
+	return found
+}
+
+// occurrenceIsQuotedOrCommented reports whether every occurrence of name on this
+// one line sits inside a comment or a string literal.
+func occurrenceIsQuotedOrCommented(line, upper, name string) bool {
+	// A full-line comment: '*' in the first column.
+	trimmed := strings.TrimLeft(line, " \t")
+	if strings.HasPrefix(line, "*") {
+		return true
+	}
+	_ = trimmed
+
+	for start := 0; ; {
+		idx := strings.Index(upper[start:], name)
+		if idx < 0 {
+			return true
+		}
+		at := start + idx
+		if !quotedOrCommentedAt(line, at) {
+			return false
+		}
+		start = at + len(name)
+	}
+}
+
+// quotedOrCommentedAt walks the line to the given offset, tracking whether it is
+// inside a string literal, and reports the state there.
+//
+// ABAP has two quoting characters and one of them doubles as the comment
+// marker: a double quote outside a string starts a comment that runs to the end
+// of the line, and a single quote delimits a literal in which ” is an escaped
+// quote.
+func quotedOrCommentedAt(line string, offset int) bool {
+	inLiteral := false
+	for i := 0; i < offset && i < len(line); i++ {
+		switch line[i] {
+		case '\'':
+			if inLiteral && i+1 < len(line) && line[i+1] == '\'' {
+				i++ // an escaped quote inside the literal
+				continue
+			}
+			inLiteral = !inLiteral
+		case '"':
+			if !inLiteral {
+				return true // everything from here is a comment
+			}
+		case '`':
+			inLiteral = !inLiteral
+		}
+	}
+	return inLiteral
 }

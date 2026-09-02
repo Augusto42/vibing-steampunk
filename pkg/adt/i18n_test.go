@@ -29,13 +29,21 @@ func TestGetObjectTextsInLanguage(t *testing.T) {
 	}
 }
 
+// Both of these tests used to assert against a response shape nobody had ever
+// received. That is not a weak test, it is an inverted one: it proved the
+// parser matched the fiction, and it went green for as long as the capability
+// was broken. The documents below are the ones a 7.58 system actually serves,
+// with the object names replaced.
+
 func TestGetDataElementLabels(t *testing.T) {
-	xmlResp := `<?xml version="1.0" encoding="UTF-8"?>
-<dataElement shortDescription="Court" mediumDescription="Moyen" longDescription="Long texte" heading="En-tête"/>`
+	// The labels are child elements of dtel:dataElement. The old fixture had
+	// them as attributes of the root — shortDescription, mediumDescription,
+	// longDescription, heading — which no release has ever sent.
+	xmlResp := `<?xml version="1.0" encoding="utf-8"?><blue:wbobj adtcore:name="ZDEMO_ORDER_ID" adtcore:type="DTEL/DE" adtcore:description="Order" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core"><dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements"><dtel:typeKind>domain</dtel:typeKind><dtel:shortFieldLabel>Court</dtel:shortFieldLabel><dtel:shortFieldLength>10</dtel:shortFieldLength><dtel:mediumFieldLabel>Moyen</dtel:mediumFieldLabel><dtel:longFieldLabel>Long texte</dtel:longFieldLabel><dtel:headingFieldLabel>En-tete</dtel:headingFieldLabel></dtel:dataElement></blue:wbobj>`
 
 	mock := &mockTransportClient{
 		responses: map[string]*http.Response{
-			"/sap/bc/adt/ddic/dataelements/ZTEST_DTEL": newTestResponse(xmlResp),
+			"/sap/bc/adt/ddic/dataelements/ZDEMO_ORDER_ID": newTestResponse(xmlResp),
 			"discovery": newTestResponse("OK"),
 		},
 	}
@@ -44,92 +52,104 @@ func TestGetDataElementLabels(t *testing.T) {
 	transport := NewTransportWithClient(cfg, mock)
 	client := NewClientWithTransport(cfg, transport)
 
-	labels, err := client.GetDataElementLabels(context.Background(), "ZTEST_DTEL", "FR")
+	labels, err := client.GetDataElementLabels(context.Background(), "ZDEMO_ORDER_ID", "FR")
 	if err != nil {
 		t.Fatalf("GetDataElementLabels failed: %v", err)
 	}
 
-	if labels.Short != "Court" {
-		t.Errorf("Short = %v, want Court", labels.Short)
-	}
-	if labels.Medium != "Moyen" {
-		t.Errorf("Medium = %v, want Moyen", labels.Medium)
-	}
-	if labels.Long != "Long texte" {
-		t.Errorf("Long = %v, want Long texte", labels.Long)
-	}
-	if labels.Heading != "En-tête" {
-		t.Errorf("Heading = %v, want En-tête", labels.Heading)
+	for _, c := range []struct{ got, want, field string }{
+		{labels.Short, "Court", "Short"},
+		{labels.Medium, "Moyen", "Medium"},
+		{labels.Long, "Long texte", "Long"},
+		{labels.Heading, "En-tete", "Heading"},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.field, c.got, c.want)
+		}
 	}
 }
 
-func TestGetMessageClassTexts(t *testing.T) {
-	xmlResp := `<?xml version="1.0" encoding="UTF-8"?>
-<mc:messageclass xmlns:mc="http://www.sap.com/adt/mc" name="ZTEST_MC">
-  <mc:messages msgno="001" msgtext="Message un"/>
-  <mc:messages msgno="002" msgtext="Message deux"/>
-</mc:messageclass>`
+// The old parser read attributes off the root element, so it would also have
+// returned four empty strings for the document above without failing. This
+// pins the direction: a document with no labels must not come back looking
+// like a data element whose labels are blank.
+func TestDataElementWithNoLabelsIsNotMistakenForOne(t *testing.T) {
+	xmlResp := `<?xml version="1.0" encoding="utf-8"?><blue:wbobj adtcore:name="ZDEMO_ORDER_ID" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel"><dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements"><dtel:typeKind>domain</dtel:typeKind></dtel:dataElement></blue:wbobj>`
 
 	mock := &mockTransportClient{
 		responses: map[string]*http.Response{
-			"/sap/bc/adt/messageclass/ztest_mc": newTestResponse(xmlResp),
-			"discovery":                         newTestResponse("OK"),
+			"/sap/bc/adt/ddic/dataelements/ZDEMO_ORDER_ID": newTestResponse(xmlResp),
+			"discovery": newTestResponse("OK"),
 		},
 	}
-
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
-	transport := NewTransportWithClient(cfg, mock)
-	client := NewClientWithTransport(cfg, transport)
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
 
-	texts, err := client.GetMessageClassTexts(context.Background(), "ZTEST_MC", "FR")
+	labels, err := client.GetDataElementLabels(context.Background(), "ZDEMO_ORDER_ID", "FR")
 	if err != nil {
-		t.Fatalf("GetMessageClassTexts failed: %v", err)
+		t.Fatalf("GetDataElementLabels failed: %v", err)
 	}
-
-	if len(texts) != 2 {
-		t.Fatalf("Expected 2 messages, got %d", len(texts))
-	}
-
-	if texts[0].Number != "001" {
-		t.Errorf("Number = %v, want 001", texts[0].Number)
-	}
-	if texts[0].Text != "Message un" {
-		t.Errorf("Text = %v, want 'Message un'", texts[0].Text)
+	if labels.Short != "" || labels.Medium != "" || labels.Long != "" || labels.Heading != "" {
+		t.Errorf("labels appeared out of a document that has none: %+v", labels)
 	}
 }
 
 func TestGetTextPoolInLanguage(t *testing.T) {
-	xmlResp := `<?xml version="1.0" encoding="UTF-8"?>
-<textPool>
-  <entry id="I" key="001" entry="Texte un"/>
-  <entry id="I" key="002" entry="Texte deux"/>
-</textPool>`
-
-	mock := &mockTransportClient{
-		responses: map[string]*http.Response{
-			"/sap/bc/adt/programs/programs/ZTEST/textelements": newTestResponse(xmlResp),
-			"discovery": newTestResponse("OK"),
+	// Three plain-text sub-resources, not one XML document at
+	// /programs/programs/{name}/textelements — that address answers 404 and
+	// the XML the old fixture described does not exist.
+	mock := &funcMockClient{
+		doFunc: func(req *http.Request) (*http.Response, error) {
+			switch {
+			case strings.Contains(req.URL.Path, "discovery"):
+				return newTestResponse("OK"), nil
+			case strings.HasSuffix(req.URL.Path, "/source/symbols"):
+				return newTestResponse("@MaxLength:8\n001=Texte un\n002=Texte deux\n"), nil
+			case strings.HasSuffix(req.URL.Path, "/source/selections"):
+				return newTestResponse("P_CREA  =Creer\n\nP_DELE  =Supprimer\n"), nil
+			case strings.HasSuffix(req.URL.Path, "/source/headings"):
+				return newTestResponse("listHeader=\n\ncolumnHeader_1=\n"), nil
+			}
+			return newTestResponse(""), nil
 		},
 	}
 
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
-	transport := NewTransportWithClient(cfg, mock)
-	client := NewClientWithTransport(cfg, transport)
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
 
-	entries, err := client.GetTextPoolInLanguage(context.Background(), "ZTEST", "FR")
+	entries, err := client.GetTextPoolInLanguage(context.Background(), "ZDEMO_REPORT", "FR")
 	if err != nil {
 		t.Fatalf("GetTextPoolInLanguage failed: %v", err)
 	}
 
-	if len(entries) != 2 {
-		t.Fatalf("Expected 2 entries, got %d", len(entries))
+	// Two symbols, two selection texts, two headings. The headings are empty
+	// and are still entries: "this heading exists and is untranslated" is the
+	// answer a translation report is for.
+	if len(entries) != 6 {
+		t.Fatalf("got %d entries, want 6: %+v", len(entries), entries)
 	}
+	want := []TextPoolEntry{
+		{ID: "I", Key: "001", Text: "Texte un"},
+		{ID: "I", Key: "002", Text: "Texte deux"},
+		{ID: "S", Key: "P_CREA", Text: "Creer"},
+		{ID: "S", Key: "P_DELE", Text: "Supprimer"},
+		{ID: "H", Key: "listHeader", Text: ""},
+		{ID: "H", Key: "columnHeader_1", Text: ""},
+	}
+	for i, w := range want {
+		if entries[i] != w {
+			t.Errorf("entry %d = %+v, want %+v", i, entries[i], w)
+		}
+	}
+}
 
-	if entries[0].Key != "001" {
-		t.Errorf("Key = %v, want 001", entries[0].Key)
-	}
-	if entries[0].Text != "Texte un" {
-		t.Errorf("Text = %v, want 'Texte un'", entries[0].Text)
+// The @MaxLength directive at the top of the symbols document describes the
+// document. Reading it as an entry would put a key of "@MaxLength:8" into every
+// text pool a report ever showed.
+func TestTextPoolDirectivesAreNotEntries(t *testing.T) {
+	got := parseTextPoolSource("I", "@MaxLength:8\n  @Other\n001=Texte\n")
+	if len(got) != 1 || got[0].Key != "001" {
+		t.Errorf("got %+v, want the one real entry", got)
 	}
 }
 

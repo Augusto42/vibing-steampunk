@@ -520,7 +520,7 @@ func TestSearchHistoryVariableValue(t *testing.T) {
 		TargetValue:  "DONE",
 	}
 
-	results := hm.SearchHistory(query)
+	results, _ := hm.SearchHistory(query)
 	if len(results) == 0 {
 		t.Error("expected to find variable value match")
 	}
@@ -541,7 +541,7 @@ func TestSearchHistoryLocation(t *testing.T) {
 		LocationPattern: "HELPER",
 	}
 
-	results := hm.SearchHistory(query)
+	results, _ := hm.SearchHistory(query)
 	if len(results) != 1 {
 		t.Errorf("expected 1 location match, got %d", len(results))
 	}
@@ -564,8 +564,66 @@ func TestSearchHistoryWithLimit(t *testing.T) {
 		Limit:           5,
 	}
 
-	results := hm.SearchHistory(query)
+	results, _ := hm.SearchHistory(query)
 	if len(results) != 5 {
 		t.Errorf("expected 5 results with limit, got %d", len(results))
+	}
+}
+
+// A debugging search comes back empty for two reasons that look identical and
+// mean opposite things: the variable never held that value, or the file holding
+// the proof would not open. The index still lists the recording either way, so
+// from outside it looks searched.
+func TestSearchHistoryNamesRecordingsItCouldNotOpen(t *testing.T) {
+	tmpDir := t.TempDir()
+	hm, _ := NewHistoryManager(tmpDir)
+
+	recorder := NewExecutionRecorder("session", "ZDEMO")
+	recorder.RecordFrame(CodeLocation{Program: "ZDEMO", Line: 1}, "step", map[string]VariableValue{
+		"LV_STATUS": {Name: "LV_STATUS", Type: "STRING", Value: "DONE"},
+	})
+	recorder.Complete()
+	hm.SaveRecording(recorder)
+
+	// Corrupt the file on disk without touching the index — exactly what a
+	// truncated write or a half-synced directory leaves behind.
+	if err := os.WriteFile(hm.index[0].FilePath, []byte("{ this is not json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, missed := hm.SearchHistory(HistoryQuery{
+		MatchType:    "variable_value",
+		VariableName: "LV_STATUS",
+		TargetValue:  "DONE",
+	})
+	if len(results) != 0 {
+		t.Fatalf("the only recording is unreadable, so there is nothing to find; got %d results", len(results))
+	}
+	if len(missed) != 1 {
+		t.Fatalf("the unreadable recording must be reported, got %d", len(missed))
+	}
+	if missed[0].Object != hm.index[0].ID {
+		t.Fatalf("the caller needs to know which recording, got %q", missed[0].Object)
+	}
+	if missed[0].Reason == "" {
+		t.Fatal("the reason has to survive: a corrupt file and a missing one call for different next steps")
+	}
+}
+
+// A search over recordings that all opened says nothing, or the caveat becomes
+// noise on every clean run.
+func TestSearchHistoryReportsNoGapWhenEverythingOpened(t *testing.T) {
+	tmpDir := t.TempDir()
+	hm, _ := NewHistoryManager(tmpDir)
+
+	recorder := NewExecutionRecorder("session", "ZDEMO")
+	recorder.RecordFrame(CodeLocation{Program: "ZDEMO", Line: 1}, "step", map[string]VariableValue{
+		"LV_STATUS": {Name: "LV_STATUS", Type: "STRING", Value: "DONE"},
+	})
+	recorder.Complete()
+	hm.SaveRecording(recorder)
+
+	if _, missed := hm.SearchHistory(HistoryQuery{MatchType: "location", LocationPattern: "ZNOTHING"}); len(missed) != 0 {
+		t.Fatalf("everything opened; the gap list should be empty, got %+v", missed)
 	}
 }

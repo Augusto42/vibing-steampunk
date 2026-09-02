@@ -22,33 +22,9 @@ func (e *LuaEngine) registerADTBindings() {
 	e.L.SetGlobal("writeSource", e.L.NewFunction(e.luaWriteSource))
 	e.L.SetGlobal("editSource", e.L.NewFunction(e.luaEditSource))
 
-	// Debugging - Breakpoints
-	e.L.SetGlobal("setBreakpoint", e.L.NewFunction(e.luaSetBreakpoint))
-	e.L.SetGlobal("setStatementBP", e.L.NewFunction(e.luaSetStatementBreakpoint))
-	e.L.SetGlobal("setExceptionBP", e.L.NewFunction(e.luaSetExceptionBreakpoint))
-	e.L.SetGlobal("setMessageBP", e.L.NewFunction(e.luaSetMessageBreakpoint))
-	e.L.SetGlobal("setBadiBP", e.L.NewFunction(e.luaSetBadiBreakpoint))
-	e.L.SetGlobal("setEnhancementBP", e.L.NewFunction(e.luaSetEnhancementBreakpoint))
-	e.L.SetGlobal("setWatchpoint", e.L.NewFunction(e.luaSetWatchpoint))
-	e.L.SetGlobal("setMethodBP", e.L.NewFunction(e.luaSetMethodBreakpoint))
-	e.L.SetGlobal("getBreakpoints", e.L.NewFunction(e.luaGetBreakpoints))
-	e.L.SetGlobal("deleteBreakpoint", e.L.NewFunction(e.luaDeleteBreakpoint))
-
-	// Debugging - Session
-	e.L.SetGlobal("listen", e.L.NewFunction(e.luaListen))
-	e.L.SetGlobal("attach", e.L.NewFunction(e.luaAttach))
-	e.L.SetGlobal("detach", e.L.NewFunction(e.luaDetach))
-
-	// Debugging - Execution
-	e.L.SetGlobal("stepOver", e.L.NewFunction(e.luaStepOver))
-	e.L.SetGlobal("stepInto", e.L.NewFunction(e.luaStepInto))
-	e.L.SetGlobal("stepReturn", e.L.NewFunction(e.luaStepReturn))
-	e.L.SetGlobal("continue_", e.L.NewFunction(e.luaContinue))
-
-	// Debugging - Inspection
-	e.L.SetGlobal("getStack", e.L.NewFunction(e.luaGetStack))
-	e.L.SetGlobal("getVariables", e.L.NewFunction(e.luaGetVariables))
-	e.L.SetGlobal("setVariable", e.L.NewFunction(e.luaSetVariable))
+	// Debugging — every binding lives in debug_session.go, on the one session the
+	// engine holds. registerSessionDebugBindings() puts them in place.
+	e.registerSessionDebugBindings()
 
 	// Call Graph
 	e.L.SetGlobal("getCallGraph", e.L.NewFunction(e.luaGetCallGraph))
@@ -236,512 +212,11 @@ func (e *LuaEngine) luaEditSource(L *lua.LState) int {
 // --- Debugging: Breakpoints ---
 // Note: These are stubs. Full debugger integration requires more work.
 
-func (e *LuaEngine) luaSetBreakpoint(L *lua.LState) int {
-	program := getString(L, 1)
-	line := getInt(L, 2)
-
-	// Build breakpoint request
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:    adt.BreakpointKindLine,
-			URI:     program,
-			Line:    line,
-			Enabled: true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-func (e *LuaEngine) luaSetStatementBreakpoint(L *lua.LState) int {
-	statement := getString(L, 1)
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:      adt.BreakpointKindStatement,
-			Statement: statement,
-			Enabled:   true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-func (e *LuaEngine) luaSetExceptionBreakpoint(L *lua.LState) int {
-	exception := getString(L, 1)
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:      adt.BreakpointKindException,
-			Exception: exception,
-			Enabled:   true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-// setMessageBP(msgClass, msgNumber, [msgType]) - Break on message
-func (e *LuaEngine) luaSetMessageBreakpoint(L *lua.LState) int {
-	msgArea := getString(L, 1)   // Message class e.g. "00", "SY"
-	msgID := getString(L, 2)     // Message number e.g. "001"
-	msgType := getOptString(L, 3, "") // Optional: E, W, I, S, A
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:        adt.BreakpointKindMessage,
-			MessageArea: msgArea,
-			MessageID:   msgID,
-			MessageType: msgType,
-			Enabled:     true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-// setBadiBP(badiName) - Break on BAdi implementation entry
-func (e *LuaEngine) luaSetBadiBreakpoint(L *lua.LState) int {
-	badiName := getString(L, 1)
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:     adt.BreakpointKindBadi,
-			BadiName: badiName,
-			Enabled:  true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-// setEnhancementBP(spotName, [implName]) - Break on enhancement point
-func (e *LuaEngine) luaSetEnhancementBreakpoint(L *lua.LState) int {
-	spotName := getString(L, 1)
-	implName := getOptString(L, 2, "")
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:            adt.BreakpointKindEnhancement,
-			EnhancementSpot: spotName,
-			EnhancementImpl: implName,
-			Enabled:         true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-// setWatchpoint(variable, [condition]) - Break when variable changes
-// condition: "change" (default), "read", "any"
-func (e *LuaEngine) luaSetWatchpoint(L *lua.LState) int {
-	variable := getString(L, 1)
-	condition := getOptString(L, 2, "change")
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:           adt.BreakpointKindWatchpoint,
-			Variable:       variable,
-			WatchCondition: condition,
-			Enabled:        true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-// setMethodBP(className, methodName) - Break on method entry
-func (e *LuaEngine) luaSetMethodBreakpoint(L *lua.LState) int {
-	className := getString(L, 1)
-	methodName := getString(L, 2)
-
-	req := &adt.BreakpointRequest{
-		Breakpoints: []adt.Breakpoint{{
-			Kind:       adt.BreakpointKindMethod,
-			ClassName:  className,
-			MethodName: methodName,
-			Enabled:    true,
-		}},
-	}
-
-	resp, err := e.client.SetExternalBreakpoint(e.ctx, req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if len(resp.Breakpoints) > 0 {
-		L.Push(lua.LString(resp.Breakpoints[0].ID))
-	} else {
-		L.Push(lua.LString(""))
-	}
-	return 1
-}
-
-func (e *LuaEngine) luaGetBreakpoints(L *lua.LState) int {
-	user := getOptString(L, 1, "")
-
-	resp, err := e.client.GetExternalBreakpoints(e.ctx, user)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	tbl := L.NewTable()
-	for i, bp := range resp.Breakpoints {
-		row := L.NewTable()
-		L.SetField(row, "id", lua.LString(bp.ID))
-		L.SetField(row, "kind", lua.LString(string(bp.Kind)))
-		L.SetField(row, "uri", lua.LString(bp.URI))
-		L.SetField(row, "line", lua.LNumber(bp.Line))
-		L.SetField(row, "enabled", lua.LBool(bp.Enabled))
-		tbl.RawSetInt(i+1, row)
-	}
-
-	L.Push(tbl)
-	return 1
-}
-
-func (e *LuaEngine) luaDeleteBreakpoint(L *lua.LState) int {
-	id := getString(L, 1)
-	user := getOptString(L, 2, "")
-
-	err := e.client.DeleteExternalBreakpoint(e.ctx, id, user)
-	if err != nil {
-		L.Push(lua.LBool(false))
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(lua.LBool(true))
-	return 1
-}
-
-// --- Debugging: Session ---
-
-func (e *LuaEngine) luaListen(L *lua.LState) int {
-	timeout := getOptInt(L, 1, 30)
-
-	opts := &adt.ListenOptions{
-		TimeoutSeconds: timeout,
-	}
-
-	result, err := e.client.DebuggerListen(e.ctx, opts)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	if result == nil || result.Debuggee == nil {
-		if result != nil && result.TimedOut {
-			L.Push(lua.LNil)
-			L.Push(lua.LString("timeout: no debuggee caught"))
-		} else {
-			L.Push(lua.LNil)
-			L.Push(lua.LString("no debuggee caught"))
-		}
-		return 2
-	}
-
-	tbl := L.NewTable()
-	L.SetField(tbl, "id", lua.LString(result.Debuggee.ID))
-	L.SetField(tbl, "program", lua.LString(result.Debuggee.Program))
-	L.SetField(tbl, "user", lua.LString(result.Debuggee.User))
-	L.SetField(tbl, "line", lua.LNumber(result.Debuggee.Line))
-
-	L.Push(tbl)
-	return 1
-}
-
-func (e *LuaEngine) luaAttach(L *lua.LState) int {
-	debuggeeID := getString(L, 1)
-	user := getOptString(L, 2, "")
-
-	result, err := e.client.DebuggerAttach(e.ctx, debuggeeID, user)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	tbl := L.NewTable()
-	L.SetField(tbl, "session_id", lua.LString(result.DebugSessionID))
-	L.SetField(tbl, "server", lua.LString(result.ServerName))
-	L.SetField(tbl, "stepping_possible", lua.LBool(result.IsSteppingPossible))
-
-	L.Push(tbl)
-	return 1
-}
-
-func (e *LuaEngine) luaDetach(L *lua.LState) int {
-	err := e.client.DebuggerDetach(e.ctx)
-	if err != nil {
-		L.Push(lua.LBool(false))
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(lua.LBool(true))
-	return 1
-}
-
-// --- Debugging: Execution ---
-
-func (e *LuaEngine) luaStepOver(L *lua.LState) int {
-	result, err := e.client.DebuggerStep(e.ctx, adt.DebugStepOver, "")
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(goToLua(L, map[string]interface{}{
-		"session_id":  result.DebugSessionID,
-		"stepping":    result.IsSteppingPossible,
-		"termination": result.IsTerminationPossible,
-	}))
-	return 1
-}
-
-func (e *LuaEngine) luaStepInto(L *lua.LState) int {
-	result, err := e.client.DebuggerStep(e.ctx, adt.DebugStepInto, "")
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(goToLua(L, map[string]interface{}{
-		"session_id":  result.DebugSessionID,
-		"stepping":    result.IsSteppingPossible,
-		"termination": result.IsTerminationPossible,
-	}))
-	return 1
-}
-
-func (e *LuaEngine) luaStepReturn(L *lua.LState) int {
-	result, err := e.client.DebuggerStep(e.ctx, adt.DebugStepReturn, "")
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(goToLua(L, map[string]interface{}{
-		"session_id":  result.DebugSessionID,
-		"stepping":    result.IsSteppingPossible,
-		"termination": result.IsTerminationPossible,
-	}))
-	return 1
-}
-
-func (e *LuaEngine) luaContinue(L *lua.LState) int {
-	result, err := e.client.DebuggerStep(e.ctx, adt.DebugStepContinue, "")
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(goToLua(L, map[string]interface{}{
-		"session_id":  result.DebugSessionID,
-		"stepping":    result.IsSteppingPossible,
-		"termination": result.IsTerminationPossible,
-	}))
-	return 1
-}
-
-// --- Debugging: Inspection ---
-
-func (e *LuaEngine) luaGetStack(L *lua.LState) int {
-	stack, err := e.client.DebuggerGetStack(e.ctx, false)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	tbl := L.NewTable()
-	for i, frame := range stack.Stack {
-		row := L.NewTable()
-		L.SetField(row, "program", lua.LString(frame.ProgramName))
-		L.SetField(row, "include", lua.LString(frame.IncludeName))
-		L.SetField(row, "line", lua.LNumber(frame.Line))
-		L.SetField(row, "type", lua.LString(frame.StackType))
-		L.SetField(row, "event", lua.LString(frame.EventName))
-		tbl.RawSetInt(i+1, row)
-	}
-
-	L.Push(tbl)
-	return 1
-}
-
-func (e *LuaEngine) luaGetVariables(L *lua.LState) int {
-	// Get variable IDs from argument (Lua table)
-	varIDs := []string{}
-	if L.GetTop() >= 1 {
-		val := L.Get(1)
-		if tbl, ok := val.(*lua.LTable); ok {
-			tbl.ForEach(func(_, v lua.LValue) {
-				if s, ok := v.(lua.LString); ok {
-					varIDs = append(varIDs, string(s))
-				}
-			})
-		} else if s, ok := val.(lua.LString); ok {
-			varIDs = append(varIDs, string(s))
-		}
-	}
-
-	if len(varIDs) == 0 {
-		L.Push(lua.LNil)
-		L.Push(lua.LString("variable IDs required"))
-		return 2
-	}
-
-	vars, err := e.client.DebuggerGetVariables(e.ctx, varIDs)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	tbl := L.NewTable()
-	for _, v := range vars {
-		row := L.NewTable()
-		L.SetField(row, "id", lua.LString(v.ID))
-		L.SetField(row, "name", lua.LString(v.Name))
-		L.SetField(row, "type", lua.LString(v.DeclaredTypeName))
-		L.SetField(row, "value", lua.LString(v.Value))
-		tbl.RawSetString(v.Name, row)
-	}
-
-	L.Push(tbl)
-	return 1
-}
-
-// setVariable(name, value) - Modify variable value in live debug session (FORCE REPLAY!)
-func (e *LuaEngine) luaSetVariable(L *lua.LState) int {
-	name := getString(L, 1)
-	value := L.Get(2)
-
-	// Convert Lua value to string for ADT API
-	var valueStr string
-	switch v := value.(type) {
-	case lua.LString:
-		valueStr = string(v)
-	case lua.LNumber:
-		valueStr = fmt.Sprintf("%v", float64(v))
-	case lua.LBool:
-		if v {
-			valueStr = "X" // ABAP true
-		} else {
-			valueStr = " " // ABAP false
-		}
-	default:
-		// For tables/complex types, serialize to JSON-like format
-		goVal := luaToGo(value)
-		jsonBytes, _ := jsonMarshal(goVal)
-		valueStr = string(jsonBytes)
-	}
-
-	result, err := e.client.DebuggerSetVariableValue(e.ctx, name, valueStr)
-	if err != nil {
-		L.Push(lua.LBool(false))
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-
-	L.Push(lua.LBool(true))
-	L.Push(lua.LString(result))
-	return 2
-}
+// The debugger bindings used to live here, on the stateless ADT client. They
+// could not work: a debug session lives in an ABAP roll area that a stateless
+// client cannot get back to, so attach returned happily and every later call
+// referred to nothing. They are in debug_session.go now, on a session the
+// engine holds, and they are registered from there.
 
 // --- Call Graph ---
 
@@ -750,9 +225,11 @@ func (e *LuaEngine) luaGetCallGraph(L *lua.LState) int {
 	direction := getOptString(L, 2, "callees")
 	maxDepth := getOptInt(L, 3, 5)
 
-	graph, err := e.client.GetCallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
+	// maxDepth is still accepted so scripts keep parsing, and it is still
+	// ignored: both sources behind CallGraph are one hop. See callees.go.
+	_ = maxDepth
+	graph, err := e.client.CallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
 		Direction:  direction,
-		MaxDepth:   maxDepth,
 		MaxResults: 500,
 	})
 	if err != nil {
@@ -769,7 +246,11 @@ func (e *LuaEngine) luaGetCallersOf(L *lua.LState) int {
 	objectURI := getString(L, 1)
 	maxDepth := getOptInt(L, 2, 5)
 
-	graph, err := e.client.GetCallersOf(e.ctx, objectURI, maxDepth)
+	_ = maxDepth
+	graph, err := e.client.CallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
+		Direction:  "callers",
+		MaxResults: 500,
+	})
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -784,7 +265,11 @@ func (e *LuaEngine) luaGetCalleesOf(L *lua.LState) int {
 	objectURI := getString(L, 1)
 	maxDepth := getOptInt(L, 2, 5)
 
-	graph, err := e.client.GetCalleesOf(e.ctx, objectURI, maxDepth)
+	_ = maxDepth
+	graph, err := e.client.CallGraph(e.ctx, objectURI, &adt.CallGraphOptions{
+		Direction:  "callees",
+		MaxResults: 500,
+	})
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -927,12 +412,15 @@ func (e *LuaEngine) luaInjectCheckpoint(L *lua.LState) int {
 
 // --- Diagnostics ---
 
+// luaGetDumps lists runtime errors. The table keys are unchanged from the
+// version that read the old feed parser, so existing scripts keep working —
+// but program, exception, user and time were empty in every row that parser
+// produced, and are now filled, because the categories the feed labels are read
+// by label instead of by position.
 func (e *LuaEngine) luaGetDumps(L *lua.LState) int {
 	maxResults := getOptInt(L, 1, 20)
 
-	dumps, err := e.client.GetDumps(e.ctx, &adt.DumpQueryOptions{
-		MaxResults: maxResults,
-	})
+	dumps, err := e.client.Dumps(e.ctx, adt.DumpFilter{Limit: maxResults})
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -944,10 +432,10 @@ func (e *LuaEngine) luaGetDumps(L *lua.LState) int {
 		row := L.NewTable()
 		L.SetField(row, "id", lua.LString(dump.ID))
 		L.SetField(row, "program", lua.LString(dump.Program))
-		L.SetField(row, "exception", lua.LString(dump.ExceptionType))
+		L.SetField(row, "exception", lua.LString(dump.ErrorType))
 		L.SetField(row, "user", lua.LString(dump.User))
-		L.SetField(row, "time", lua.LString(dump.Timestamp))
-		L.SetField(row, "title", lua.LString(dump.Title))
+		L.SetField(row, "time", lua.LString(dumpStamp(dump.At)))
+		L.SetField(row, "title", lua.LString(dump.Message))
 		tbl.RawSetInt(i+1, row)
 	}
 
@@ -955,10 +443,25 @@ func (e *LuaEngine) luaGetDumps(L *lua.LState) int {
 	return 1
 }
 
+// dumpStamp renders a dump timestamp for Lua, which has no time type. A zero
+// time prints as empty rather than as year one, because a script concatenating
+// it should show a gap, not a date nobody wrote.
+func dumpStamp(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.Format(time.RFC3339)
+}
+
+// luaGetDump reads one dump in detail. The old version returned the dump's
+// HTML page with only its <title> extracted and an always-empty stack; this
+// parses the formatted rendering, so the stack a script asks for is really
+// there. The keys are the same ones, with "type" added to each frame — the
+// frame kind (METHOD, FUNCTION, FORM) that "event" was always empty for.
 func (e *LuaEngine) luaGetDump(L *lua.LState) int {
 	dumpID := getString(L, 1)
 
-	dump, err := e.client.GetDump(e.ctx, dumpID)
+	dump, err := e.client.DumpDetail(e.ctx, dumpID)
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(err.Error()))
@@ -968,21 +471,29 @@ func (e *LuaEngine) luaGetDump(L *lua.LState) int {
 	tbl := L.NewTable()
 	L.SetField(tbl, "id", lua.LString(dump.ID))
 	L.SetField(tbl, "program", lua.LString(dump.Program))
-	L.SetField(tbl, "exception", lua.LString(dump.ExceptionType))
-	L.SetField(tbl, "title", lua.LString(dump.Title))
-	L.SetField(tbl, "user", lua.LString(dump.User))
+	L.SetField(tbl, "exception", lua.LString(dump.Exception))
+	L.SetField(tbl, "title", lua.LString(dump.ErrorType))
+	L.SetField(tbl, "include", lua.LString(dump.Include))
+	L.SetField(tbl, "procedure", lua.LString(dump.Procedure))
+	L.SetField(tbl, "component", lua.LString(dump.Component))
 	L.SetField(tbl, "line", lua.LNumber(dump.Line))
-	L.SetField(tbl, "time", lua.LString(dump.Timestamp))
+	// The detail resource names no user and no timestamp — the listing does.
+	// Both keys were always empty here anyway, and they stay present rather
+	// than disappearing, because a script concatenating a nil field crashes
+	// where one concatenating an empty string simply shows a gap.
+	L.SetField(tbl, "user", lua.LString(""))
+	L.SetField(tbl, "time", lua.LString(""))
 
-	// Stack trace
-	if len(dump.StackTrace) > 0 {
+	if len(dump.Stack) > 0 {
 		stack := L.NewTable()
-		for i, frame := range dump.StackTrace {
+		for i, frame := range dump.Stack {
 			row := L.NewTable()
 			L.SetField(row, "program", lua.LString(frame.Program))
 			L.SetField(row, "include", lua.LString(frame.Include))
 			L.SetField(row, "line", lua.LNumber(frame.Line))
-			L.SetField(row, "event", lua.LString(frame.Event))
+			L.SetField(row, "type", lua.LString(frame.Type))
+			L.SetField(row, "event", lua.LString(frame.Type))
+			L.SetField(row, "name", lua.LString(frame.Name))
 			stack.RawSetInt(i+1, row)
 		}
 		L.SetField(tbl, "stack", stack)

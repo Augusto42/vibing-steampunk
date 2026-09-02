@@ -149,13 +149,19 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 		opts = &EditSourceOptions{SyntaxCheck: true}
 	}
 
-	// Unified mutation policy gate (op type + package + transport)
-	if err := c.checkMutation(ctx, MutationContext{
+	// Unified mutation policy gate (op type + package + transport). The mark
+	// on the returned context stops the identical package resolve running a
+	// second time from inside the lock window, where it would retire the
+	// session the lock handle lives in (issue #91). A class include marks the
+	// same key as its parent class, which is the object ADT resolves the
+	// package from either way.
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpUpdate,
 		OpName:    "EditSource",
 		ObjectURL: objectURL,
 		Transport: opts.Transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	// SyntaxCheck defaults to true if not explicitly set (zero value is false, so we need to handle this)
@@ -190,8 +196,9 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 		result.Method = opts.Method
 	}
 
-	// Detect if this is a class include (e.g., /sap/bc/adt/oo/classes/ZCL_FOO/includes/testclasses)
-	isClassInclude := strings.Contains(objectURL, "/includes/")
+	// Detect if this is a class include (e.g., /sap/bc/adt/oo/classes/ZCL_FOO/includes/testclasses).
+	// Program includes (/programs/includes/ZZ_NAME) are NOT class includes — /includes/ is their collection path.
+	isClassInclude := strings.Contains(objectURL, "/oo/classes/") && strings.Contains(objectURL, "/includes/")
 	var className string
 	var includeType ClassIncludeType
 	var parentClassURL string

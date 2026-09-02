@@ -19,15 +19,25 @@ type Dependency struct {
 	Name string
 	Kind DependencyKind
 	Line int // 1-based line where first reference was found
+	// Methods are the methods this source calls on the dependency, when they
+	// could be determined. Empty means nothing is known — which is different
+	// from "none are called", and the contract is then kept whole rather than
+	// narrowed on no information.
+	Methods []string
 }
 
 // Contract is the compressed public API of a dependency.
 type Contract struct {
-	Name      string
-	Kind      DependencyKind
-	Source    string // compressed public API text
-	FromCache bool
-	Error     string // non-empty if resolution failed
+	Name   string
+	Kind   DependencyKind
+	Source string // compressed public API text
+	// MethodsTotal and MethodsShown say how much of the surface this contract
+	// carries. A reader owed the knowledge that there is more is owed a number,
+	// not a list of forty-seven names they did not ask for.
+	MethodsTotal int
+	MethodsShown int
+	FromCache    bool
+	Error        string // non-empty if resolution failed
 }
 
 // ContextResult is the output of context compression.

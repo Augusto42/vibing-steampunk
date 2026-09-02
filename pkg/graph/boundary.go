@@ -11,29 +11,29 @@ import (
 type BoundaryVerdict string
 
 const (
-	VerdictStandard   BoundaryVerdict = "STANDARD"    // SAP standard object → OK
+	VerdictStandard    BoundaryVerdict = "STANDARD"     // SAP standard object → OK
 	VerdictSamePackage BoundaryVerdict = "SAME_PACKAGE" // Same package → OK
-	VerdictAllowed    BoundaryVerdict = "ALLOWED"      // Whitelisted Z-package → OK
-	VerdictViolation  BoundaryVerdict = "VIOLATION"    // Cross-package Z* dep → PROBLEM
-	VerdictDynamic    BoundaryVerdict = "DYNAMIC"      // Dynamic call, unresolvable → WARNING
-	VerdictUnknown    BoundaryVerdict = "UNKNOWN"      // Package not resolved
+	VerdictAllowed     BoundaryVerdict = "ALLOWED"      // Whitelisted Z-package → OK
+	VerdictViolation   BoundaryVerdict = "VIOLATION"    // Cross-package Z* dep → PROBLEM
+	VerdictDynamic     BoundaryVerdict = "DYNAMIC"      // Dynamic call, unresolvable → WARNING
+	VerdictUnknown     BoundaryVerdict = "UNKNOWN"      // Package not resolved
 )
 
 // BoundaryEntry is a single dependency with its verdict.
 type BoundaryEntry struct {
-	From       *Node           `json:"from"`
-	To         *Node           `json:"to"`
-	Edge       *Edge           `json:"edge"`
-	Verdict    BoundaryVerdict `json:"verdict"`
-	TargetPkg  string          `json:"target_package"`
+	From      *Node           `json:"from"`
+	To        *Node           `json:"to"`
+	Edge      *Edge           `json:"edge"`
+	Verdict   BoundaryVerdict `json:"verdict"`
+	TargetPkg string          `json:"target_package"`
 }
 
 // BoundaryReport is the result of a package boundary analysis.
 type BoundaryReport struct {
-	RootPackage string            `json:"root_package"`
-	Whitelist   []string          `json:"whitelist"`
-	TotalDeps   int               `json:"total_deps"`
-	Entries     []BoundaryEntry   `json:"entries"`
+	RootPackage string          `json:"root_package"`
+	Whitelist   []string        `json:"whitelist"`
+	TotalDeps   int             `json:"total_deps"`
+	Entries     []BoundaryEntry `json:"entries"`
 
 	// Aggregated counts
 	Standard    int `json:"standard_count"`
@@ -278,7 +278,24 @@ func (r *BoundaryReport) FormatText() string {
 		}
 	}
 
-	if r.Violations == 0 && r.Dynamic == 0 {
+	if r.Unknown > 0 {
+		// classify sends a reference whose package could not be determined to
+		// Unknown and never to Violation, so an unknown can only ever hide a
+		// violation — never invent one. A tick beside a count of them is the
+		// reassuring direction of wrong, and this verdict is read by people
+		// deciding whether to ship.
+		sb.WriteString(fmt.Sprintf("\n  ? INCONCLUSIVE — %d of %d references could not be attributed to a package, "+
+			"and an unattributed reference is one this cannot judge.\n", r.Unknown, r.TotalDeps))
+		for _, e := range r.Entries {
+			if e.Verdict == VerdictUnknown {
+				sb.WriteString(fmt.Sprintf("    unattributed: %s → %s\n", e.From, e.To))
+			}
+		}
+		if r.Violations > 0 {
+			sb.WriteString(fmt.Sprintf("  ✗ %d violation(s) in %d object(s) among the references it could judge\n",
+				r.Violations, len(r.ViolatingObjects)))
+		}
+	} else if r.Violations == 0 && r.Dynamic == 0 {
 		sb.WriteString("\n  ✓ CLEAN — no boundary violations\n")
 	} else if r.Violations > 0 {
 		sb.WriteString(fmt.Sprintf("\n  ✗ %d violation(s) in %d object(s)\n", r.Violations, len(r.ViolatingObjects)))

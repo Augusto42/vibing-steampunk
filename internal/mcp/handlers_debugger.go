@@ -10,6 +10,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
+	"github.com/oisee/vibing-steampunk/pkg/saprfc"
 )
 
 // routeDebuggerAction routes "debug" sub-actions for the WebSocket-based debugger.
@@ -49,204 +50,118 @@ func (s *Server) ensureDebugWSClient(ctx context.Context) error {
 		s.config.Password,
 		s.config.InsecureSkipVerify,
 	)
+	s.applyWSAuth(s.debugWSClient.SetCookies)
 
 	return s.debugWSClient.Connect(ctx)
 }
 
+// The breakpoint half of the debugger, through SAP's own ADT resource on the
+// session the server holds. It replaced two earlier routes: the stateless REST
+// client, which answered 403 because a CSRF token cannot survive a session it
+// does not have, and the ZADT_VSP WebSocket, which existed to supply the session
+// the stateless client lacked. Neither is needed once the server holds one.
+//
+// A line is the line in the source as ADT serves it — the same numbering vsp's
+// read tools show — so the old method-relative 'method' parameter is gone; name
+// the object and give the line you can see.
+
 func (s *Server) handleSetBreakpoint(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Get breakpoint kind (default: "line")
-	kind, _ := request.GetArguments()["kind"].(string)
+	sess, err := s.debugger(ctx)
+	if err != nil {
+		return newToolResultError(err.Error()), nil
+	}
+
+	args := request.GetArguments()
+	kind, _ := args["kind"].(string)
 	if kind == "" {
 		kind = "line"
 	}
 
-	// Ensure WebSocket client is connected
-	if err := s.ensureDebugWSClient(ctx); err != nil {
-		return newToolResultError(fmt.Sprintf("Failed to connect to ZADT_VSP WebSocket: %v. Ensure ZADT_VSP is deployed and SAPC/SICF are configured.", err)), nil
-	}
-
-	var bpID string
-	var err error
-	var msg strings.Builder
-
+	var bp adt.Breakpoint
 	switch kind {
 	case "line":
-		program, ok := request.GetArguments()["program"].(string)
-		if !ok || program == "" {
+		program, _ := args["program"].(string)
+		if program == "" {
 			return newToolResultError("program is required for line breakpoints"), nil
 		}
-
-		lineFloat, ok := request.GetArguments()["line"].(float64)
+		lineFloat, ok := args["line"].(float64)
 		if !ok || lineFloat <= 0 {
 			return newToolResultError("line is required and must be positive for line breakpoints"), nil
 		}
-		line := int(lineFloat)
-
-		// Optional method parameter for include-relative line numbers
-		method, _ := request.GetArguments()["method"].(string)
-
-		// Auto-convert class names to pool format (ZCL_TEST → ZCL_TEST================CP)
-		originalProgram := program
-		program = convertToClassPool(program)
-
-		// Use method-aware breakpoint if method is specified
-		if method != "" {
-			bpID, err = s.debugWSClient.SetMethodBreakpoint(ctx, program, method, line)
-			if err != nil {
-				return newToolResultError(fmt.Sprintf("SetMethodBreakpoint failed: %v", err)), nil
-			}
-
-			msg.WriteString("Method breakpoint set successfully!\n\n")
-			fmt.Fprintf(&msg, "Breakpoint ID: %s\n", bpID)
-			if program != originalProgram {
-				fmt.Fprintf(&msg, "Program: %s (converted from %s)\n", program, originalProgram)
-			} else {
-				fmt.Fprintf(&msg, "Program: %s\n", program)
-			}
-			fmt.Fprintf(&msg, "Method: %s\n", method)
-			fmt.Fprintf(&msg, "Line: %d (relative to method start)\n", line)
-			msg.WriteString("\nℹ️  Line number is relative to the METHOD implementation, not the full class.\n")
-		} else {
-			bpID, err = s.debugWSClient.SetLineBreakpoint(ctx, program, line)
-			if err != nil {
-				return newToolResultError(fmt.Sprintf("SetLineBreakpoint failed: %v", err)), nil
-			}
-
-			msg.WriteString("Line breakpoint set successfully!\n\n")
-			fmt.Fprintf(&msg, "Breakpoint ID: %s\n", bpID)
-			if program != originalProgram {
-				fmt.Fprintf(&msg, "Program: %s (converted from %s)\n", program, originalProgram)
-			} else {
-				fmt.Fprintf(&msg, "Program: %s\n", program)
-			}
-			fmt.Fprintf(&msg, "Line: %d (pool-absolute)\n", line)
+		uri, err := sess.dbg.ResolveSourceURI(ctx, program)
+		if err != nil {
+			return newToolResultError(err.Error()), nil
 		}
+		condition, _ := args["condition"].(string)
+		bp = adt.Breakpoint{Kind: adt.BreakpointKindLine, URI: uri, Line: int(lineFloat), Condition: condition}
 
 	case "statement":
-		statement, ok := request.GetArguments()["statement"].(string)
-		if !ok || statement == "" {
+		statement, _ := args["statement"].(string)
+		if statement == "" {
 			return newToolResultError("statement is required for statement breakpoints (e.g., 'CALL FUNCTION', 'SELECT', 'LOOP')"), nil
 		}
-
-		bpID, err = s.debugWSClient.SetStatementBreakpoint(ctx, statement)
-		if err != nil {
-			return newToolResultError(fmt.Sprintf("SetStatementBreakpoint failed: %v", err)), nil
-		}
-
-		msg.WriteString("Statement breakpoint set successfully!\n\n")
-		fmt.Fprintf(&msg, "Breakpoint ID: %s\n", bpID)
-		fmt.Fprintf(&msg, "Statement: %s\n", statement)
-		msg.WriteString("\nThis breakpoint will trigger on ALL occurrences of this statement type.\n")
+		bp = adt.Breakpoint{Kind: adt.BreakpointKindStatement, Statement: statement}
 
 	case "exception":
-		exception, ok := request.GetArguments()["exception"].(string)
-		if !ok || exception == "" {
+		exception, _ := args["exception"].(string)
+		if exception == "" {
 			return newToolResultError("exception is required for exception breakpoints (e.g., 'CX_SY_ZERODIVIDE')"), nil
 		}
-
-		bpID, err = s.debugWSClient.SetExceptionBreakpoint(ctx, exception)
-		if err != nil {
-			return newToolResultError(fmt.Sprintf("SetExceptionBreakpoint failed: %v", err)), nil
-		}
-
-		msg.WriteString("Exception breakpoint set successfully!\n\n")
-		fmt.Fprintf(&msg, "Breakpoint ID: %s\n", bpID)
-		fmt.Fprintf(&msg, "Exception: %s\n", exception)
-		msg.WriteString("\nThis breakpoint will trigger when this exception is raised.\n")
+		bp = adt.Breakpoint{Kind: adt.BreakpointKindException, Exception: exception}
 
 	default:
 		return newToolResultError(fmt.Sprintf("Invalid breakpoint kind: %s. Valid kinds: line, statement, exception", kind)), nil
 	}
 
-	msg.WriteString("\n⚠️  IMPORTANT: Breakpoints only trigger for code executed in a DIFFERENT SAP session.\n")
-	msg.WriteString("Use DebuggerListen in this session, then trigger execution from another session\n")
-	msg.WriteString("(e.g., SAP GUI, HTTP request, RunUnitTests from another connection).")
+	bps, err := sess.dbg.ADTAdd(ctx, bp)
+	if err != nil {
+		return newToolResultError(fmt.Sprintf("SetBreakpoint failed over %s: %v", sess.route, err)), nil
+	}
 
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "Breakpoint set. This client now has %d registered:\n\n", len(bps))
+	msg.WriteString(saprfc.FormatBreakpoints(bps))
+	msg.WriteString("\nBreakpoints only fire for code running in ANOTHER session. Start DebuggerListen, " +
+		"then trigger the code from SAP GUI, an HTTP request or a separate RFC call.")
 	return mcp.NewToolResultText(msg.String()), nil
 }
 
-// convertToClassPool converts class/interface names to pool format for debugging.
-// Example: ZCL_TEST → ZCL_TEST================CP (padded to 30 chars + CP suffix)
-func convertToClassPool(program string) string {
-	program = strings.ToUpper(program)
-
-	// Already in pool format
-	if strings.HasSuffix(program, "CP") && strings.Contains(program, "=") {
-		return program
-	}
-
-	// Check if it looks like a class or interface name
-	isClass := strings.HasPrefix(program, "ZCL_") ||
-		strings.HasPrefix(program, "YCL_") ||
-		strings.HasPrefix(program, "ZIF_") ||
-		strings.HasPrefix(program, "YIF_") ||
-		strings.HasPrefix(program, "LCL_") ||
-		strings.HasPrefix(program, "LIF_") ||
-		strings.Contains(program, "/CL_") ||
-		strings.Contains(program, "/IF_")
-
-	if !isClass {
-		return program
-	}
-
-	// Pad to 30 chars with '=' and add 'CP' suffix
-	// Total length: 30 + 2 = 32 (standard ABAP class pool naming)
-	if len(program) < 30 {
-		padding := 30 - len(program)
-		program = program + strings.Repeat("=", padding) + "CP"
-	}
-
-	return program
-}
-
 func (s *Server) handleGetBreakpoints(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if err := s.ensureDebugWSClient(ctx); err != nil {
-		return newToolResultError(fmt.Sprintf("Failed to connect to ZADT_VSP WebSocket: %v", err)), nil
+	sess, err := s.debugger(ctx)
+	if err != nil {
+		return newToolResultError(err.Error()), nil
 	}
-
-	breakpoints, err := s.debugWSClient.GetBreakpoints(ctx)
+	bps, err := sess.dbg.ADTBreakpoints(ctx)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("GetBreakpoints failed: %v", err)), nil
 	}
-
-	if len(breakpoints) == 0 {
-		return mcp.NewToolResultText("No breakpoints are currently set."), nil
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Active Breakpoints (%d):\n\n", len(breakpoints))
-	for i, bp := range breakpoints {
-		fmt.Fprintf(&sb, "%d. ID: %v\n", i+1, bp["id"])
-		if kind, ok := bp["kind"]; ok {
-			fmt.Fprintf(&sb, "   Kind: %v\n", kind)
-		}
-		if uri, ok := bp["uri"]; ok {
-			fmt.Fprintf(&sb, "   URI: %v\n", uri)
-		}
-		if line, ok := bp["line"]; ok {
-			fmt.Fprintf(&sb, "   Line: %v\n", line)
-		}
-		sb.WriteString("\n")
-	}
-
-	return mcp.NewToolResultText(sb.String()), nil
+	// SAP answers the breakpoint GET with an empty body, so this is the set this
+	// server registered, not everything the user has anywhere. Saying so is the
+	// difference between a useful answer and a misleading one.
+	return mcp.NewToolResultText(saprfc.FormatBreakpoints(bps) +
+		"\n(The set this session registered. ADT does not report breakpoints made by other clients.)"), nil
 }
 
 func (s *Server) handleDeleteBreakpoint(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	bpID, ok := request.GetArguments()["breakpoint_id"].(string)
-	if !ok || bpID == "" {
-		return newToolResultError("breakpoint_id is required"), nil
+	bpID, _ := request.GetArguments()["breakpoint_id"].(string)
+	if bpID == "" {
+		return newToolResultError("breakpoint_id is required (or 'all')"), nil
 	}
-
-	if err := s.ensureDebugWSClient(ctx); err != nil {
-		return newToolResultError(fmt.Sprintf("Failed to connect to ZADT_VSP WebSocket: %v", err)), nil
+	sess, err := s.debugger(ctx)
+	if err != nil {
+		return newToolResultError(err.Error()), nil
 	}
-
-	if err := s.debugWSClient.DeleteBreakpoint(ctx, bpID); err != nil {
+	if strings.EqualFold(bpID, "all") {
+		if err := sess.dbg.ADTClearBreakpoints(ctx); err != nil {
+			return newToolResultError(fmt.Sprintf("DeleteBreakpoint failed: %v", err)), nil
+		}
+		return mcp.NewToolResultText("All breakpoints registered by this session were removed."), nil
+	}
+	bps, err := sess.dbg.ADTDropBreakpoint(ctx, bpID)
+	if err != nil {
 		return newToolResultError(fmt.Sprintf("DeleteBreakpoint failed: %v", err)), nil
 	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Breakpoint %s deleted successfully.", bpID)), nil
+	return mcp.NewToolResultText("Breakpoint removed. Remaining:\n\n" + saprfc.FormatBreakpoints(bps)), nil
 }
 
 func (s *Server) handleCallRFC(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

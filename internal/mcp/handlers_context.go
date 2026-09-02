@@ -10,23 +10,30 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/oisee/vibing-steampunk/pkg/ctxcomp"
 )
+
+// contextAnalysisTypes is the routing table as data; see analysisTypes.
+func (s *Server) contextAnalysisTypes() map[string]server.ToolHandlerFunc {
+	return map[string]server.ToolHandlerFunc{
+		"context":      s.handleGetContext,
+		"parse_abap":   s.handleParseABAP,
+		"analyze_deps": s.handleAnalyzeDeps,
+		"effects":      s.handleAnalyzeEffects,
+	}
+}
 
 // routeContextAction routes "analyze" with type=context, parse_abap, analyze_deps.
 func (s *Server) routeContextAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action != "analyze" {
 		return nil, false, nil
 	}
-	switch getStringParam(params, "type") {
-	case "context":
-		return s.callHandler(ctx, s.handleGetContext, params)
-	case "parse_abap":
-		return s.callHandler(ctx, s.handleParseABAP, params)
-	case "analyze_deps":
-		return s.callHandler(ctx, s.handleAnalyzeDeps, params)
+	handler, known := s.contextAnalysisTypes()[getStringParam(params, "type")]
+	if !known {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	return s.callHandler(ctx, handler, params)
 }
 
 // adtSourceAdapter adapts adt.Client to the ctxcomp.ADTSourceFetcher interface.
@@ -61,9 +68,9 @@ func (s *Server) handleParseABAP(ctx context.Context, request mcp.CallToolReques
 	lines := strings.Split(source, "\n")
 
 	type Statement struct {
-		Type   string  `json:"type"` // UNKNOWN, COMMENT, EMPTY, DATA, IF, LOOP, SELECT, METHOD, CLASS, etc.
+		Type   string      `json:"type"` // UNKNOWN, COMMENT, EMPTY, DATA, IF, LOOP, SELECT, METHOD, CLASS, etc.
 		Tokens []abapToken `json:"tokens"`
-		First  string  `json:"first"` // first keyword
+		First  string      `json:"first"` // first keyword
 	}
 
 	var statements []Statement
