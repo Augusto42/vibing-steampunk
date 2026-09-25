@@ -25,3 +25,25 @@ Before merging an upstream synchronization proposal:
 
 Generic local fixes may also be proposed upstream, but this distribution does not depend on
 upstream approval to ship them.
+
+## Synchronization status (2026-09-25)
+
+The latest reviewed upstream release is `v2.58.0`; the latest community binary
+release is `v2.40.0-augusto.1`. The branches have diverged substantially. In
+particular, this distribution has enhancement-creation and Dynpro work that
+cannot be preserved by a mechanical merge into the newer upstream architecture.
+
+Do not describe the community binary as equivalent to current upstream, and do
+not publish a merged release until the fork-only functionality has been ported
+and tested. The next synchronization should:
+
+1. Reconcile fork-only ENHO/XH, class enhancement, BAdI, Dynpro, and release
+   governance changes against current upstream APIs.
+2. Run build, vet, unit tests, and the existing mock-SAP tests on the merged
+   tree; distinguish Windows-only test failures already present upstream.
+3. Validate write and transport workflows on a non-production SAP system before
+   declaring them supported in the new community release.
+
+The upstream fix that preserves syntax and activation diagnostics in MCP error
+responses is applied separately so it can ship without waiting for this larger
+synchronization.

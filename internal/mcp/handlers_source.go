@@ -387,7 +387,7 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 		return newToolResultError(fmt.Sprintf("WriteSource failed: %v", err)), nil
 	}
 	if err := validateWriteSourceResult(result); err != nil {
-		return newToolResultError(err.Error()), nil
+		return newToolResultErrorWithPayload(err, result), nil
 	}
 
 	output, _ := json.MarshalIndent(result, "", "  ")
