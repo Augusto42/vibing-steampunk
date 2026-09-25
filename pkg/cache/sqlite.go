@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	// modernc.org/sqlite is SQLite transpiled to Go, not a cgo binding. The
@@ -25,6 +27,9 @@ type SQLiteCache struct {
 func NewSQLiteCache(config Config) (*SQLiteCache, error) {
 	if config.Path == "" {
 		config.Path = ".cache/graph.db"
+	}
+	if err := os.MkdirAll(filepath.Dir(config.Path), 0o750); err != nil {
+		return nil, fmt.Errorf("failed to create sqlite directory: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", config.Path)
