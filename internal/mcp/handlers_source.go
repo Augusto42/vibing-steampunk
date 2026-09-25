@@ -17,9 +17,9 @@ import (
 // routeSourceAction routes "read" for GetSource and "edit" for WriteSource/EditSource.
 func (s *Server) routeSourceAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action == "read" {
-		// GetSource covers: CLAS, PROG, INTF, FUNC, FUGR, INCL, DDLS, BDEF, SRVD, SRVB, MSAG, VIEW, ENHO
+		// GetSource covers: CLAS, PROG, INTF, FUNC, FUGR, INCL, DYNP, DDLS, BDEF, SRVD, SRVB, MSAG, VIEW, ENHO
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "FUNC", "FUGR", "INCL", "DDLS", "BDEF", "SRVD", "SRVB", "MSAG", "VIEW", "ENHO":
+		case "CLAS", "PROG", "INTF", "FUNC", "FUGR", "INCL", "DYNP", "DDLS", "BDEF", "SRVD", "SRVB", "MSAG", "VIEW", "ENHO":
 			args := map[string]any{
 				"object_type": objectType,
 				"name":        objectName,
@@ -99,17 +99,17 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 // registerGetSource registers the unified GetSource tool
 func (s *Server) registerGetSource() {
 	s.mcpServer.AddTool(mcp.NewTool("GetSource",
-		mcp.WithDescription("Unified tool for reading ABAP source code across different object types. Replaces GetProgram, GetClass, GetInterface, GetFunction, GetInclude, GetFunctionGroup, GetClassInclude."),
+		mcp.WithDescription("Unified tool for reading ABAP source and metadata across supported object types, including enhancement implementations and merged include views."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
+			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation, read-only), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
-			mcp.Description("Object name (e.g., program name, class name, function module name)"),
+			mcp.Description("Object name. For DYNP, use the screen number with parent set, or PROGRAM/0100."),
 		),
 		mcp.WithString("parent",
-			mcp.Description("Function group name (required only for FUNC type)"),
+			mcp.Description("Function group name for FUNC, or parent program name for DYNP"),
 		),
 		mcp.WithString("include",
 			mcp.Description("Class include type for CLAS: definitions, implementations, macros, testclasses (optional)"),
@@ -203,7 +203,7 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 	if ic, ok := request.GetArguments()["include_context"].(bool); ok {
 		includeContext = ic
 	}
-	if includeContext {
+	if includeContext && strings.ToUpper(objectType) != "DYNP" {
 		maxDeps := 20
 		if md, ok := request.GetArguments()["max_deps"].(float64); ok && md > 0 {
 			maxDeps = int(md)

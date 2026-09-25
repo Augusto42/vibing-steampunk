@@ -51,18 +51,18 @@ func newBody(s string) *http.Response {
 }
 
 func TestGetEnhancement_ResolvesSubtypeViaSearch(t *testing.T) {
-	sourceBody := `ENHANCEMENT 2 Y3EI_SKIP_BYPASS_CC_WITH_LIMIT.
+	sourceBody := `ENHANCEMENT 2 ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG.
   LOOP AT lt_xfplt INTO DATA(ls_xfplt) WHERE fpltr < 900000.
-    lv_sum = lv_sum + ls_xfplt-fakwr.
+    lv_sum = lv_sum + ls_item-amount.
   ENDLOOP.
 ENDENHANCEMENT.`
 
-	searchResp := newEnhancementSearchResponse("Y3EI_SKIP_BYPASS_CC_WITH_LIMIT", "XH", "YSD")
+	searchResp := newEnhancementSearchResponse("ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG", "XH", "$TMP")
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
 			"/sap/bc/adt/repository/informationsystem/search":                            searchResp,
-			"/sap/bc/adt/enhancements/enhoxh/y3ei_skip_bypass_cc_with_limit/source/main": newBody(sourceBody),
+			"/sap/bc/adt/enhancements/enhoxh/zsynthetic_enhancement_sample_long/source/main": newBody(sourceBody),
 			"/sap/bc/adt/discovery": newBody("OK"),
 		},
 	}
@@ -71,11 +71,11 @@ ENDENHANCEMENT.`
 	transport := NewTransportWithClient(cfg, mock)
 	client := NewClientWithTransport(cfg, transport)
 
-	got, err := client.GetEnhancement(context.Background(), "Y3EI_SKIP_BYPASS_CC_WITH_LIMIT")
+	got, err := client.GetEnhancement(context.Background(), "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG")
 	if err != nil {
 		t.Fatalf("GetEnhancement failed: %v", err)
 	}
-	if !strings.Contains(got, "lv_sum = lv_sum + ls_xfplt-fakwr") {
+	if !strings.Contains(got, "lv_sum = lv_sum + ls_item-amount") {
 		t.Fatalf("expected spliced enhancement source, got:\n%s", got)
 	}
 }
@@ -132,8 +132,8 @@ func TestGetEnhancement_AmbiguousAcrossSubtypes(t *testing.T) {
 func TestListEnhancementsForInclude_ParsesResponse(t *testing.T) {
 	browserResp := `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/y3ei_skip_bypass_cc_with_limit" adtcore:type="ENHO/XH" adtcore:name="Y3EI_SKIP_BYPASS_CC_WITH_LIMIT" adtcore:packageName="YSD" adtcore:description="Skip bypass when CC with limit-to"/>
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/programs/includes/rvkmp901" adtcore:type="PROG/I" adtcore:name="RVKMP901" adtcore:packageName="VKM"/>
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_enhancement_sample_long" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG" adtcore:packageName="$TMP" adtcore:description="Synthetic enhancement description"/>
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/programs/includes/zsynthetic_include" adtcore:type="PROG/I" adtcore:name="ZSYNTHETIC_INCLUDE" adtcore:packageName="$TMP"/>
 </adtcore:objectReferences>`
 
 	mock := &routedMock{
@@ -146,14 +146,14 @@ func TestListEnhancementsForInclude_ParsesResponse(t *testing.T) {
 	transport := NewTransportWithClient(cfg, mock)
 	client := NewClientWithTransport(cfg, transport)
 
-	refs, err := client.ListEnhancementsForInclude(context.Background(), "RVKMP901")
+	refs, err := client.ListEnhancementsForInclude(context.Background(), "ZSYNTHETIC_INCLUDE")
 	if err != nil {
 		t.Fatalf("ListEnhancementsForInclude failed: %v", err)
 	}
 	if len(refs) != 1 {
 		t.Fatalf("expected 1 ENHO match, got %d: %+v", len(refs), refs)
 	}
-	if refs[0].Name != "Y3EI_SKIP_BYPASS_CC_WITH_LIMIT" {
+	if refs[0].Name != "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG" {
 		t.Errorf("wrong name: %s", refs[0].Name)
 	}
 	if refs[0].Kind != "XH" {
@@ -192,7 +192,7 @@ func (s *stubRFCSourceFetcher) Close() error {
 // the RPY_PROGRAM_READ bridge returns the body. GetEnhancement should return
 // the spliced source instead of the metadata-only error.
 func TestGetEnhancement_FallsBackToRFC(t *testing.T) {
-	searchResp := newEnhancementSearchResponse("Y3EI_SKIP_BYPASS_CC_WITH_LIMIT", "XH", "YSD")
+	searchResp := newEnhancementSearchResponse("ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG", "XH", "$TMP")
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
@@ -207,8 +207,8 @@ func TestGetEnhancement_FallsBackToRFC(t *testing.T) {
 
 	stub := &stubRFCSourceFetcher{
 		sourceLines: []string{
-			"ENHANCEMENT 2 Y3EI_SKIP_BYPASS_CC_WITH_LIMIT.",
-			"  lv_sum = lv_sum + ls_xfplt-fakwr.",
+			"ENHANCEMENT 2 ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG.",
+			"  lv_sum = lv_sum + ls_item-amount.",
 			"ENDENHANCEMENT.",
 		},
 	}
@@ -218,11 +218,11 @@ func TestGetEnhancement_FallsBackToRFC(t *testing.T) {
 		return stub, nil
 	}
 
-	got, err := client.GetEnhancement(context.Background(), "Y3EI_SKIP_BYPASS_CC_WITH_LIMIT")
+	got, err := client.GetEnhancement(context.Background(), "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG")
 	if err != nil {
 		t.Fatalf("GetEnhancement should fall through to RFC, got error: %v", err)
 	}
-	if !strings.Contains(got, "lv_sum = lv_sum + ls_xfplt-fakwr") {
+	if !strings.Contains(got, "lv_sum = lv_sum + ls_item-amount") {
 		t.Fatalf("expected RFC body in result, got: %q", got)
 	}
 	if !strings.Contains(got, "ENDENHANCEMENT.") {
@@ -234,7 +234,7 @@ func TestGetEnhancement_FallsBackToRFC(t *testing.T) {
 	// Convention says <ENHNAME>E unless table fallback set ref.EnhInclude.
 	// Search-based discovery used here doesn't populate EnhInclude, so the
 	// derived program name is the convention-based fallback.
-	if got := stub.readCalls[0]; got != "Y3EI_SKIP_BYPASS_CC_WITH_LIMITE" {
+	if got := stub.readCalls[0]; got != "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONGE" {
 		t.Errorf("wrong ReadSource program: %q", got)
 	}
 	if !closed {
@@ -261,7 +261,7 @@ func TestGetEnhancementByRef_PreservesEnhInclude(t *testing.T) {
 
 	stub := &stubRFCSourceFetcher{
 		sourceLines: []string{
-			"ENHANCEMENT 1 ISM_SAPLVKMP.",
+			"ENHANCEMENT 1 ZSYNTHETIC_HOOK.",
 			"  WRITE 'hi'.",
 			"ENDENHANCEMENT.",
 		},
@@ -272,11 +272,11 @@ func TestGetEnhancementByRef_PreservesEnhInclude(t *testing.T) {
 
 	// Synthetic ENHINCINX-discovered ref: short ENHNAME, padded ENHINCLUDE.
 	ref := &EnhancementRef{
-		Name:        "ISM_SAPLVKMP",
+		Name:        "ZSYNTHETIC_HOOK",
 		Kind:        "XH",
-		PackageName: "JAS_MODIF",
-		HostProgram: "SAPLVKMP",
-		EnhInclude:  "ISM_SAPLVKMP==================E",
+		PackageName: "$TMP",
+		HostProgram: "ZSYNTHETIC_PROGRAM",
+		EnhInclude:  "ZSYNTHETIC_HOOK============E",
 	}
 
 	got, err := client.GetEnhancementByRef(context.Background(), ref)
@@ -290,9 +290,9 @@ func TestGetEnhancementByRef_PreservesEnhInclude(t *testing.T) {
 		t.Fatalf("expected exactly one ReadSource call, got %d", len(stub.readCalls))
 	}
 	// The whole point of the fix: the padded REPOSRC name from EnhInclude
-	// must reach the RFC fetcher verbatim. <NAME>E ("ISM_SAPLVKMPE") would
+	// must reach the RFC fetcher verbatim. <NAME>E ("ZSYNTHETIC_HOOKE") would
 	// be the pre-fix behaviour and is wrong.
-	if got := stub.readCalls[0]; got != "ISM_SAPLVKMP==================E" {
+	if got := stub.readCalls[0]; got != "ZSYNTHETIC_HOOK============E" {
 		t.Errorf("RFC fetcher got wrong program name: %q (expected the padded EnhInclude verbatim)", got)
 	}
 }
@@ -315,17 +315,17 @@ func TestGetEnhancementByRef_ErrorMessageUsesEnhInclude(t *testing.T) {
 	}
 
 	ref := &EnhancementRef{
-		Name:        "ISM_SAPLVKMP",
+		Name:        "ZSYNTHETIC_HOOK",
 		Kind:        "XH",
-		PackageName: "JAS_MODIF",
-		EnhInclude:  "ISM_SAPLVKMP==================E",
+		PackageName: "$TMP",
+		EnhInclude:  "ZSYNTHETIC_HOOK============E",
 	}
 
 	_, err := client.GetEnhancementByRef(context.Background(), ref)
 	if err == nil {
 		t.Fatal("expected metadata-only error when all paths fail, got nil")
 	}
-	if !strings.Contains(err.Error(), "ISM_SAPLVKMP==================E") {
+	if !strings.Contains(err.Error(), "ZSYNTHETIC_HOOK============E") {
 		t.Errorf("expected SE80 hint to use EnhInclude verbatim, got: %v", err)
 	}
 }
@@ -335,7 +335,7 @@ func TestGetEnhancementByRef_ErrorMessageUsesEnhInclude(t *testing.T) {
 // should still see the structured metadata-only error pointing at SE80,
 // not the raw RFC error.
 func TestGetEnhancement_RFCFails_FallsThroughToMetadataError(t *testing.T) {
-	searchResp := newEnhancementSearchResponse("Y3EI_SKIP_BYPASS_CC_WITH_LIMIT", "XH", "YSD")
+	searchResp := newEnhancementSearchResponse("ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG", "XH", "$TMP")
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
@@ -352,12 +352,12 @@ func TestGetEnhancement_RFCFails_FallsThroughToMetadataError(t *testing.T) {
 		return nil, fmtError("WebSocket connection failed (HTTP 403)")
 	}
 
-	_, err := client.GetEnhancement(context.Background(), "Y3EI_SKIP_BYPASS_CC_WITH_LIMIT")
+	_, err := client.GetEnhancement(context.Background(), "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG")
 	if err == nil {
 		t.Fatal("expected metadata error when RFC fallback fails, got nil")
 	}
 	for _, want := range []string{
-		"Y3EI_SKIP_BYPASS_CC_WITH_LIMIT",
+		"ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG",
 		"source body unavailable",
 		"SE80",
 	} {
@@ -380,7 +380,7 @@ func (e errString) Error() string { return string(e) }
 // 404. GetEnhancement should return a structured error that names the ENHO,
 // its kind/package, and points at SE80 — instead of the cryptic 404.
 func TestGetEnhancement_NoSourceEndpoint_MetadataError(t *testing.T) {
-	searchResp := newEnhancementSearchResponse("Y3EI_SKIP_BYPASS_CC_WITH_LIMIT", "XH", "YSD")
+	searchResp := newEnhancementSearchResponse("ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG", "XH", "$TMP")
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
@@ -398,15 +398,15 @@ func TestGetEnhancement_NoSourceEndpoint_MetadataError(t *testing.T) {
 		return nil, fmtError("RFC fallback disabled for this test")
 	}
 
-	_, err := client.GetEnhancement(context.Background(), "Y3EI_SKIP_BYPASS_CC_WITH_LIMIT")
+	_, err := client.GetEnhancement(context.Background(), "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG")
 	if err == nil {
 		t.Fatal("expected error when source endpoint is missing, got nil")
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"Y3EI_SKIP_BYPASS_CC_WITH_LIMIT",
+		"ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG",
 		"XH",
-		"YSD",
+		"$TMP",
 		"source body unavailable",
 		"SE80",
 	} {
@@ -487,26 +487,26 @@ func dataPreviewBody(columns []string, rows [][]string) string {
 func TestListEnhancementsForInclude_TablePathFallback(t *testing.T) {
 	d010Body := dataPreviewBody(
 		[]string{"MASTER", "INCLUDE"},
-		[][]string{{"SAPLVKMP", "RVKMP901"}},
+		[][]string{{"ZSYNTHETIC_PROGRAM", "ZSYNTHETIC_INCLUDE"}},
 	)
 	enhincinxBody := dataPreviewBody(
 		[]string{"ENHNAME", "PROGRAMNAME", "FULL_NAME", "ENHINCLUDE"},
 		[][]string{
 			{
-				"Y3EI_SKIP_BYPASS_CC_WITH_LIMIT",
-				"SAPLVKMP",
-				`\PR:SAPLVKMP\FO:BEDINGUNG_PRUEFEN_901\SE:BEGIN\EI`,
-				"Y3EI_SKIP_BYPASS_CC_WITH_LIMITE",
+				"ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG",
+				"ZSYNTHETIC_PROGRAM",
+				`\PR:ZSYNTHETIC_PROGRAM\FO:SYNTHETIC_FORM\SE:BEGIN\EI`,
+				"ZSYNTHETIC_ENHANCEMENT_SAMPLE_E",
 			},
 		},
 	)
 	enhheaderBody := dataPreviewBody(
 		[]string{"ENHNAME", "VERSION"},
-		[][]string{{"Y3EI_SKIP_BYPASS_CC_WITH_LIMIT", "A"}},
+		[][]string{{"ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG", "A"}},
 	)
 	searchBody := `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/y3ei_skip_bypass_cc_with_limit" adtcore:type="ENHO/XH" adtcore:name="Y3EI_SKIP_BYPASS_CC_WITH_LIMIT" adtcore:packageName="YSD" adtcore:description="Skip bypass when CC with limit-to"/>
+  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_enhancement_sample_long" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG" adtcore:packageName="$TMP" adtcore:description="Synthetic enhancement description"/>
 </adtcore:objectReferences>`
 
 	mock := &queryRoutedMock{
@@ -525,7 +525,7 @@ func TestListEnhancementsForInclude_TablePathFallback(t *testing.T) {
 	transport := NewTransportWithClient(cfg, mock)
 	client := NewClientWithTransport(cfg, transport)
 
-	refs, err := client.ListEnhancementsForInclude(context.Background(), "RVKMP901")
+	refs, err := client.ListEnhancementsForInclude(context.Background(), "ZSYNTHETIC_INCLUDE")
 	if err != nil {
 		t.Fatalf("ListEnhancementsForInclude (table fallback) failed: %v", err)
 	}
@@ -533,19 +533,19 @@ func TestListEnhancementsForInclude_TablePathFallback(t *testing.T) {
 		t.Fatalf("expected 1 ENHO match via table fallback, got %d: %+v", len(refs), refs)
 	}
 	got := refs[0]
-	if got.Name != "Y3EI_SKIP_BYPASS_CC_WITH_LIMIT" {
+	if got.Name != "ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG" {
 		t.Errorf("wrong Name: %q", got.Name)
 	}
 	if got.Kind != "XH" {
 		t.Errorf("wrong Kind: %q", got.Kind)
 	}
-	if got.HostProgram != "SAPLVKMP" {
+	if got.HostProgram != "ZSYNTHETIC_PROGRAM" {
 		t.Errorf("wrong HostProgram: %q", got.HostProgram)
 	}
-	if got.EnhInclude != "Y3EI_SKIP_BYPASS_CC_WITH_LIMITE" {
+	if got.EnhInclude != "ZSYNTHETIC_ENHANCEMENT_SAMPLE_E" {
 		t.Errorf("wrong EnhInclude: %q", got.EnhInclude)
 	}
-	if !strings.Contains(got.FullName, "BEDINGUNG_PRUEFEN_901") {
+	if !strings.Contains(got.FullName, "SYNTHETIC_FORM") {
 		t.Errorf("expected FullName to mention the FORM, got: %q", got.FullName)
 	}
 }
@@ -554,7 +554,7 @@ func TestGetSource_DispatchesENHO(t *testing.T) {
 	// End-to-end: GetSource(ctx, "ENHO", name) must take the ENHO branch.
 	sourceBody := `ENHANCEMENT 2 Y_TEST.
 ENDENHANCEMENT.`
-	searchResp := newEnhancementSearchResponse("Y_TEST", "XH", "YSD")
+	searchResp := newEnhancementSearchResponse("Y_TEST", "XH", "$TMP")
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{

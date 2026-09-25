@@ -20,7 +20,7 @@ var _ = time.Now
 
 // GetSourceOptions configures GetSource behavior
 type GetSourceOptions struct {
-	Parent  string // Function group name (required for FUNC type)
+	Parent  string // Function group for FUNC; parent program for DYNP
 	Include string // Class include type: definitions, implementations, macros, testclasses (optional for CLAS type)
 	Method  string // Method name for method-level source extraction (optional for CLAS type)
 }
@@ -41,6 +41,7 @@ type GetSourceOptions struct {
 //   - SRVD: Service Definitions (name = SRVD name) - RAP service exposure
 //   - SRVB: Service Bindings (name = SRVB name) - RAP protocol binding (returns JSON metadata)
 //   - MSAG: Message classes (name = message class name) - returns JSON with all messages
+//   - DYNP: Screens (name = screen number and parent = program, or name = PROGRAM/0100) - returns JSON metadata
 func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *GetSourceOptions) (string, error) {
 	// Safety check for read operations
 	if err := c.checkSafety(OpRead, "GetSource"); err != nil {
@@ -97,6 +98,21 @@ func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *G
 	case "INCL":
 		return c.GetInclude(ctx, name)
 
+	case "DYNP":
+		program, screen, err := parseDynproReference(name, opts.Parent)
+		if err != nil {
+			return "", err
+		}
+		dynpro, err := c.GetDynpro(ctx, program, screen)
+		if err != nil {
+			return "", err
+		}
+		data, err := json.Marshal(dynpro)
+		if err != nil {
+			return "", fmt.Errorf("serializing dynpro: %w", err)
+		}
+		return string(data), nil
+
 	case "DDLS":
 		return c.GetDDLS(ctx, name)
 
@@ -140,7 +156,7 @@ func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *G
 		return c.GetEnhancement(ctx, name)
 
 	default:
-		return "", fmt.Errorf("unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, VIEW, BDEF, SRVD, SRVB, MSAG, ENHO)", objectType)
+		return "", fmt.Errorf("unsupported object type: %s (supported: PROG, CLAS, INTF, FUNC, FUGR, INCL, DYNP, DDLS, VIEW, BDEF, SRVD, SRVB, MSAG, ENHO)", objectType)
 	}
 }
 
@@ -212,6 +228,7 @@ func WriteSourceResultError(result *WriteSourceResult) error {
 //   - PROG: Programs
 //   - CLAS: Classes (optionally with test source)
 //   - INTF: Interfaces
+//   - INCL: Program includes
 //
 // Mode:
 //   - upsert (default): Auto-detect if object exists, create or update accordingly
