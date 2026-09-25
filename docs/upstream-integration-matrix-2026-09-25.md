@@ -39,3 +39,26 @@ belong in tests, logs, commits, pull requests, or releases.
 
 Until those gates pass, the latest community binary remains on the older
 upstream baseline. A source merge alone is not a verified release.
+
+## Current integration status
+
+- Ported in the isolated branch: portable SQLite paths and recording IDs;
+  read-only Dynpro; ENHO subtype correction, WebSocket fallback, XH update,
+  and XH/class/BAdI creation; CLI and MCP entry points. Embedded and abapGit
+  copies of the ABAP bridge now have the same source content.
+- Synthetic Go tests cover key validation, transport preflight, Dynpro read,
+  bridge read-back, XH update success/failure, and tool registration. These
+  checks cannot validate ABAP syntax, activation, or SAP release compatibility.
+- The fork's synthetic mock SAP server and Go integration test were ported to
+  the new upstream contracts. The CLI smoke script passed locally for ENHO
+  read, Dynpro read, and INCL write/read-back on 2026-09-25.
+- A package-whitelisted `WriteSource(INCL)` update initially failed in this
+  smoke test. The mutation gate now resolves the existing object's package
+  after determining update mode, and the mock test omits caller-supplied
+  package metadata to catch regressions.
+- Still pending: exercise every subtype on a non-production SAP system,
+  and review release packaging/destination. Do not merge into community main
+  or publish a binary solely on the basis of the Go tests.
+- The SSO cache mode assertion is POSIX-specific; Windows file security is
+  governed by NTFS ACLs and was not audited by this migration. No live
+  credentials were used during these tests.

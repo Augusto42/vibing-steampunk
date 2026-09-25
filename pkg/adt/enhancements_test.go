@@ -61,7 +61,7 @@ ENDENHANCEMENT.`
 
 	mock := &routedMock{
 		byPath: map[string]*http.Response{
-			"/sap/bc/adt/repository/informationsystem/search":                            searchResp,
+			"/sap/bc/adt/repository/informationsystem/search":                                searchResp,
 			"/sap/bc/adt/enhancements/enhoxh/zsynthetic_enhancement_sample_long/source/main": newBody(sourceBody),
 			"/sap/bc/adt/discovery": newBody("OK"),
 		},
@@ -164,9 +164,13 @@ func TestListEnhancementsForInclude_ParsesResponse(t *testing.T) {
 type stubRFCSourceFetcher struct {
 	sourceLines []string
 	err         error
+	writeErr    error
 
-	readCalls []string // program names the prod code asked for
-	closeFn   func()
+	readCalls      []string // program names the prod code asked for
+	writeName      string
+	writeSource    string
+	writeTransport string
+	closeFn        func()
 }
 
 func (s *stubRFCSourceFetcher) CallRFC(ctx context.Context, function string, params map[string]any) (*RFCResult, error) {
@@ -179,6 +183,14 @@ func (s *stubRFCSourceFetcher) CallRFC(ctx context.Context, function string, par
 func (s *stubRFCSourceFetcher) ReadSource(ctx context.Context, program string) ([]string, error) {
 	s.readCalls = append(s.readCalls, program)
 	return s.sourceLines, s.err
+}
+
+func (s *stubRFCSourceFetcher) WriteEnhancementSource(_ context.Context, enhancement, source, transport string) error {
+	s.writeName, s.writeSource, s.writeTransport = enhancement, source, transport
+	if s.writeErr == nil {
+		s.sourceLines = strings.Split(source, "\n")
+	}
+	return s.writeErr
 }
 
 func (s *stubRFCSourceFetcher) Close() error {

@@ -42,6 +42,9 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 			if v, ok := getFloatParam(params, "max_deps"); ok {
 				args["max_deps"] = v
 			}
+			if v, ok := getBoolParam(params, "merged"); ok {
+				args["merged"] = v
+			}
 			return s.callHandler(ctx, s.handleGetSource, args)
 		}
 	}
@@ -49,7 +52,7 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 	if action == "edit" {
 		// High-level WriteSource
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "FUNC", "INCL", "DDLS", "BDEF", "SRVD", "MSAG", "TABL":
+		case "CLAS", "PROG", "INTF", "FUNC", "INCL", "ENHO", "DDLS", "BDEF", "SRVD", "MSAG", "TABL":
 			if src := getStringParam(params, "source"); src != "" {
 				args := map[string]any{
 					"object_type": objectType,
@@ -102,7 +105,7 @@ func (s *Server) registerGetSource() {
 		mcp.WithDescription("Unified tool for reading ABAP source and metadata across supported object types, including enhancement implementations and merged include views."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation, read-only), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
+			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -126,16 +129,17 @@ func (s *Server) registerGetSource() {
 		mcp.WithBoolean("include_hash",
 			mcp.Description("Return JSON with the raw source and its sourceHash for a guarded later write. Default false preserves the text response."),
 		),
+		mcp.WithBoolean("merged", mcp.Description("INCL only: annotated read-only view with attached ENHO sources; never upload this output")),
 	), s.handleGetSource)
 }
 
 // registerWriteSource registers the unified WriteSource tool
 func (s *Server) registerWriteSource() {
 	s.mcpServer.AddTool(mcp.NewTool("WriteSource",
-		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, CLAS, INTF, INCL, and RAP types (DDLS, BDEF, SRVD)."),
+		mcp.WithDescription("Unified tool for writing ABAP source code. ENHO/XH requires mode=update and a matching SAP bridge; source-only ENHO creation is unsupported."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), INCL (include), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
+			mcp.Description("Object type: PROG, CLAS, INTF, INCL, ENHO (existing XH only), DDLS, BDEF, SRVD, SRVB, TABL"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -184,11 +188,19 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 	parent, _ := request.GetArguments()["parent"].(string)
 	include, _ := request.GetArguments()["include"].(string)
 	method, _ := request.GetArguments()["method"].(string)
+	merged, _ := request.GetArguments()["merged"].(bool)
+	if merged && !strings.EqualFold(objectType, "INCL") {
+		return newToolResultError("merged is supported only for INCL"), nil
+	}
+	if includeHash, _ := request.GetArguments()["include_hash"].(bool); merged && includeHash {
+		return newToolResultError("include_hash is unavailable for merged read-only views"), nil
+	}
 
 	opts := &adt.GetSourceOptions{
 		Parent:  parent,
 		Include: include,
 		Method:  method,
+		Merged:  merged,
 	}
 
 	rawSource, err := s.adtClient.GetSource(ctx, objectType, name, opts)
@@ -203,7 +215,7 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 	if ic, ok := request.GetArguments()["include_context"].(bool); ok {
 		includeContext = ic
 	}
-	if includeContext && strings.ToUpper(objectType) != "DYNP" {
+	if includeContext && !merged && strings.ToUpper(objectType) != "DYNP" {
 		maxDeps := 20
 		if md, ok := request.GetArguments()["max_deps"].(float64); ok && md > 0 {
 			maxDeps = int(md)

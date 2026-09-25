@@ -20,7 +20,7 @@ import (
 
 // updateAPIBase is the GitHub REST prefix the release lookups are built on.
 // It is a variable so a test can point the whole flow at an httptest server.
-var updateAPIBase = "https://api.github.com/repos/oisee/vibing-steampunk"
+var updateAPIBase = "https://api.github.com/repos/Augusto42/vibing-steampunk"
 
 type releaseAsset struct {
 	Name string `json:"name"`
@@ -58,7 +58,7 @@ var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Replace this binary with the latest GitHub release",
 	Long: `Download the release built for this OS and architecture from
-github.com/oisee/vibing-steampunk, verify it against checksums.txt, and
+github.com/Augusto42/vibing-steampunk, verify it against checksums.txt, and
 swap it in place of the running executable.
 
   vsp update                  # install the latest release if it is newer

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,12 @@ func TestSSOSessionCacheRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("cache mode = %o, want 600", perm)
+	// Windows os.FileMode does not expose the NTFS ACL. This POSIX assertion
+	// must not be mistaken for proof of Windows credential-file isolation.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("cache mode = %o, want 600", perm)
+		}
 	}
 
 	sess, err := LoadSSOSession(path)
@@ -148,6 +153,9 @@ func TestSSOProviderReauthBudgetCoversTheSignIn(t *testing.T) {
 func TestSSOProviderCachesAndClears(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 
 	p, err := NewSSOProvider(SSOConfig{System: "devsys", BaseURL: "https://sap.example"})
 	if err != nil {

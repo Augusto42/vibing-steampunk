@@ -23,6 +23,7 @@ type GetSourceOptions struct {
 	Parent  string // Function group for FUNC; parent program for DYNP
 	Include string // Class include type: definitions, implementations, macros, testclasses (optional for CLAS type)
 	Method  string // Method name for method-level source extraction (optional for CLAS type)
+	Merged  bool   // INCL only: annotated SE80-style view, never suitable for upload
 }
 
 // GetSource is a unified tool for reading ABAP source code across different object types.
@@ -96,6 +97,9 @@ func (c *Client) GetSource(ctx context.Context, objectType, name string, opts *G
 		return string(data), nil
 
 	case "INCL":
+		if opts.Merged {
+			return c.GetIncludeMerged(ctx, name)
+		}
 		return c.GetInclude(ctx, name)
 
 	case "DYNP":
@@ -247,17 +251,15 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		opts.Mode = WriteModeUpsert
 	}
 
-	// Top-level mutation gate. The precise package check runs in the
-	// delegated create/update path (CreateAndActivate* / WriteProgram /
-	// WriteClass) because the target package is known there; here we
-	// enforce op-type and transportable-edit policy up front so the caller
-	// gets a clear early rejection.
-	if err := c.checkMutation(ctx, MutationContext{
-		Op:        OpWorkflow,
-		OpName:    "WriteSource",
-		Package:   opts.Package, // empty for update path, present for create
-		Transport: opts.Transport,
-	}); err != nil {
+	// At this point upsert has not decided whether the object exists. A
+	// package-restricted mutation gate needs either the real existing-object
+	// URL or the create package; checking now would reject valid updates (or
+	// trust a caller-supplied package for an existing object). Apply the
+	// non-network safety checks here and the full gate after mode resolution.
+	if err := c.checkSafety(OpWorkflow, "WriteSource"); err != nil {
+		return nil, err
+	}
+	if err := c.checkTransportableEdit(opts.Transport, "WriteSource"); err != nil {
 		return nil, err
 	}
 
@@ -271,6 +273,9 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 	if opts.Mode != WriteModeCreate && opts.Mode != WriteModeUpdate && opts.Mode != WriteModeUpsert {
 		result.Message = fmt.Sprintf("Invalid mode %q (supported: create, update, upsert)", opts.Mode)
 		return result, nil
+	}
+	if objectType == "ENHO" {
+		return c.writeSourceEnhancement(ctx, name, source, opts)
 	}
 
 	// Function modules take their own path: they are addressed through their
@@ -386,6 +391,15 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		result.Message = fmt.Sprintf("Object %s does not exist (use mode=create or mode=upsert)", name)
 		return result, nil
 	}
+	mutation := MutationContext{Op: OpWorkflow, OpName: "WriteSource", Transport: opts.Transport}
+	if actualMode == WriteModeCreate {
+		mutation.Package = opts.Package
+	} else {
+		mutation.ObjectURL = writeSourceObjectURL(objectType, name)
+	}
+	if err := c.checkMutation(ctx, mutation); err != nil {
+		return nil, err
+	}
 
 	// Execute create or update workflow
 	if actualMode == WriteModeCreate {
@@ -397,6 +411,33 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		}
 		return c.verifyWriteSourceResult(ctx, updated, source, opts)
 	}
+}
+
+func writeSourceObjectURL(objectType, name string) string {
+	var kind CreatableObjectType
+	switch objectType {
+	case "PROG":
+		kind = ObjectTypeProgram
+	case "CLAS":
+		kind = ObjectTypeClass
+	case "INTF":
+		kind = ObjectTypeInterface
+	case "INCL":
+		kind = ObjectTypeInclude
+	case "DDLS":
+		kind = ObjectTypeDDLS
+	case "BDEF":
+		kind = ObjectTypeBDEF
+	case "SRVD":
+		kind = ObjectTypeSRVD
+	case "SRVB":
+		kind = ObjectTypeSRVB
+	case "TABL":
+		kind = ObjectTypeTable
+	default:
+		return ""
+	}
+	return GetObjectURL(kind, name, "")
 }
 
 // verifyWriteSourceResult performs the post-activation half of an explicit

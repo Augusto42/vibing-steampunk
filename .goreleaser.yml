@@ -57,9 +57,8 @@ changelog:
   disable: true
 
 release:
-  github:
-    owner: oisee
-    name: vibing-steampunk
+  # Publish only to the repository checked out by the release workflow.
+  # A fork tag must never create a release in the upstream project.
   # The binaries embed open-rfc-go, which is Apache-2.0: section 4 requires the
   # licence and the notice to travel with any distribution. The archives are bare
   # binaries, so they ride along as release assets.
@@ -71,4 +70,4 @@ release:
   prerelease: auto
   name_template: "v{{ .Version }}"
   footer: |
-    **Full Changelog**: https://github.com/oisee/vibing-steampunk/blob/main/CHANGELOG.md
+    Community-maintained distribution. Review the release notes and checksums before installation.

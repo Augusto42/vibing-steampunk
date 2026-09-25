@@ -10,6 +10,7 @@ package adt
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -55,6 +56,7 @@ var enhoSubtypePath = map[EnhancementKind]string{
 type EnhancementRef struct {
 	Name        string          `json:"name"`
 	Kind        EnhancementKind `json:"kind"` // XH / XC / XFB / XD / XBD
+	ToolType    string          `json:"toolType,omitempty"`
 	URI         string          `json:"uri"`
 	PackageName string          `json:"packageName,omitempty"`
 	Description string          `json:"description,omitempty"`
@@ -136,6 +138,18 @@ func (c *Client) GetEnhancementByRef(ctx context.Context, ref *EnhancementRef) (
 		}
 	}
 
+	// Class and BAdI implementations have no single XH source include.
+	if ref.Kind != EnhancementKind("XH") {
+		metadata, err := json.MarshalIndent(ref, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("serializing enhancement metadata: %w", err)
+		}
+		return string(metadata), nil
+	}
+	if ref.EnhInclude == "" {
+		c.enrichEnhancementRefFromIndex(ctx, ref)
+	}
+
 	// 3) RFC fallback via ZADT_VSP WebSocket. Classic ECC walls off ENHO
 	// bodies behind RPY_PROGRAM_READ — the only reliable way to read the
 	// plug-in source on those releases. ref.EnhInclude (from ENHINCINX) is
@@ -203,16 +217,22 @@ func (c *Client) tryFetchEnhancementSourceViaRFC(ctx context.Context, ref *Enhan
 	return strings.Join(lines, "\n"), true
 }
 
-// defaultRFCSourceFetcher is the production fallback fetcher. The WebSocket
-// `readSource` path this originally opened depends on a server-side ZADT_VSP
-// action and WebSocket-client internals that are not part of this build, so the
-// fallback reports itself unavailable and callers fall through to the ADT REST
-// enhancement path (which covers the common case). Tests inject their own
-// fetcher via rfcFetcherFactory and never reach this. The fallback can be
-// restored once the WebSocket readSource path is re-landed against the current
-// client API and the ZADT_VSP service.
-func (c *Client) defaultRFCSourceFetcher(_ context.Context) (rfcSourceFetcher, error) {
-	return nil, fmt.Errorf("RFC/WebSocket enhancement-source fallback is not wired in this build; using the ADT REST path")
+// defaultRFCSourceFetcher opens the optional ZADT_VSP WebSocket bridge.
+func (c *Client) defaultRFCSourceFetcher(ctx context.Context) (rfcSourceFetcher, error) {
+	if c.config == nil {
+		return nil, fmt.Errorf("client config is nil")
+	}
+	if !c.config.HasBasicAuth() && !c.config.HasCookieAuth() {
+		return nil, fmt.Errorf("RFC source fetch requires basic-auth credentials or cookies")
+	}
+	ws := NewDebugWebSocketClient(c.config.BaseURL, c.config.Client, c.config.Username, c.config.Password, c.config.InsecureSkipVerify)
+	if c.config.HasCookieAuth() {
+		ws.SetCookies(c.config.Cookies)
+	}
+	if err := ws.Connect(ctx); err != nil {
+		return nil, err
+	}
+	return ws, nil
 }
 
 // tryFetchEnhancementSource issues a single GET; returns (body, true) on 2xx.
@@ -267,6 +287,7 @@ func (c *Client) resolveEnhancement(ctx context.Context, name string) (*Enhancem
 	case 0:
 		return nil, fmt.Errorf("enhancement %s not found (no ENHO/* match)", name)
 	case 1:
+		c.enrichEnhancementRefFromHeader(ctx, &hits[0])
 		return &hits[0], nil
 	default:
 		kinds := make([]string, 0, len(hits))
@@ -275,6 +296,39 @@ func (c *Client) resolveEnhancement(ctx context.Context, name string) (*Enhancem
 		}
 		sort.Strings(kinds)
 		return nil, fmt.Errorf("enhancement %s is ambiguous across subtypes: %s", name, strings.Join(kinds, ", "))
+	}
+}
+
+// Older ADT search services can label every ENHO as XH. Prefer the active
+// repository tool type when it is readable; retain the search result otherwise.
+func (c *Client) enrichEnhancementRefFromHeader(ctx context.Context, ref *EnhancementRef) {
+	if ref == nil || strings.TrimSpace(ref.Name) == "" {
+		return
+	}
+	toolType, packageName, _, err := c.getEnhancementRepositoryState(ctx, ref.Name)
+	if err != nil || toolType == "" {
+		return
+	}
+	ref.ToolType = toolType
+	if packageName != "" {
+		ref.PackageName = packageName
+	}
+	switch strings.ToUpper(toolType) {
+	case "HOOK_IMPL":
+		ref.Kind = "XH"
+		ref.URI = "/sap/bc/adt/enhancements/enhoxh/" + strings.ToLower(ref.Name)
+	case "CLASENH":
+		ref.Kind = "XC"
+		ref.URI = "/sap/bc/adt/enhancements/enhoxc/" + strings.ToLower(ref.Name)
+	case "BADI_IMPL":
+		ref.Kind = "XBD"
+		ref.URI = "/sap/bc/adt/enhancements/enhoxbd/" + strings.ToLower(ref.Name)
+	case "FUGRENH":
+		ref.Kind = "XFB"
+		ref.URI = "/sap/bc/adt/enhancements/enhoxfb/" + strings.ToLower(ref.Name)
+	case "INTFENH":
+		ref.Kind = "XD"
+		ref.URI = "/sap/bc/adt/enhancements/enhoxd/" + strings.ToLower(ref.Name)
 	}
 }
 

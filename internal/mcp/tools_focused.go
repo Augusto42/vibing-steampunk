@@ -14,6 +14,7 @@ func focusedToolSet() map[string]bool {
 		// Unified tools (2)
 		"GetSource":   true,
 		"WriteSource": true,
+		"CreateEnhancement": true,
 
 		// Search tools (3) - foundation
 		"GrepObjects":  true, // Multi-object search (replaces GrepObject)

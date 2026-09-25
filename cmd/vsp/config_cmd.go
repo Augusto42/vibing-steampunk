@@ -801,7 +801,7 @@ func GetAllToolNames() []string {
 		"GetStructure", "GetPackage", "GetMessages", "GetTransaction", "GetTypeInfo",
 		"GetClassInfo", "GetClassComponents", "GetClassInclude", "GetCDSDependencies",
 		// Core write tools
-		"WriteSource", "WriteClass", "WriteProgram", "EditSource", "UpdateSource",
+		"WriteSource", "CreateEnhancement", "WriteClass", "WriteProgram", "EditSource", "UpdateSource",
 		"CreateObject", "DeleteObject", "CloneObject", "RenameObject", "MoveObject",
 		"LockObject", "UnlockObject",
 		// Search tools
@@ -856,7 +856,7 @@ func GetAllToolNames() []string {
 func GetFocusedToolNames() []string {
 	return []string{
 		// Unified tools
-		"GetSource", "WriteSource",
+		"GetSource", "WriteSource", "CreateEnhancement",
 		// Search tools
 		"GrepObjects", "GrepPackages", "SearchObject",
 		// Primary workflow
