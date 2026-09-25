@@ -59,6 +59,11 @@ upstream baseline. A source merge alone is not a verified release.
 - Still pending: exercise every subtype on a non-production SAP system,
   and review release packaging/destination. Do not merge into community main
   or publish a binary solely on the basis of the Go tests.
+- Draft fork PR #10 is intentionally unmerged. The old fork main and current
+  upstream baseline have diverged enough that Git reports 60 merge conflicts;
+  PR checks cannot run until they are reconciled. Resolving them wholesale
+  with either side would silently discard behavior. This is a distinct gate
+  from the passing local Windows tests.
 - The SSO cache mode assertion is POSIX-specific; Windows file security is
   governed by NTFS ACLs and was not audited by this migration. No live
   credentials were used during these tests.
