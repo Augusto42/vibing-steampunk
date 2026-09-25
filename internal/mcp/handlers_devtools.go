@@ -92,7 +92,7 @@ func (s *Server) handleActivate(ctx context.Context, request mcp.CallToolRequest
 		return newToolResultError(fmt.Sprintf("Activation failed: %v", err)), nil
 	}
 	if err := adt.ActivationResultError(result); err != nil {
-		return newToolResultError(err.Error()), nil
+		return newToolResultErrorWithPayload(err, result), nil
 	}
 
 	output, _ := json.MarshalIndent(result, "", "  ")
