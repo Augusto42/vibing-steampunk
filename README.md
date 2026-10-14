@@ -1,5 +1,17 @@
 # Vibing Steampunk (vsp)
 
+> [!IMPORTANT]
+> **Augusto42 Community Distribution** — this repository is an independently maintained,
+> community-oriented distribution of VSP. It can ship fixes and releases without waiting
+> for the upstream project, while continuing to credit and selectively synchronize with
+> [oisee/vibing-steampunk](https://github.com/oisee/vibing-steampunk).
+>
+> This public repository accepts only generic code, documentation, and synthetic fixtures.
+> Never submit credentials, private SAP endpoints, customer source code, production logs,
+> personal data, or other confidential operational information.
+
+[Community contribution guide](CONTRIBUTING.md) · [Security policy](SECURITY.md) · [Upstream synchronization policy](UPSTREAM.md)
+
 > Community fork integration work: [ENHO/XH, class enhancement, BAdI and
 > read-only Dynpro status](docs/community-fork-capabilities.md). This source
 > branch is not a validated release; SAP test-system validation is still required.
@@ -661,6 +673,39 @@ modification assistant needed here", not "read-only". So editing over RFC is not
 merely equivalent to editing over HTTP — on that system it is strictly more
 capable. (Order matters: activate *after* unlock, or the object's own ENQUEUE
 answers `403 … is currently editing …`.)
+
+### Classic Enhancement Creation (`v2.40.0-augusto.1`)
+
+The Augusto42 distribution can create and activate classic Enhancement
+Framework implementations through SAP's own framework APIs:
+
+[Download the Windows, Linux, or macOS release](https://github.com/Augusto42/vibing-steampunk/releases/tag/v2.40.0-augusto.1).
+
+```powershell
+# Source-code plug-in (exact FULL_NAME anchor required)
+Get-Content .\body.abap -Raw | vsp -s dev enhancement create xh ZSAMPLE_XH `
+  --host ZSAMPLE_HOST --anchor '\PR:ZSAMPLE_HOST\SE:END\EI' `
+  --package '$TMP' --description 'Synthetic source hook'
+
+# Class enhancement with one new method
+Get-Content .\method.abap -Raw | vsp -s dev enhancement create class ZSAMPLE_CLASS_ENH `
+  --class ZCL_SAMPLE_HOST --method SAMPLE_METHOD `
+  --package '$TMP' --description 'Synthetic class enhancement'
+
+# BAdI implementation linked to an existing implementation class
+vsp -s dev enhancement create badi ZSAMPLE_BADI_ENH `
+  --spot ZSAMPLE_SPOT --badi ZSAMPLE_BADI `
+  --implementation ZSAMPLE_IMPL --implementation-class ZCL_SAMPLE_IMPL `
+  --package '$TMP' --description 'Synthetic BAdI implementation'
+```
+
+Creation is available in both the CLI and focused-mode MCP tool
+`CreateEnhancement`. It supports local and explicitly authorized transportable
+packages, waits for active repository read-back, and fails closed on missing
+metadata or CTS mismatches.
+
+Read the [complete enhancement creation guide](docs/enhancement-creation.md) or
+the [Portuguese team guide](docs/pt-BR/criacao-enhancements.md).
 
 ### Package Analysis Suite
 
@@ -1546,7 +1591,7 @@ graph LR
 |--------|:-:|:-:|:-:|
 | **Tools** | 101 essential | 152 complete | 1 universal `SAP()` |
 | **Schema tokens** | ~14K | ~40K | **~200** |
-| **How AI calls it** | `GetSource(type, name)` | Same, + granular tools | `SAP(action, target, params)` |
+| **How AI calls it** | `GetSource(object_type, name)` | Same, + granular tools | `SAP(action, target, params)` |
 | **Documentation** | In tool schemas | In tool schemas | `SAP(action="help")` |
 | **Best for** | Legacy setups | Edge cases, debugging | **Most setups — any model, minimal overhead** |
 | **Safety controls** | All apply | All apply | All apply (same code path) |
@@ -1791,6 +1836,11 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 
 See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation.
 
+For operation-level coverage—including `INCL` writes, creation of XH/class/BAdI
+enhancement implementations, verified updates of existing `ENHO/XH` objects,
+and read-only `DYNP` through ZADT_VSP—see the
+**[ABAP object support matrix](docs/object-support.md)**.
+
 <details>
 <summary><strong>Capability Matrix</strong></summary>
 
@@ -1870,7 +1920,12 @@ See [WebSocket Handler Report](reports/2025-12-18-002-websocket-rfc-handler.md) 
 | Document | Description |
 |----------|-------------|
 | [docs/architecture.md](docs/architecture.md) | Architecture diagrams (Mermaid) |
-| [README_TOOLS.md](README_TOOLS.md) | Complete tool reference (152 tools) |
+| [docs/enhancement-creation.md](docs/enhancement-creation.md) | Complete XH, class-enhancement, BAdI, CTS, MCP, and troubleshooting guide |
+| [docs/pt-BR/criacao-enhancements.md](docs/pt-BR/criacao-enhancements.md) | Guia em português para criação e validação de enhancements |
+| [docs/object-support.md](docs/object-support.md) | Operation-level ABAP object support matrix |
+| [docs/mock-sap-testing.md](docs/mock-sap-testing.md) | Synthetic SAP protocol simulator and real-system validation ladder |
+| [docs/cli-guide.md](docs/cli-guide.md) | CLI command and workflow reference |
+| [README_TOOLS.md](README_TOOLS.md) | MCP tool reference by capability and mode |
 | [MCP_USAGE.md](MCP_USAGE.md) | AI agent usage guide |
 | [docs/DSL.md](docs/DSL.md) | DSL & workflow documentation |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Technical architecture (detailed) |

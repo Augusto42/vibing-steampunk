@@ -1,58 +1,82 @@
 name: CI
 
-# The point of this workflow is a cheap verdict on someone else's patch: does it
-# build, vet clean, and pass the tests. It deliberately stays small — the heavy
-# cross-platform work belongs to the release pipeline, and lint is advisory and
-# pull-request-only.
-# Nothing here talks to a SAP system: live tests sit behind the `integration` tag.
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: build · vet · test
-    runs-on: ubuntu-latest
+  verify:
+    name: Go verification (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: 0
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Build
-        run: go build ./...
-
       - name: Vet
-        run: go vet ./...
+        run: go vet -p 1 ./...
 
-      # Compile the integration-tagged tests too, so a live test cannot rot
-      # unnoticed just because CI never runs it.
-      - name: Vet (integration tag)
-        run: go vet -tags integration ./...
+      - name: Build
+        run: go build -p 1 ./...
+
+      - name: Vet integration-tagged tests (compile only)
+        run: go vet -p 1 -tags integration ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -p 1 ./... -count=1
 
-      # Cross-compilation only guards main; a release already builds all nine
-      # targets, and PRs do not need to pay for it.
+      - name: Synthetic CLI smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-object-expansion-mock.ps1
+
       - name: Cross-compile check
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && runner.os == 'Linux'
         run: |
           for target in linux/amd64 linux/386 windows/amd64; do
-            GOOS=${target%/*} GOARCH=${target#*/} go build ./... || exit 1
+            GOOS=${target%/*} GOARCH=${target#*/} go build -p 1 ./... || exit 1
           done
+
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev
 
   lint:
     name: lint (advisory)
@@ -67,13 +91,13 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # only-new-issues needs the merge base to diff against.
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

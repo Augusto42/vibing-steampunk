@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- Add complete English and Portuguese guides for XH, class-enhancement, and
+  BAdI creation, including prerequisites, CTS safety, MCP parameters,
+  verification, limitations, troubleshooting, and synthetic validation
+  evidence.
+
+## [2.40.0-augusto.1] - 2026-08-17
+
+### Features
+
+- Add explicit `CreateEnhancement` API, MCP tool, and
+  `vsp enhancement create` CLI for XH source-code plug-ins, class
+  enhancements with optional new methods, and BAdI implementations.
+- Read classic class-enhancement generated declaration/method includes and
+  structured BAdI implementation metadata through ZADT_VSP.
+- Resolve ENHO subtype from authoritative `ENHHEADER.ENHTOOLTYPE` metadata on
+  systems whose ADT search incorrectly reports class and BAdI ENHOs as XH.
+- Add verified updates for existing classic source-code enhancements
+  (`ENHO/XH`) through the ZADT_VSP bridge and SAP Enhancement Framework.
+- Add read-only Enhancement Framework (`ENHO`) source discovery, include
+  attachment lookup, and annotated merged include views.
+- Add first-class program include (`INCL` / `PROG/I`) create and update support
+  through the unified source workflow.
+- Add read-only Dynpro (`DYNP`) metadata, layout, and flow-logic retrieval
+  through the optional ZADT_VSP bridge.
+
+### Bug Fixes
+
+- Propagate the approved CTS task to classic enhancement subobject text
+  persistence, preventing background `TRINT_ORDER_CHOICE` dialogs when an
+  ENHO is created in a transportable package.
+- Fail closed before mutation when a transportable package has no explicit
+  transport request, and reject a request that differs from SAP's lock owner.
+- Preserve omitted RFC import parameters so SAP function-module defaults are
+  not accidentally replaced with initial values.
+- Distinguish program include URLs from OO class include URLs during package
+  resolution, syntax checks, and surgical edits.
+- Correct the synthetic enhancement anchor fixture so the merged-view
+  regression exercises a real SAP anchor marker.
 ## [2.56.0] - 2026-09-05
 ### Bug Fixes
 

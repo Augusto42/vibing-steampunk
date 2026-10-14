@@ -18,8 +18,8 @@ import (
 
 // mockSAMLServer creates an httptest server simulating a 4-step SAML flow:
 //   - SAP SP: redirects to IdP
-//   - IdP: login form → validates credentials → returns SAMLResponse form
-//   - SAP ACS: consumes SAMLResponse → sets session cookies
+//   - IdP: login form â†’ validates credentials â†’ returns SAMLResponse form
+//   - SAP ACS: consumes SAMLResponse â†’ sets session cookies
 func mockSAMLServer(t *testing.T, expectedUser, expectedPassword string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -299,10 +299,10 @@ func TestSAMLLogin_HostMismatch(t *testing.T) {
 }
 
 func TestSAMLLogin_HTTPDowngrade(t *testing.T) {
-	// IdP on HTTPS returns a login form with HTTP action — should be rejected.
+	// IdP on HTTPS returns a login form with HTTP action â€” should be rejected.
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		// Action uses http:// while the server is HTTPS — downgrade attack.
+		// Action uses http:// while the server is HTTPS â€” downgrade attack.
 		fmt.Fprintf(w, `<html><body>
 			<form method="POST" action="http://%s/login">
 				<input type="text" name="j_username" value=""/>
@@ -428,7 +428,7 @@ func TestSAMLLogin_FormChainHostMismatch(t *testing.T) {
 }
 
 func TestSAMLLogin_RedirectHTTPDowngrade(t *testing.T) {
-	// HTTPS server redirects to HTTP — CheckRedirect should reject the downgrade.
+	// HTTPS server redirects to HTTP â€” CheckRedirect should reject the downgrade.
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("request should not reach HTTP server after downgrade rejection")
 	}))
@@ -441,7 +441,7 @@ func TestSAMLLogin_RedirectHTTPDowngrade(t *testing.T) {
 
 	_, err := SAMLLogin(context.Background(), httpsSrv.URL, testCredProvider("u", "p"), true, false)
 	if err == nil {
-		t.Fatal("expected error for HTTPS→HTTP redirect downgrade, got nil")
+		t.Fatal("expected error for HTTPSâ†’HTTP redirect downgrade, got nil")
 	}
 	if !strings.Contains(err.Error(), "downgrade") {
 		t.Errorf("expected downgrade error, got: %v", err)

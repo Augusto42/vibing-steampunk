@@ -1,0 +1,7 @@
+# The distribution owner reviews changes across the repository.
+* @Augusto42
+
+# Security and automation changes always require owner visibility.
+/.github/ @Augusto42
+/SECURITY.md @Augusto42
+/UPSTREAM.md @Augusto42

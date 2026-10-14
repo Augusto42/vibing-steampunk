@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a generic capability for the ABAP community.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the generic developer problem without private environment details.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Explain how the feature can remain configurable and safe by default.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Synthetic validation approach
+      description: Explain how this can be tested without real systems or confidential data.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Confidentiality confirmation
+      options:
+        - label: I confirmed that this request contains no credentials, private endpoints, customer source, production logs, personal data, or confidential documents.
+          required: true

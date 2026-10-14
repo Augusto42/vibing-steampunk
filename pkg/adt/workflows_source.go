@@ -298,9 +298,11 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		return result, nil
 	}
 
-	// Determine if object exists (for upsert mode)
+	// All modes verify existence before mutation. Explicit create must not
+	// overwrite an existing object, and explicit update must not guess after
+	// an inconclusive lookup.
 	objectExists := false
-	if opts.Mode == WriteModeUpsert {
+	{
 		// Upsert has to decide between update and create, and the only honest
 		// input to that decision is a *definite* answer about existence.
 		//
@@ -387,18 +389,34 @@ func (c *Client) WriteSource(ctx context.Context, objectType, name, source strin
 		}
 		ctx = withExpectedSourceHash(ctx, opts.ExpectedSourceHash)
 	}
-	if actualMode == WriteModeUpdate && opts.Mode == WriteModeUpsert && !objectExists {
+	if actualMode == WriteModeUpdate && !objectExists {
 		result.Message = fmt.Sprintf("Object %s does not exist (use mode=create or mode=upsert)", name)
 		return result, nil
 	}
 	mutation := MutationContext{Op: OpWorkflow, OpName: "WriteSource", Transport: opts.Transport}
+	targetPackage := opts.Package
 	if actualMode == WriteModeCreate {
 		mutation.Package = opts.Package
 	} else {
 		mutation.ObjectURL = writeSourceObjectURL(objectType, name)
+		var packageErr error
+		targetPackage, packageErr = c.getObjectPackage(ctx, mutation.ObjectURL)
+		if packageErr != nil {
+			return nil, fmt.Errorf("resolving package before WriteSource: %w", packageErr)
+		}
+		mutation.Package = targetPackage
 	}
 	if err := c.checkMutation(ctx, mutation); err != nil {
 		return nil, err
+	}
+	// Source writing keeps the fork's explicit package/transport preflight.
+	// An opt-in to transport operations is not permission to create a request
+	// implicitly through this high-level source-writing API.
+	if err := c.checkPackageTransportRequirement(ctx, targetPackage, opts.Transport, "WriteSource"); err != nil {
+		return nil, err
+	}
+	if actualMode == WriteModeUpdate {
+		ctx = withMutationPackageChecked(ctx, mutation.ObjectURL)
 	}
 
 	// Execute create or update workflow

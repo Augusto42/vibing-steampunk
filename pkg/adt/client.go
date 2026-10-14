@@ -28,7 +28,8 @@ type Client struct {
 
 	// Lock handles believed outstanding, so the keep-alive ping does not
 	// retire the session one of them is bound to. See lock_window.go.
-	locks lockWindow
+	locks          lockWindow
+	lockTransports sync.Map // lock handle -> SAP correlation number
 
 	// rfcFetcherFactory, when non-nil, overrides the default WebSocket-backed
 	// RFC source fetcher used by GetEnhancement's fallback path. Production

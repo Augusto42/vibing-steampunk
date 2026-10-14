@@ -141,12 +141,13 @@ func (c *Client) WriteInclude(ctx context.Context, includeName string, source st
 	objectURL := fmt.Sprintf("/sap/bc/adt/programs/includes/%s", url.PathEscape(includeName))
 	sourceURL := objectURL + "/source/main"
 
-	if err := c.checkMutation(ctx, MutationContext{
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpWorkflow,
 		OpName:    "WriteInclude",
 		ObjectURL: objectURL,
 		Transport: transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -174,8 +175,9 @@ func (c *Client) WriteInclude(ctx context.Context, includeName string, source st
 		result.Message = fmt.Sprintf("Failed to lock object: %v", err)
 		return result, nil
 	}
+	unlocked := false
 	defer func() {
-		if !result.Success {
+		if !unlocked {
 			c.UnlockObject(ctx, objectURL, lock.LockHandle)
 		}
 	}()
@@ -189,6 +191,7 @@ func (c *Client) WriteInclude(ctx context.Context, includeName string, source st
 		result.Message = fmt.Sprintf("Failed to unlock object: %v", err)
 		return result, nil
 	}
+	unlocked = true
 
 	activation, err := c.Activate(ctx, objectURL, includeName)
 	if err != nil {

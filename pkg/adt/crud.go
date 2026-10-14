@@ -60,6 +60,9 @@ func (c *Client) LockObject(ctx context.Context, objectURL string, accessMode st
 	if err != nil {
 		return nil, err
 	}
+	if result.LockHandle != "" && result.CorrNr != "" {
+		c.lockTransports.Store(result.LockHandle, result.CorrNr)
+	}
 
 	// MODIFICATION_SUPPORT="NoModification" alone does NOT mean "you cannot
 	// write". SAP returns it for local/customer objects that need no
@@ -166,6 +169,7 @@ func (c *Client) UnlockObject(ctx context.Context, objectURL string, lockHandle 
 	if err != nil {
 		return fmt.Errorf("unlocking object: %w", err)
 	}
+	c.lockTransports.Delete(lockHandle)
 
 	// Only a *successful* unlock ends the window. A failed one may have left
 	// the lock held, and suppressing a ping is the cheaper mistake.
@@ -178,6 +182,28 @@ func (c *Client) UnlockObject(ctx context.Context, objectURL string, lockHandle 
 	return nil
 }
 
+// effectiveLockTransport reuses the correlation number returned by SAP for
+// this lock. If the caller supplied a different request, fail closed: sending
+// the PUT with a request that disagrees with the lock can leave a partial
+// object or a method locked in another request.
+func (c *Client) effectiveLockTransport(lockHandle, requested string) (string, error) {
+	requested = strings.ToUpper(strings.TrimSpace(requested))
+	if value, ok := c.lockTransports.Load(lockHandle); ok {
+		if corrNr, ok := value.(string); ok {
+			corrNr = strings.ToUpper(strings.TrimSpace(corrNr))
+			if requested != "" && corrNr != "" && requested != corrNr {
+				return "", fmt.Errorf(
+					"transport mismatch for lock: caller requested %s but SAP locked the object in %s; aborting before mutation",
+					requested, corrNr)
+			}
+			if corrNr != "" {
+				return corrNr, nil
+			}
+		}
+	}
+	return requested, nil
+}
+
 // --- Update Source Operations ---
 
 // UpdateSource writes source code to an ABAP object.
@@ -185,6 +211,11 @@ func (c *Client) UnlockObject(ctx context.Context, objectURL string, lockHandle 
 // lockHandle is required (from LockObject)
 // transport is optional (for transportable objects)
 func (c *Client) UpdateSource(ctx context.Context, objectSourceURL string, source string, lockHandle string, transport string) error {
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 	// Unified mutation policy gate (op type + package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
 		Op:        OpUpdate,
@@ -213,7 +244,7 @@ func (c *Client) UpdateSource(ctx context.Context, objectSourceURL string, sourc
 		contentType = "application/*"
 	}
 
-	_, err := c.transport.Request(ctx, objectSourceURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, objectSourceURL, &RequestOptions{
 		Method:      http.MethodPut,
 		Query:       params,
 		Body:        []byte(source),
@@ -525,6 +556,26 @@ func (c *Client) cleanupPartialObject(ctx context.Context, objectURL, pkg, trans
 		Package:   pkg,
 		Transport: transport,
 	}
+
+	// Resolve and enforce package scope before opening a stateful lock session.
+	// Once marked, DeleteObject skips only its redundant package lookup; it
+	// still enforces delete-operation and transport policy.
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:        OpDelete,
+		OpName:    "cleanupPartialObject",
+		ObjectURL: objectURL,
+		Package:   pkg,
+		Transport: transport,
+	}); err != nil {
+		pce.CleanupActions = append(pce.CleanupActions,
+			fmt.Sprintf("cleanup blocked by mutation policy: %v", err))
+		pce.ManualSteps = []string{
+			"verify that the target package and transport are permitted by the configured safety policy",
+			"run the explicit recovery workflow only after that policy is corrected",
+		}
+		return pce
+	}
+	ctx = withMutationPackageChecked(ctx, objectURL)
 
 	// Step 1: orphan lock cleanup (cheap; reuses the existing helper).
 	c.tryCleanupOrphanLock(ctx, objectURL)
@@ -973,6 +1024,11 @@ func escapeXML(s string) string {
 // lockHandle is required (from LockObject)
 // transport is optional (for transportable objects)
 func (c *Client) DeleteObject(ctx context.Context, objectURL string, lockHandle string, transport string) error {
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 	// Unified mutation policy gate (op type + package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
 		Op:        OpDelete,
@@ -989,7 +1045,7 @@ func (c *Client) DeleteObject(ctx context.Context, objectURL string, lockHandle 
 		params.Set("corrNr", transport)
 	}
 
-	_, err := c.transport.Request(ctx, objectURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, objectURL, &RequestOptions{
 		Method:   http.MethodDelete,
 		Query:    params,
 		Stateful: true, // Lock handles are session-specific — must match the session that acquired the lock (issue #88)
@@ -997,6 +1053,7 @@ func (c *Client) DeleteObject(ctx context.Context, objectURL string, lockHandle 
 	if err != nil {
 		return fmt.Errorf("deleting object: %w", err)
 	}
+	c.lockTransports.Delete(lockHandle)
 
 	// A delete consumes the handle without an UNLOCK ever being sent, which is
 	// how a lock-window counter ends up permanently non-zero.
@@ -1126,6 +1183,11 @@ func GetClassIncludeSourceURL(className string, includeType ClassIncludeType) st
 // Supports namespaced classes.
 func (c *Client) CreateTestInclude(ctx context.Context, className string, lockHandle string, transport string) error {
 	className = strings.ToUpper(className)
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 
 	// Unified mutation policy gate (op type + parent class package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
@@ -1150,7 +1212,7 @@ func (c *Client) CreateTestInclude(ctx context.Context, className string, lockHa
 
 	// URL encode for namespaced objects
 	includesURL := fmt.Sprintf("/sap/bc/adt/oo/classes/%s/includes", url.PathEscape(className))
-	_, err := c.transport.Request(ctx, includesURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, includesURL, &RequestOptions{
 		Method:      http.MethodPost,
 		Query:       params,
 		Body:        []byte(body),
@@ -1182,6 +1244,11 @@ func (c *Client) GetClassInclude(ctx context.Context, className string, includeT
 // Requires a lock on the parent class.
 func (c *Client) UpdateClassInclude(ctx context.Context, className string, includeType ClassIncludeType, source string, lockHandle string, transport string) error {
 	sourceURL := GetClassIncludeSourceURL(className, includeType)
+	var err error
+	transport, err = c.effectiveLockTransport(lockHandle, transport)
+	if err != nil {
+		return err
+	}
 
 	// Unified mutation policy gate (op type + package + transport)
 	if err := c.checkMutation(ctx, MutationContext{
@@ -1202,7 +1269,7 @@ func (c *Client) UpdateClassInclude(ctx context.Context, className string, inclu
 		params.Set("corrNr", transport)
 	}
 
-	_, err := c.transport.Request(ctx, sourceURL, &RequestOptions{
+	_, err = c.transport.Request(ctx, sourceURL, &RequestOptions{
 		Method:      http.MethodPut,
 		Query:       params,
 		Body:        []byte(source),

@@ -30,7 +30,8 @@ func TestExtractDependencies_APCHandler(t *testing.T) {
 		found[d.Name] = d.Kind
 	}
 
-	// Should find these dependencies
+	// Only services required on every supported system should be static
+	// dependencies. AMDP and Git are loaded dynamically when available.
 	expect := map[string]DependencyKind{
 		"CL_APC_WSP_EXT_STATEFUL_BASE": KindClass,
 		"IF_APC_WSP_EXTENSION":         KindInterface,
@@ -40,8 +41,6 @@ func TestExtractDependencies_APCHandler(t *testing.T) {
 		"ZCL_VSP_UTILS":                KindClass,
 		"ZCL_VSP_RFC_SERVICE":          KindClass,
 		"ZCL_VSP_DEBUG_SERVICE":        KindClass,
-		"ZCL_VSP_AMDP_SERVICE":         KindClass,
-		"ZCL_VSP_GIT_SERVICE":          KindClass,
 		"ZCL_VSP_REPORT_SERVICE":       KindClass,
 	}
 
@@ -53,6 +52,12 @@ func TestExtractDependencies_APCHandler(t *testing.T) {
 		}
 		if gotKind != kind {
 			t.Errorf("dependency %s: got kind %s, want %s", name, gotKind, kind)
+		}
+	}
+
+	for _, optional := range []string{"ZCL_VSP_AMDP_SERVICE", "ZCL_VSP_GIT_SERVICE"} {
+		if _, ok := found[optional]; ok {
+			t.Errorf("optional service %s must not be a static dependency", optional)
 		}
 	}
 }

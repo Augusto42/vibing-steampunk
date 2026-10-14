@@ -19,6 +19,9 @@ func (m *mockWorkflowTransport) Do(req *http.Request) (*http.Response, error) {
 
 	// Match by path
 	path := req.URL.Path
+	if resp, ok := m.responses[req.Method+" "+path]; ok {
+		return resp, nil
+	}
 	if resp, ok := m.responses[path]; ok {
 		return resp, nil
 	}
@@ -154,6 +157,8 @@ WRITE: 'Hello, World!'.`
 
 	mock := &mockWorkflowTransport{
 		responses: map[string]*http.Response{
+			"GET /sap/bc/adt/programs/programs/ZTEST/source/main": newWorkflowStatusResponse(http.StatusNotFound, "not found"),
+			"GET /sap/bc/adt/programs/programs/ZTEST":             newWorkflowStatusResponse(http.StatusNotFound, "not found"),
 			"/sap/bc/adt/programs/programs/ZTEST": newWorkflowTestResponse(`<?xml version="1.0"?>
 <program:abapProgram xmlns:program="http://www.sap.com/adt/programs"
                      adtcore:name="ZTEST"
@@ -192,6 +197,7 @@ WRITE: 'Updated!'.`
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
 	transport := NewTransportWithClient(cfg, &mockWorkflowTransport{
 		responses: map[string]*http.Response{
+			"search": newSearchResponse("/sap/bc/adt/programs/programs/ztest", "PROG/P", "ZTEST", "$TMP"),
 			"/sap/bc/adt/programs/programs/ZTEST": newWorkflowTestResponse(`<?xml version="1.0"?>
 <program:abapProgram xmlns:program="http://www.sap.com/adt/programs"/>`),
 			"discovery": newWorkflowTestResponse("OK"),
@@ -550,5 +556,13 @@ func TestReplaceMatches_LineEndings(t *testing.T) {
 
 	if result != expected {
 		t.Errorf("replaceMatches result = %q, want %q", result, expected)
+	}
+}
+
+func newWorkflowStatusResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"X-CSRF-Token": []string{"test-token"}},
 	}
 }

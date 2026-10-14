@@ -31,6 +31,10 @@ func TestUpsertDistinguishesAbsentFromUnanswered(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "informationsystem/search") {
+					w.Write([]byte(`<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/ZCL_DEMO" adtcore:name="ZCL_DEMO" adtcore:type="CLAS/OC" adtcore:packageName="$TMP"/></adtcore:objectReferences>`))
+					return
+				}
 				// Only the existence probe is answered with the case's status;
 				// the update path beyond it is allowed to fail however it
 				// likes, because what is under test is the decision.

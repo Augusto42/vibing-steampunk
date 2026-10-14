@@ -1,58 +1,99 @@
 package main
 
 import (
-	"strings"
+	"reflect"
 	"testing"
+
+	"github.com/oisee/vibing-steampunk/internal/mcp"
+	"github.com/oisee/vibing-steampunk/pkg/config"
+	"github.com/spf13/cobra"
 )
 
-// A system declared read_only was writable from every CLI subcommand, because
-// only the MCP server ever handed a safety configuration to its client. The
-// setting said one thing and the tool did another, which is the worst kind of
-// safety feature.
-func TestGetClientHonoursDeclaredSafety(t *testing.T) {
-	client, err := getClient(&systemParams{
-		URL: "https://sap.example:44300", User: "TESTER", Password: "secret",
-		Client: "001", Language: "EN", ReadOnly: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if safety := client.Safety(); safety == nil || !safety.ReadOnly {
-		t.Fatalf("a read_only system must reach the client as read-only, got %+v", safety)
+func TestSafetyFlagsAreInheritedByCLISubcommands(t *testing.T) {
+	flag := searchCmd.InheritedFlags().Lookup("allow-transportable-edits")
+	if flag == nil {
+		t.Fatal("--allow-transportable-edits is not inherited by CLI subcommands")
 	}
 }
 
-// And a system with an allowed-package list must carry it too, or the list is
-// advice rather than a restriction.
-func TestGetClientCarriesAllowedPackages(t *testing.T) {
-	client, err := getClient(&systemParams{
-		URL: "https://sap.example:44300", User: "TESTER", Password: "secret",
-		Client: "001", Language: "EN", AllowedPackages: []string{"Z*"},
-	})
-	if err != nil {
+func TestResolveCLISafetyPreservesProfileAndAppliesExplicitOverrides(t *testing.T) {
+	oldCfg := cfg
+	cfg = &mcp.Config{
+		ReadOnly:                false,
+		AllowedPackages:         []string{"ZFLAG*"},
+		AllowedTransports:       []string{"REQ-FLAG*"},
+		AllowTransportableEdits: true,
+	}
+	t.Cleanup(func() { cfg = oldCfg })
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Bool("read-only", false, "")
+	cmd.Flags().StringSlice("allowed-packages", nil, "")
+	cmd.Flags().StringSlice("allowed-transports", nil, "")
+	cmd.Flags().Bool("allow-transportable-edits", false, "")
+	if err := cmd.Flags().Set("allow-transportable-edits", "true"); err != nil {
 		t.Fatal(err)
 	}
-	if safety := client.Safety(); safety == nil || strings.Join(safety.AllowedPackages, ",") != "Z*" {
-		t.Fatalf("allowed packages did not reach the client: %+v", safety)
+
+	profile := &config.SystemConfig{
+		ReadOnly:          true,
+		AllowedPackages:   []string{"ZPROFILE*"},
+		AllowedTransports: []string{"REQ-PROFILE*"},
+	}
+	safety := resolveCLISafety(cmd, profile)
+
+	if !safety.ReadOnly {
+		t.Error("profile read_only setting was not preserved")
+	}
+	if !reflect.DeepEqual(safety.AllowedPackages, profile.AllowedPackages) {
+		t.Fatalf("allowed packages = %v, want %v", safety.AllowedPackages, profile.AllowedPackages)
+	}
+	if !reflect.DeepEqual(safety.AllowedTransports, profile.AllowedTransports) {
+		t.Fatalf("allowed transports = %v, want %v", safety.AllowedTransports, profile.AllowedTransports)
+	}
+	if !safety.AllowTransportableEdits {
+		t.Error("explicit flag did not override the profile")
 	}
 }
 
-func TestGetClientUnrestrictedByDefault(t *testing.T) {
-	client, err := getClient(&systemParams{
-		URL: "https://sap.example:44300", User: "TESTER", Password: "secret",
-		Client: "001", Language: "EN",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if safety := client.Safety(); safety != nil && safety.ReadOnly {
-		t.Fatal("an unrestricted system must not arrive read-only")
+func TestResolveCLISafetyUsesEnvironmentOverride(t *testing.T) {
+	oldCfg := cfg
+	cfg = &mcp.Config{AllowTransportableEdits: true}
+	t.Cleanup(func() { cfg = oldCfg })
+	t.Setenv("SAP_ALLOW_TRANSPORTABLE_EDITS", "true")
+
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Bool("allow-transportable-edits", false, "")
+	safety := resolveCLISafety(cmd, &config.SystemConfig{})
+	if !safety.AllowTransportableEdits {
+		t.Error("SAP_ALLOW_TRANSPORTABLE_EDITS was not propagated")
 	}
 }
 
-func TestSplitListIgnoresBlanks(t *testing.T) {
-	got := splitList(" Z*, ,Y* ")
-	if strings.Join(got, "|") != "Z*|Y*" {
-		t.Fatalf("got %v", got)
+func TestGetClientInstallsResolvedSafety(t *testing.T) {
+	params := &systemParams{
+		URL:      "https://example.invalid",
+		User:     "user",
+		Password: "password",
+		Client:   "001",
+		Language: "EN",
+	}
+	params.Safety.AllowTransportableEdits = true
+	params.ReadOnly = true
+	params.Safety.AllowedOps = "RS"
+	params.Safety.AllowedTransports = []string{"REQ-TEST*"}
+
+	client, err := getClient(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !client.Safety().AllowTransportableEdits {
+		t.Error("resolved safety was not installed on the ADT client")
+	}
+	if !client.Safety().ReadOnly || client.Safety().AllowedOps != "RS" {
+		t.Fatalf("merging the legacy profile discarded the resolved safety: %+v", client.Safety())
+	}
+	if !reflect.DeepEqual(client.Safety().AllowedTransports, params.Safety.AllowedTransports) {
+		t.Fatalf("allowed transports = %v, want %v", client.Safety().AllowedTransports, params.Safety.AllowedTransports)
 	}
 }

@@ -69,6 +69,8 @@ type systemParams struct {
 
 	Cache     bool
 	CachePath string
+
+	Safety adt.SafetyConfig
 }
 
 // resolveSystemParams resolves system parameters from --system flag or env vars.
@@ -131,17 +133,9 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 			Auth:               sys.Auth,
 			SSO:                sys.SSO,
 			TransportAttribute: sys.TransportAttribute,
-			ReadOnly:           sys.ReadOnly,
-			AllowedPackages:    sys.AllowedPackages,
-
-			EnableTransports:        sys.EnableTransports || envFlag("SAP_ENABLE_TRANSPORTS"),
-			TransportReadOnly:       sys.TransportReadOnly || envFlag("SAP_TRANSPORT_READ_ONLY"),
-			AllowedTransports:       firstNonEmptyList(sys.AllowedTransports, splitList(os.Getenv("SAP_ALLOWED_TRANSPORTS"))),
-			AllowTransportableEdits: sys.AllowTransportableEdits || envFlag("SAP_ALLOW_TRANSPORTABLE_EDITS"),
-			TransportChoice:         firstNonEmpty(sys.TransportChoice, os.Getenv("SAP_TRANSPORT_CHOICE")),
-			BlockFreeSQL:            sys.BlockFreeSQL || envFlag("SAP_BLOCK_FREE_SQL"),
-			Cache:                   sys.Cache,
-			CachePath:               sys.CachePath,
+			Cache:              sys.Cache,
+			CachePath:          sys.CachePath,
+			Safety:             resolveCLISafety(cmd, sys),
 		}, nil
 	}
 
@@ -175,7 +169,69 @@ func resolveSystemParams(cmd *cobra.Command) (*systemParams, error) {
 		AllowedPackages:    splitList(os.Getenv("SAP_ALLOWED_PACKAGES")),
 		Cache:              cacheEnabled,
 		CachePath:          cachePath,
+		Safety:             resolveCLISafety(cmd, nil),
 	}, nil
+}
+
+// resolveCLISafety merges a system profile with explicitly supplied root flags
+// and SAP_* environment variables. Explicit CLI/environment settings win over
+// .vsp.json; otherwise the per-system policy is retained.
+func resolveCLISafety(cmd *cobra.Command, sys *config.SystemConfig) adt.SafetyConfig {
+	safety := adt.UnrestrictedSafetyConfig()
+	if sys != nil {
+		safety.ReadOnly = sys.ReadOnly
+		safety.BlockFreeSQL = sys.BlockFreeSQL
+		safety.AllowedOps = sys.AllowedOps
+		safety.DisallowedOps = sys.DisallowedOps
+		safety.AllowedPackages = append([]string(nil), sys.AllowedPackages...)
+		safety.EnableTransports = sys.EnableTransports
+		safety.TransportReadOnly = sys.TransportReadOnly
+		safety.AllowedTransports = append([]string(nil), sys.AllowedTransports...)
+		safety.AllowTransportableEdits = sys.AllowTransportableEdits
+		safety.TransportChoice = sys.TransportChoice
+	}
+
+	applyAll := sys == nil
+	if applyAll || safetySettingExplicit(cmd, "read-only", "SAP_READ_ONLY") {
+		safety.ReadOnly = cfg.ReadOnly
+	}
+	if applyAll || safetySettingExplicit(cmd, "block-free-sql", "SAP_BLOCK_FREE_SQL") {
+		safety.BlockFreeSQL = cfg.BlockFreeSQL
+	}
+	if applyAll || safetySettingExplicit(cmd, "allowed-ops", "SAP_ALLOWED_OPS") {
+		safety.AllowedOps = cfg.AllowedOps
+	}
+	if applyAll || safetySettingExplicit(cmd, "disallowed-ops", "SAP_DISALLOWED_OPS") {
+		safety.DisallowedOps = cfg.DisallowedOps
+	}
+	if applyAll || safetySettingExplicit(cmd, "allowed-packages", "SAP_ALLOWED_PACKAGES") {
+		safety.AllowedPackages = append([]string(nil), cfg.AllowedPackages...)
+	}
+	if applyAll || safetySettingExplicit(cmd, "enable-transports", "SAP_ENABLE_TRANSPORTS") {
+		safety.EnableTransports = cfg.EnableTransports
+	}
+	if applyAll || safetySettingExplicit(cmd, "transport-read-only", "SAP_TRANSPORT_READ_ONLY") {
+		safety.TransportReadOnly = cfg.TransportReadOnly
+	}
+	if applyAll || safetySettingExplicit(cmd, "allowed-transports", "SAP_ALLOWED_TRANSPORTS") {
+		safety.AllowedTransports = append([]string(nil), cfg.AllowedTransports...)
+	}
+	if applyAll || safetySettingExplicit(cmd, "allow-transportable-edits", "SAP_ALLOW_TRANSPORTABLE_EDITS") {
+		safety.AllowTransportableEdits = cfg.AllowTransportableEdits
+	}
+	if applyAll || safetySettingExplicit(cmd, "transport-choice", "SAP_TRANSPORT_CHOICE") {
+		safety.TransportChoice = cfg.TransportChoice
+	}
+	return safety
+}
+
+func safetySettingExplicit(cmd *cobra.Command, flagName, envName string) bool {
+	return cmd.Flags().Changed(flagName) || envIsSet(envName)
+}
+
+func envIsSet(name string) bool {
+	_, ok := os.LookupEnv(name)
+	return ok
 }
 
 func resolveTransportAttributeFromEnv() string {
@@ -249,46 +305,42 @@ func buildClient(params *systemParams) (*adt.Client, error) {
 	opts := []adt.Option{
 		adt.WithClient(params.Client),
 		adt.WithLanguage(params.Language),
+		adt.WithSafety(params.Safety),
 	}
 
 	// Carry the system's declared safety into the client. Without this a
 	// read_only system is only read-only when the MCP server is talking; every
 	// CLI subcommand wrote happily, which is the opposite of what the setting
 	// says and the opposite of what a careful person would assume.
-	safety := adt.UnrestrictedSafetyConfig()
-	restricted := false
+	safety := params.Safety
 	if params.ReadOnly {
-		safety.ReadOnly, restricted = true, true
+		safety.ReadOnly = true
 	}
 	if len(params.AllowedPackages) > 0 {
-		safety.AllowedPackages, restricted = params.AllowedPackages, true
+		safety.AllowedPackages = params.AllowedPackages
 	}
 	if params.BlockFreeSQL {
-		safety.BlockFreeSQL, restricted = true, true
+		safety.BlockFreeSQL = true
 	}
 	// Transport safety is opt-in, so enabling it is not a restriction — but it
 	// still has to reach the client, or the transport commands stay blocked no
 	// matter how the system is configured.
 	if params.EnableTransports {
 		safety.EnableTransports = true
-		restricted = true
 	}
 	if params.TransportReadOnly {
-		safety.TransportReadOnly, restricted = true, true
+		safety.TransportReadOnly = true
 	}
 	if len(params.AllowedTransports) > 0 {
-		safety.AllowedTransports, restricted = params.AllowedTransports, true
+		safety.AllowedTransports = params.AllowedTransports
 	}
 	if params.TransportChoice != "" {
 		safety.TransportChoice = params.TransportChoice
 	}
 	if params.AllowTransportableEdits {
 		safety.AllowTransportableEdits = true
-		restricted = true
 	}
-	if restricted {
-		opts = append(opts, adt.WithSafety(safety))
-	}
+	opts = append(opts, adt.WithSafety(safety))
 	if params.Insecure {
 		opts = append(opts, adt.WithInsecureSkipVerify())
 	}
@@ -466,7 +518,8 @@ var searchCmd = &cobra.Command{
 
 Examples:
   vsp -s a4h search "ZCL_*"
-  vsp search "Z*ORDER*" --type CLAS --max 50`,
+  vsp search "Z*ORDER*" --type CLAS --max 50
+  vsp search "*" --type ENHO --max 20`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSearch,
 }

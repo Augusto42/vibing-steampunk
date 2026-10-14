@@ -106,6 +106,38 @@ WRITE: / 'Hello, World!'.
 	}
 }
 
+func TestParseABAPFile_GenericProgram(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "generic.abap")
+	if err := os.WriteFile(filePath, []byte("REPORT zsynthetic_generic.\nWRITE 'ok'.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ParseABAPFile(filePath)
+	if err != nil {
+		t.Fatalf("ParseABAPFile generic program failed: %v", err)
+	}
+	if info.ObjectType != ObjectTypeProgram || info.ObjectName != "ZSYNTHETIC_GENERIC" {
+		t.Fatalf("unexpected generic program metadata: %#v", info)
+	}
+}
+
+func TestParseABAPFile_GenericInclude(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "generic_include.abap")
+	if err := os.WriteFile(filePath, []byte("INCLUDE zsynthetic_include.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ParseABAPFile(filePath)
+	if err != nil {
+		t.Fatalf("ParseABAPFile generic include failed: %v", err)
+	}
+	if info.ObjectType != ObjectTypeInclude || info.ObjectName != "ZSYNTHETIC_INCLUDE" {
+		t.Fatalf("unexpected generic include metadata: %#v", info)
+	}
+}
+
 func TestParseABAPFile_Interface(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "zif_test.intf.abap")

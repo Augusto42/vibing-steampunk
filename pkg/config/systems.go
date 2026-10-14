@@ -50,14 +50,10 @@ type SystemConfig struct {
 	RFCPassword string `json:"rfc_password,omitempty"`
 
 	// Optional safety settings per system
-	ReadOnly        bool     `json:"read_only,omitempty"`
-	AllowedPackages []string `json:"allowed_packages,omitempty"`
-
-	// Transport safety, per system. These exist here and not only as server
-	// flags because the command line has no other way to reach them: the flags
-	// belong to the root command, which is the MCP server, so a subcommand that
-	// tried to pass one was told the flag does not exist. Without these fields
-	// `vsp transport list` could never succeed, whatever the caller typed.
+	ReadOnly                bool     `json:"read_only,omitempty"`
+	AllowedOps              string   `json:"allowed_ops,omitempty"`
+	DisallowedOps           string   `json:"disallowed_ops,omitempty"`
+	AllowedPackages         []string `json:"allowed_packages,omitempty"`
 	EnableTransports        bool     `json:"enable_transports,omitempty"`
 	TransportReadOnly       bool     `json:"transport_read_only,omitempty"`
 	AllowedTransports       []string `json:"allowed_transports,omitempty"`

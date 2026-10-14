@@ -113,6 +113,11 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to address the new object: %v", urlErr))
 		return result, nil
 	}
+	newSourceURL, sourceErr := c.buildSourceURL(objType, newName, parentName)
+	if sourceErr != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Failed to address the new source: %v", sourceErr))
+		return result, nil
+	}
 	// The new object was created in packageName, which the create-side gate
 	// above accepted (and CreateObject checked again). Only mark when a
 	// package was actually supplied and therefore actually checked: with
@@ -140,7 +145,7 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 		}
 	}()
 
-	err = c.UpdateSource(ctx, newURL, newSource, lockResult.LockHandle, transport)
+	err = c.UpdateSource(ctx, newSourceURL, newSource, lockResult.LockHandle, transport)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to write source: %v", err))
 		return result, nil
@@ -149,6 +154,7 @@ func (c *Client) RenameObject(ctx context.Context, objType CreatableObjectType, 
 	newUnlocked = true
 	if unlockErr := c.UnlockObject(ctx, newURL, lockResult.LockHandle); unlockErr != nil {
 		result.Errors = append(result.Errors, strandedLockAdvice(newURL, unlockErr))
+		return result, nil
 	}
 
 	// 5. Activate new object

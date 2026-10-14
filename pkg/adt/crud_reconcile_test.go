@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -31,12 +32,13 @@ type routedResponse struct {
 }
 
 type recordedCall struct {
+	query  url.Values
 	method string
 	path   string
 }
 
 func (m *methodPathMock) Do(req *http.Request) (*http.Response, error) {
-	m.calls = append(m.calls, recordedCall{method: req.Method, path: req.URL.Path})
+	m.calls = append(m.calls, recordedCall{method: req.Method, path: req.URL.Path, query: req.URL.Query()})
 	for _, r := range m.routes {
 		if r.method != "" && r.method != req.Method {
 			continue
@@ -62,13 +64,13 @@ func (m *methodPathMock) Do(req *http.Request) (*http.Response, error) {
 }
 
 // resp is a small helper for constructing routedResponse entries with
-// fewer keystrokes — the routedResponse{} literal is verbose otherwise.
+// fewer keystrokes â€” the routedResponse{} literal is verbose otherwise.
 func resp(method, pathFragment string, status int, body string) routedResponse {
 	return routedResponse{method: method, pathSubstring: pathFragment, status: status, body: body}
 }
 
 // lockResponseXML is the minimal lock-acquired payload the ADT lock
-// flow expects to parse out of a successful POST to lock=… .
+// flow expects to parse out of a successful POST to lock=â€¦ .
 const lockResponseXML = `<?xml version="1.0" encoding="UTF-8"?>
 <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
   <asx:values>
@@ -111,6 +113,7 @@ func newReconcileClient(t *testing.T, mock *methodPathMock) *Client {
 	cfg := NewConfig("https://sap.example.com:44300", "user", "pass",
 		WithAllowedPackages("$TMP"),
 		WithEnableTransports(),
+		WithAllowTransportableEdits(),
 	)
 	transport := NewTransportWithClient(cfg, mock)
 	return NewClientWithTransport(cfg, transport)
@@ -119,17 +122,17 @@ func newReconcileClient(t *testing.T, mock *methodPathMock) *Client {
 // TestCreateObject_CleanFailureBeforePersistence covers the simple case:
 // CreateObject POST returns 500, and the follow-up existence probe
 // returns 404. SAP did not commit anything, so reconcileFailedCreate
-// must return the original error unchanged — no PartialCreateError.
+// must return the original error unchanged â€” no PartialCreateError.
 func TestCreateObject_CleanFailureBeforePersistence(t *testing.T) {
 	mock := &methodPathMock{
 		routes: []routedResponse{
 			resp("", "discovery", 200, "ok"),
 			resp(http.MethodPost, "nodestructure", 200, packageNodeStructureXML),
-			// Existence probe after failure → 404 (object never persisted).
+			// Existence probe after failure â†’ 404 (object never persisted).
 			// MUST come before the broad POST programs route so the GET
 			// path matches first.
 			resp(http.MethodGet, "/programs/programs/ZTEST", 404, "not found"),
-			// CreateObject POST → 500.
+			// CreateObject POST â†’ 500.
 			resp(http.MethodPost, "/programs/programs", 500, "ICM EXCEPTION"),
 		},
 	}
@@ -180,14 +183,14 @@ func TestReconcileFailedCreateDoesNotDeletePreExistingObject(t *testing.T) {
 // TestCreateObject_PartialPersistenceCleanupOK covers the prod-incident
 // scenario: CreateObject POST returns 500 but SAP already persisted the
 // object. The existence probe returns 200, lock acquisition succeeds,
-// delete succeeds → CleanupOK is true and the original error is wrapped.
+// delete succeeds â†’ CleanupOK is true and the original error is wrapped.
 func TestCreateObject_PartialPersistenceCleanupOK(t *testing.T) {
 	mock := &methodPathMock{
 		routes: []routedResponse{
 			resp("", "discovery", 200, "ok"),
 			resp(http.MethodPost, "nodestructure", 200, packageNodeStructureXML),
 			// DeleteObject's package-allowed-list guard hits the search
-			// endpoint to resolve the object URL → package name.
+			// endpoint to resolve the object URL â†’ package name.
 			resp("", "informationsystem/search", 200, searchZTESTInTmpXML),
 			// Specific (with object name) before broad (creation path).
 			// Lock and Create both POST to the programs endpoint, but
@@ -239,7 +242,7 @@ func TestCreateObject_PartialPersistenceLockFails(t *testing.T) {
 		routes: []routedResponse{
 			resp("", "discovery", 200, "ok"),
 			resp(http.MethodPost, "nodestructure", 200, packageNodeStructureXML),
-			// Specific path (with name) before broad. Lock POST →
+			// Specific path (with name) before broad. Lock POST â†’
 			// 403 to simulate "locked by another user".
 			resp(http.MethodGet, "/programs/programs/ZTEST", 200, "<p/>"),
 			resp(http.MethodPost, "/programs/programs/ZTEST", 403, "locked by another user"),
@@ -295,7 +298,7 @@ func TestDeleteObject_UsesStatefulSession(t *testing.T) {
 	mock := &methodPathMock{
 		routes: []routedResponse{
 			resp("", "discovery", 200, "ok"),
-			// Search resolves object → package for DeleteObject's guard.
+			// Search resolves object â†’ package for DeleteObject's guard.
 			resp("", "informationsystem/search", 200, searchZTESTInTmpXML),
 			resp(http.MethodDelete, "/programs/programs/ZTEST", 200, ""),
 		},
@@ -334,13 +337,13 @@ func TestDeleteObject_UsesStatefulSession(t *testing.T) {
 		t.Fatal("no DELETE request was sent")
 	}
 	if got := deleteReq.sessionType; got != "stateful" {
-		t.Errorf("DELETE X-sap-adt-sessiontype = %q, want \"stateful\" — session-bound lock handles require stateful mode (issue #88)", got)
+		t.Errorf("DELETE X-sap-adt-sessiontype = %q, want \"stateful\" â€” session-bound lock handles require stateful mode (issue #88)", got)
 	}
 }
 
 // headerCaptureMock wraps another transport-level mock and records
 // every outbound request's relevant headers. Used exclusively by the
-// stateful-session regression test — the main methodPathMock already
+// stateful-session regression test â€” the main methodPathMock already
 // records method+path but throws headers away.
 type headerCaptureMock struct {
 	inner    *methodPathMock
@@ -394,7 +397,7 @@ func TestRecoverFailedCreate_ObjectDoesNotExist(t *testing.T) {
 
 // TestRecoverFailedCreate_CleansExistingZombie covers the main happy
 // path of the operator-driven recovery: the object exists, lock is
-// acquired, delete succeeds → CleanupOK=true, no manual steps.
+// acquired, delete succeeds â†’ CleanupOK=true, no manual steps.
 func TestRecoverFailedCreate_CleansExistingZombie(t *testing.T) {
 	mock := &methodPathMock{
 		routes: []routedResponse{
@@ -435,7 +438,7 @@ func TestRecoverFailedCreate_CleansExistingZombie(t *testing.T) {
 
 // TestRecoverFailedCreate_LockHeldByAnother covers the realistic
 // "another user is editing the zombie" case: probe says it exists,
-// lock acquisition fails → return ManualSteps instead of CleanupOK.
+// lock acquisition fails â†’ return ManualSteps instead of CleanupOK.
 func TestRecoverFailedCreate_LockHeldByAnother(t *testing.T) {
 	mock := &methodPathMock{
 		routes: []routedResponse{
@@ -455,7 +458,7 @@ func TestRecoverFailedCreate_LockHeldByAnother(t *testing.T) {
 		t.Fatal("expected PartialCreateError, got nil")
 	}
 	if pce.CleanupOK {
-		t.Error("CleanupOK = true, want false — lock acquisition failed")
+		t.Error("CleanupOK = true, want false â€” lock acquisition failed")
 	}
 	if len(pce.ManualSteps) == 0 {
 		t.Error("ManualSteps should be populated when cleanup could not finish")
@@ -463,7 +466,7 @@ func TestRecoverFailedCreate_LockHeldByAnother(t *testing.T) {
 }
 
 // TestPartialCreateError_UnwrapsToOriginal verifies that errors.Is
-// against the original wrapped error keeps working — important so
+// against the original wrapped error keeps working â€” important so
 // existing callers' error-classification logic does not break.
 func TestPartialCreateError_UnwrapsToOriginal(t *testing.T) {
 	original := errors.New("transport-level failure")
@@ -524,7 +527,7 @@ func TestUpdateClassInclude_UsesStatefulSession(t *testing.T) {
 		t.Fatal("no PUT request was sent")
 	}
 	if got := putReq.sessionType; got != "stateful" {
-		t.Errorf("PUT X-sap-adt-sessiontype = %q, want \"stateful\" — session-bound lock handles require stateful mode (issues #88/#92/#98)", got)
+		t.Errorf("PUT X-sap-adt-sessiontype = %q, want \"stateful\" â€” session-bound lock handles require stateful mode (issues #88/#92/#98)", got)
 	}
 }
 
@@ -556,7 +559,7 @@ func TestCreateTestInclude_UsesStatefulSession(t *testing.T) {
 
 	var postReq *capturedReq
 	for i := range tracker.captured {
-		// The CSRF prefetch is also a non-GET (HEAD) — match POST only.
+		// The CSRF prefetch is also a non-GET (HEAD) â€” match POST only.
 		if tracker.captured[i].method == http.MethodPost &&
 			strings.Contains(tracker.captured[i].path, "/includes") {
 			postReq = &tracker.captured[i]
@@ -567,7 +570,7 @@ func TestCreateTestInclude_UsesStatefulSession(t *testing.T) {
 		t.Fatal("no POST /includes request was sent")
 	}
 	if got := postReq.sessionType; got != "stateful" {
-		t.Errorf("POST X-sap-adt-sessiontype = %q, want \"stateful\" — session-bound lock handles require stateful mode (issues #88/#92/#98)", got)
+		t.Errorf("POST X-sap-adt-sessiontype = %q, want \"stateful\" â€” session-bound lock handles require stateful mode (issues #88/#92/#98)", got)
 	}
 }
 
@@ -575,7 +578,7 @@ func TestCreateTestInclude_UsesStatefulSession(t *testing.T) {
 // MODIFICATION_SUPPORT. The original issue #91 guard failed the LOCK whenever
 // SAP said "NoModification", but that field does not mean "you cannot write":
 // it is what SAP returns for local/customer objects that need no modification
-// recording. Verified against A4H — LOCK on a local global class returns
+// recording. Verified against A4H â€” LOCK on a local global class returns
 // IS_LOCAL=X, MODIFICATION_SUPPORT=NoModification and a valid LOCK_HANDLE, and
 // the PUT of .../source/main that follows returns 200. Worse, the guard
 // returned before unlocking, so every blocked attempt leaked the ENQUEUE it had
@@ -696,7 +699,7 @@ func TestLockObject_SurfacesEnqueueConflict(t *testing.T) {
 }
 
 // TestLockObject_AllowsNoModificationOnReadLock proves the guard is
-// scoped to MODIFY locks — read-only locks (accessMode != MODIFY)
+// scoped to MODIFY locks â€” read-only locks (accessMode != MODIFY)
 // must still succeed even if the system flags the object as not
 // modifiable, because there is no write to fail downstream.
 func TestLockObject_AllowsNoModificationOnReadLock(t *testing.T) {

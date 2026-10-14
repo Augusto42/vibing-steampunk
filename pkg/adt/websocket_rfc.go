@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -200,4 +201,32 @@ func (c *DebugWebSocketClient) MoveObject(ctx context.Context, objectType, objec
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (c *DebugWebSocketClient) DescribeEnhancement(ctx context.Context, enhancement string) (string, error) {
+	if !c.IsConnected() {
+		return "", fmt.Errorf("not connected")
+	}
+
+	id := c.GenerateID("rfc_enho_describe")
+	rawMsg := map[string]any{
+		"id":     id,
+		"domain": "rfc",
+		"action": "describeEnhancement",
+		"params": map[string]any{
+			"enhancement": strings.ToUpper(strings.TrimSpace(enhancement)),
+		},
+		"timeout": 30000,
+	}
+	resp, err := c.SendRawRequest(ctx, id, rawMsg, 35*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success {
+		if resp.Error != nil {
+			return "", fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return "", fmt.Errorf("describeEnhancement failed")
+	}
+	return string(resp.Data), nil
 }

@@ -6,6 +6,9 @@ community fork. Do not deploy it to a productive SAP system until the release
 gates in [the integration matrix](upstream-integration-matrix-2026-09-25.md)
 have been met. All examples below use invented object names.
 
+The PR was reconciled with community main on 2026-10-14. See the
+[local evidence and non-production SAP homologation checklist](pt-BR/homologacao-pr-10.md).
+
 ## What is available in source
 
 | Capability | Entry point | Important limit |

@@ -51,7 +51,7 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# git-cliff runs separately in the workflow and commits CHANGELOG.md.
+# git-cliff generates RELEASE_NOTES.md separately in the workflow.
 # GoReleaser v2.15+ dropped changelog.use: git-cliff, so we disable here.
 changelog:
   disable: true
@@ -66,7 +66,7 @@ release:
     - glob: LICENSE
     - glob: NOTICE
   draft: false
-  # Automatically mark as pre-release if version contains -rc, -beta, -alpha
+  # Let GoReleaser infer the authenticated repository from the checkout.
   prerelease: auto
   name_template: "v{{ .Version }}"
   footer: |

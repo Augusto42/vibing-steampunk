@@ -140,6 +140,14 @@ func (c *Client) GetEnhancementByRef(ctx context.Context, ref *EnhancementRef) (
 
 	// Class and BAdI implementations have no single XH source include.
 	if ref.Kind != EnhancementKind("XH") {
+		if ref.Kind == EnhancementKind("XC") {
+			if source, ok := c.tryFetchClassEnhancementSourcesViaRFC(ctx, ref); ok {
+				return source, nil
+			}
+		}
+		if metadata, ok := c.tryDescribeEnhancementViaRFC(ctx, ref.Name); ok {
+			return metadata, nil
+		}
 		metadata, err := json.MarshalIndent(ref, "", "  ")
 		if err != nil {
 			return "", fmt.Errorf("serializing enhancement metadata: %w", err)
@@ -675,4 +683,94 @@ func asString(v interface{}) string {
 		return s
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+type rfcEnhancementDescriber interface {
+	DescribeEnhancement(ctx context.Context, enhancement string) (string, error)
+}
+
+func (c *Client) tryDescribeEnhancementViaRFC(ctx context.Context, name string) (string, bool) {
+	factory := c.rfcFetcherFactory
+	if factory == nil {
+		factory = c.defaultRFCSourceFetcher
+	}
+	fetcher, err := factory(ctx)
+	if err != nil {
+		return "", false
+	}
+	defer fetcher.Close()
+	describer, ok := fetcher.(rfcEnhancementDescriber)
+	if !ok {
+		return "", false
+	}
+	metadata, err := describer.DescribeEnhancement(ctx, name)
+	if err != nil || strings.TrimSpace(metadata) == "" {
+		return "", false
+	}
+	return metadata, true
+}
+
+// tryFetchClassEnhancementSourcesViaRFC resolves the generated declaration
+// and enhanced-method includes (E, EMnnn) used by classic CLASENH objects.
+// ADT 7.52 cannot read these as ordinary include resources, while native READ
+// REPORT through ZADT_VSP can.
+func (c *Client) tryFetchClassEnhancementSourcesViaRFC(ctx context.Context, ref *EnhancementRef) (string, bool) {
+	name := strings.ToUpper(strings.TrimSpace(ref.Name))
+	if name == "" {
+		return "", false
+	}
+	base := name
+	if len(base) > 30 {
+		base = base[:30]
+	}
+	if len(base) < 30 {
+		base += strings.Repeat("=", 30-len(base))
+	}
+	sql := fmt.Sprintf(
+		"SELECT NAME FROM PROGDIR WHERE NAME LIKE '%sE%%' AND STATE = 'A'",
+		strings.ReplaceAll(base, "'", "''"))
+	rows, err := c.GetTableContents(ctx, "PROGDIR", 100, sql)
+	if err != nil || rows == nil || len(rows.Rows) == 0 {
+		return "", false
+	}
+	includes := make([]string, 0, len(rows.Rows))
+	for _, row := range rows.Rows {
+		include := strings.ToUpper(strings.TrimSpace(asString(row["NAME"])))
+		if include != "" {
+			includes = append(includes, include)
+		}
+	}
+	if len(includes) == 0 {
+		return "", false
+	}
+	sort.Strings(includes)
+
+	factory := c.rfcFetcherFactory
+	if factory == nil {
+		factory = c.defaultRFCSourceFetcher
+	}
+	fetcher, err := factory(ctx)
+	if err != nil {
+		return "", false
+	}
+	defer fetcher.Close()
+
+	var rendered strings.Builder
+	for _, include := range includes {
+		lines, readErr := fetcher.ReadSource(ctx, include)
+		if readErr != nil || len(lines) == 0 {
+			continue
+		}
+		if rendered.Len() > 0 {
+			rendered.WriteString("\n\n")
+		}
+		rendered.WriteString("* generated enhancement include: ")
+		rendered.WriteString(include)
+		rendered.WriteString("\n")
+		rendered.WriteString(strings.Join(lines, "\n"))
+	}
+	if rendered.Len() == 0 {
+		return "", false
+	}
+	return rendered.String(), true
 }

@@ -21,8 +21,8 @@ flowchart TB
 
         subgraph Core["internal/mcp/server.go"]
             direction LR
-            Focused[Focused Mode<br/>54 Tools]
-            Expert[Expert Mode<br/>99 Tools]
+            Focused[Focused Mode<br/>Curated tools]
+            Expert[Expert Mode<br/>Complete tool surface]
         end
 
         subgraph Safety["Safety Layer"]
@@ -42,6 +42,7 @@ flowchart TB
             subgraph Write["Write"]
                 crud[crud.go<br/>Lock · Create · Update · Delete]
                 workflows[workflows.go<br/>GetSource · WriteSource · Grep*]
+                enhancements[enhancements_create.go<br/>XH · Class Enhancement · BAdI]
             end
             subgraph DevTools["DevTools"]
                 devtools[devtools.go<br/>Syntax · Activate · Tests · ATC]
@@ -93,6 +94,12 @@ flowchart TB
     DSL --> ADTLib
     Script --> ADTLib
 ```
+
+`CreateEnhancement` follows the same safety layer but uses the ZADT_VSP
+WebSocket bridge to invoke SAP Enhancement Framework APIs. It carries explicit
+host metadata, lets SAP own locking/save/activation/CTS assignment, and then
+verifies the active subtype through repository read-back. See
+[Creating enhancement implementations](enhancement-creation.md).
 
 ## Request Flow
 
