@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
@@ -63,6 +64,9 @@ func (s *Server) routeReadAction(ctx context.Context, action, objectType, object
 			if v, ok := getFloatParam(params, "max_rows"); ok {
 				args["max_rows"] = v
 			}
+			if v, ok := getBoolParam(params, "all_rows"); ok {
+				args["all_rows"] = v
+			}
 			if v := getStringParam(params, "sql_query"); v != "" {
 				args["sql_query"] = v
 			}
@@ -84,25 +88,53 @@ func (s *Server) routeReadAction(ctx context.Context, action, objectType, object
 	}
 
 	if action == "query" {
+		// `sql` is what the CLI flag is called and what a caller writes first;
+		// accepting only `sql_query` sent that call down the chain to "no
+		// handler found for action=query", which is not true of any build.
+		sqlQuery := firstParam(params, "sql_query", "sql", "query")
 		switch objectType {
 		case "TABL_CONTENTS":
 			args := map[string]any{"table_name": objectName}
 			if v, ok := getFloatParam(params, "max_rows"); ok {
 				args["max_rows"] = v
 			}
-			if v := getStringParam(params, "sql_query"); v != "" {
-				args["sql_query"] = v
+			if v, ok := getBoolParam(params, "all_rows"); ok {
+				args["all_rows"] = v
+			}
+			if sqlQuery != "" {
+				args["sql_query"] = sqlQuery
 			}
 			return s.callHandler(ctx, s.handleGetTableContents, args)
 		case "SQL", "":
-			if sqlQuery := getStringParam(params, "sql_query"); sqlQuery != "" {
+			if sqlQuery != "" {
 				args := map[string]any{"sql_query": sqlQuery}
 				if v, ok := getFloatParam(params, "max_rows"); ok {
 					args["max_rows"] = v
 				}
+				if v, ok := getBoolParam(params, "all_rows"); ok {
+					args["all_rows"] = v
+				}
 				return s.callHandler(ctx, s.handleRunQuery, args)
 			}
+			// A table named as the target, with no SQL, is the other thing a
+			// caller plainly means by "query TABL X".
+			if objectName != "" {
+				args := map[string]any{"table_name": objectName}
+				if v, ok := getFloatParam(params, "max_rows"); ok {
+					args["max_rows"] = v
+				}
+				if v, ok := getBoolParam(params, "all_rows"); ok {
+					args["all_rows"] = v
+				}
+				return s.callHandler(ctx, s.handleGetTableContents, args)
+			}
 		}
+		// The action was recognised. Saying so is the whole point: the chain
+		// would otherwise report that action="query" does not exist.
+		return needParams("query", params,
+			[]string{"sql_query (or sql)", "target=\"TABL_CONTENTS <table>\""},
+			`SAP(action="query", params={"sql": "SELECT * FROM T000"})
+  SAP(action="query", target="TABL_CONTENTS T000", params={"max_rows": 50})`), true, nil
 	}
 
 	return nil, false, nil
@@ -220,9 +252,14 @@ func (s *Server) handleGetTableContents(ctx context.Context, request mcp.CallToo
 		return newToolResultError("table_name is required"), nil
 	}
 
-	maxRows := 100
-	if mr, ok := request.GetArguments()["max_rows"].(float64); ok && mr > 0 {
-		maxRows = int(mr)
+	requested := 0
+	if mr, ok := request.GetArguments()["max_rows"].(float64); ok {
+		requested = int(mr)
+	}
+	allRows, _ := request.GetArguments()["all_rows"].(bool)
+	maxRows := adt.ResolveRowLimit(allRows, requested)
+	if os.Getenv("VSP_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "[DEBUG] GetTableContents: requested=%d allRows=%v -> maxRows=%d\n", requested, allRows, maxRows)
 	}
 
 	sqlQuery := ""
@@ -240,9 +277,15 @@ func (s *Server) handleGetTableContents(ctx context.Context, request mcp.CallToo
 		columnsOnly = co
 	}
 
-	// Fetch extra rows to support client-side offset
+	// Fetch extra rows to support client-side offset. Not for all_rows: the
+	// sentinel is already the maximum ADT will honor before it silently
+	// truncates (see adt.UnlimitedRows), so adding offset on top of it can
+	// push the request back over that threshold and reintroduce the same
+	// truncation all_rows exists to avoid. The bounded max_rows path still
+	// needs +offset — that's deliberate client-side pagination within an
+	// intentionally limited request.
 	fetchRows := maxRows
-	if offset > 0 {
+	if offset > 0 && !allRows {
 		fetchRows = maxRows + offset
 	}
 	if columnsOnly {
@@ -281,9 +324,14 @@ func (s *Server) handleRunQuery(ctx context.Context, request mcp.CallToolRequest
 		return newToolResultError("sql_query is required"), nil
 	}
 
-	maxRows := 100
-	if mr, ok := request.GetArguments()["max_rows"].(float64); ok && mr > 0 {
-		maxRows = int(mr)
+	requested := 0
+	if mr, ok := request.GetArguments()["max_rows"].(float64); ok {
+		requested = int(mr)
+	}
+	allRows, _ := request.GetArguments()["all_rows"].(bool)
+	maxRows := adt.ResolveRowLimit(allRows, requested)
+	if os.Getenv("VSP_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "[DEBUG] RunQuery: requested=%d allRows=%v -> maxRows=%d\n", requested, allRows, maxRows)
 	}
 
 	contents, err := s.adtClient.RunQuery(ctx, sqlQuery, maxRows)
@@ -429,4 +477,3 @@ func (s *Server) handleGetAPIReleaseState(ctx context.Context, request mcp.CallT
 	result, _ := json.MarshalIndent(state, "", "  ")
 	return mcp.NewToolResultText(string(result)), nil
 }
-

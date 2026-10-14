@@ -1,0 +1,27 @@
+vibing-steampunk (vsp)
+Copyright (c) 2025-2026 Alice Vinogradova and contributors
+
+This product is licensed under the MIT License (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party software distributed in the vsp binaries
+--------------------------------------------------------------------------------
+
+open-rfc-go — https://github.com/oisee/open-rfc-go
+Copyright 2026 oisee
+Licensed under the Apache License, Version 2.0.
+
+  open-rfc-go is itself a port of open-rfc (https://github.com/marianfoo/open-rfc),
+  Copyright 2026 Marian Zeis, licensed under the Apache License, Version 2.0.
+  Its NOTICE reads:
+
+    This product includes software developed as part of open-rfc
+    (https://github.com/marianfoo/open-rfc), Copyright 2026 Marian Zeis,
+    licensed under the Apache License, Version 2.0.
+
+  A copy of the Apache License, Version 2.0 is available at
+  https://www.apache.org/licenses/LICENSE-2.0
+
+vsp also links other open-source Go modules; their licences are recorded in
+go.mod / go.sum and in the module cache. Apache-2.0 requires the notice above to
+travel with any distribution of the binaries, which is why this file exists.

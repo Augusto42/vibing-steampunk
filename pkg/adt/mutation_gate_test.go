@@ -152,7 +152,7 @@ func TestPackageTransportRequirement_TransportablePackageWithoutRequestFailsClos
 	if err == nil {
 		t.Fatal("transportable package without request should be blocked")
 	}
-	if !strings.Contains(err.Error(), "blocked before mutation") || !strings.Contains(err.Error(), "--transport") {
+	if !strings.Contains(err.Error(), "blocked before mutation") || !strings.Contains(err.Error(), "explicit transport") {
 		t.Fatalf("unexpected preflight error: %v", err)
 	}
 }

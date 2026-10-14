@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sanitized ADT discovery service-document shape for the OSD façade (Wave 0).
+  Synthetic names only; real structure. Served at BOTH:
+    GET /sap/bc/adt/core/discovery   (reachability + CSRF-token probe)
+    GET /sap/bc/adt/discovery        (collection list vsp scans for hrefs)
+
+  vsp's ACTUAL parsing bar (verified in pkg/adt/compat.go):
+    * It does NOT strictly parse this Atom XML. It scans the body for
+      href="/sap/bc/adt/<collection>" substrings to learn which collections
+      exist, and reads the X-CSRF-Token response header.
+    * So the two things that matter for vsp are: (1) a real X-CSRF-Token header
+      on the /core/discovery response, and (2) an href="/sap/bc/adt/…" per
+      in-scope collection somewhere in this body.
+  A structurally-real Atom document (below) also satisfies stricter clients
+  (adt-fs, later Eclipse), so emit this shape and grow it, rather than a stub.
+  List ONLY implemented collections here — discovery is the honest gatekeeper.
+-->
+<app:service xmlns:app="http://www.w3.org/2007/app"
+             xmlns:atom="http://www.w3.org/2005/Atom"
+             xmlns:adtcomp="http://www.sap.com/adt/compatibility">
+
+  <app:workspace>
+    <atom:title>Source Library</atom:title>
+    <app:collection href="/sap/bc/adt/programs/programs">
+      <atom:title>Programs</atom:title>
+      <app:accept>application/vnd.sap.adt.programs.programs.v2+xml</app:accept>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/programs/includes">
+      <atom:title>Includes</atom:title>
+      <app:accept>application/vnd.sap.adt.programs.includes.v2+xml</app:accept>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/oo/classes">
+      <atom:title>Classes</atom:title>
+      <app:accept>application/vnd.sap.adt.oo.classes.v4+xml</app:accept>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/oo/interfaces">
+      <atom:title>Interfaces</atom:title>
+      <app:accept>application/vnd.sap.adt.oo.interfaces.v2+xml</app:accept>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/functions/groups">
+      <atom:title>Function Groups</atom:title>
+      <app:accept>application/vnd.sap.adt.functions.groups.v3+xml</app:accept>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/messageclass">
+      <atom:title>Message Classes</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/textelements/programs">
+      <atom:title>Text Elements</atom:title>
+    </app:collection>
+  </app:workspace>
+
+  <app:workspace>
+    <atom:title>Repository</atom:title>
+    <app:collection href="/sap/bc/adt/packages">
+      <atom:title>Packages</atom:title>
+      <app:accept>application/vnd.sap.adt.packages.v1+xml</app:accept>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/repository/nodestructure">
+      <atom:title>Repository Node Structure</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/repository/informationsystem/search">
+      <atom:title>Object Search</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/repository/informationsystem/usageReferences">
+      <atom:title>Usage References</atom:title>
+    </app:collection>
+  </app:workspace>
+
+  <app:workspace>
+    <atom:title>Data Dictionary</atom:title>
+    <app:collection href="/sap/bc/adt/ddic/tables">
+      <atom:title>Tables</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/ddic/dataelements">
+      <atom:title>Data Elements</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/ddic/ddl/sources">
+      <atom:title>CDS DDL Sources</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/ddic/srvd/sources">
+      <atom:title>Service Definitions</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/datapreview/freestyle">
+      <atom:title>Data Preview (freestyle SQL)</atom:title>
+    </app:collection>
+  </app:workspace>
+
+  <app:workspace>
+    <atom:title>Development Loop</atom:title>
+    <app:collection href="/sap/bc/adt/checkruns">
+      <atom:title>Check Runs (syntax)</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/activation">
+      <atom:title>Activation</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/abapunit/testruns">
+      <atom:title>ABAP Unit Test Runs</atom:title>
+    </app:collection>
+    <app:collection href="/sap/bc/adt/runtime/dumps">
+      <atom:title>Runtime Dumps</atom:title>
+    </app:collection>
+  </app:workspace>
+
+</app:service>

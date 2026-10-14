@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // pure Go; see pkg/cache/sqlite.go and issue #157
 )
 
 // auditCache is a tiny on-disk key/value cache for cr-config-audit.

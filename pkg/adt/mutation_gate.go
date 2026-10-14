@@ -3,24 +3,7 @@ package adt
 import (
 	"context"
 	"fmt"
-	"strings"
 )
-
-type mutationPackageCheckedKey struct{}
-
-// withMutationPackageChecked marks that an outer workflow already resolved
-// and checked the target package before acquiring a stateful lock. Inner
-// mutators still enforce operation and transport policy, but skip the redundant
-// package lookup that would otherwise insert a stateless SearchObject request
-// between LOCK and PUT/DELETE.
-func withMutationPackageChecked(ctx context.Context) context.Context {
-	return context.WithValue(ctx, mutationPackageCheckedKey{}, true)
-}
-
-func mutationPackageAlreadyChecked(ctx context.Context) bool {
-	checked, _ := ctx.Value(mutationPackageCheckedKey{}).(bool)
-	return checked
-}
 
 // MutationSurface identifies the object surface a mutation targets. Different
 // surfaces require different metadata resolution strategies (ADT SearchObject,
@@ -93,9 +76,27 @@ func (c *Client) checkMutation(ctx context.Context, m MutationContext) error {
 		return err
 	}
 
-	// 2. Package ownership check. Outer workflows may mark only this networked
-	// portion as complete; operation and transport checks are never bypassed.
-	if !mutationPackageAlreadyChecked(ctx) {
+	// 2. Package ownership check.
+	//
+	// This is the only step that makes a network request, and inside a lock
+	// window that request is fatal: it goes out explicitly stateless, which
+	// retires the ADT session the lock handle is bound to, and the write that
+	// follows returns 423 ExceptionResourceInvalidLockHandle (issue #91).
+	// An outer workflow that already resolved and approved *this* object's
+	// package marks the context so the lookup is not repeated under the lock.
+	//
+	// The skip is deliberately narrow:
+	//   - it never applies when the caller supplied an explicit Package —
+	//     checkPackageSafety is free and stays;
+	//   - it never applies off the ADT surface, so the SurfaceUI5 fail-closed
+	//     cannot be marked away;
+	//   - it covers step 2 only. Steps 1 and 3 issue no request, so skipping
+	//     them would buy nothing and cost --read-only / --disallowed-ops /
+	//     --allow-transportable-edits enforcement on the inner mutator.
+	skipPackageLookup := m.Surface == SurfaceADT &&
+		m.Package == "" &&
+		mutationPackageAlreadyChecked(ctx, m.ObjectURL)
+	if !skipPackageLookup {
 		if err := c.checkMutationPackage(ctx, m); err != nil {
 			return err
 		}
@@ -142,32 +143,4 @@ func (c *Client) checkMutationPackage(ctx context.Context, m MutationContext) er
 	default:
 		return fmt.Errorf("mutation gate: unknown surface %d for %s", m.Surface, m.OpName)
 	}
-}
-
-// checkPackageTransportRequirement prevents SAP from partially creating or
-// changing an object before it asks for a transport. It must run before the
-// first stateful lock or write request. Unlike CheckTransportableEdit, which
-// validates an explicitly supplied request against local policy, this check
-// validates that a request was supplied when the package itself records
-// changes.
-func (c *Client) checkPackageTransportRequirement(ctx context.Context, packageName, transport, opName string) error {
-	packageName = strings.ToUpper(strings.TrimSpace(packageName))
-	transport = strings.ToUpper(strings.TrimSpace(transport))
-	if packageName == "" {
-		return nil
-	}
-	if strings.HasPrefix(packageName, "$") {
-		return nil
-	}
-
-	metadata, err := c.GetPackageMetadata(ctx, packageName)
-	if err != nil {
-		return fmt.Errorf("%s blocked before mutation: cannot determine whether package %s requires a transport: %w", opName, packageName, err)
-	}
-	if metadata.RequiresTransport() && transport == "" {
-		return fmt.Errorf(
-			"%s blocked before mutation: package %s records changes and requires an explicit transport request; provide --transport and --allow-transportable-edits",
-			opName, packageName)
-	}
-	return nil
 }

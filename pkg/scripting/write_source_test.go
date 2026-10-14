@@ -5,8 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/oisee/vibing-steampunk/pkg/adt"
 	lua "github.com/yuin/gopher-lua"
+
+	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
 func TestLuaWriteSourceLegacyCallPreservesNilOptions(t *testing.T) {
@@ -34,7 +35,6 @@ func TestLuaWriteSourceLegacyCallPreservesNilOptions(t *testing.T) {
 	}
 }
 
-//nolint:misspell // CLAS is the SAP ADT object type used by the Lua API.
 func TestLuaWriteSourceForwardsOptions(t *testing.T) {
 	engine := NewLuaEngine(nil)
 	defer engine.Close()
@@ -86,7 +86,7 @@ func TestLuaWriteSourceReturnsDiagnosticForUnsuccessfulResult(t *testing.T) {
 	if engine.L.GetGlobal("ok") != lua.LFalse {
 		t.Fatalf("ok = %v, want false", engine.L.GetGlobal("ok"))
 	}
-	if got := lua.LVAsString(engine.L.GetGlobal("message")); got != "synthetic activation failure" {
+	if got := lua.LVAsString(engine.L.GetGlobal("message")); got != "WriteSource failed: synthetic activation failure" {
 		t.Fatalf("message = %q", got)
 	}
 }

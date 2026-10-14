@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/oisee/vibing-steampunk/pkg/adt"
 	"github.com/oisee/vibing-steampunk/pkg/graph"
 )
 
@@ -300,9 +301,12 @@ func (s *Server) analyzeTransportBoundaries(ctx context.Context, trList []string
 
 	maxObjects := 50
 	count := 0
+	var unreadable []adt.Unsearched
+	truncated := 0
 	for obj := range objectSet {
 		if count >= maxObjects {
-			break
+			truncated++
+			continue
 		}
 
 		// Add node
@@ -319,11 +323,24 @@ func (s *Server) analyzeTransportBoundaries(ctx context.Context, trList []string
 		if obj.objType == "FUGR" {
 			// FUGR via GetSource returns only JSON metadata; use the dedicated helper
 			// that concatenates top include + all fmodules + sub-includes for real deps.
-			source, err = s.adtClient.GetFunctionGroupAllSources(ctx, obj.objName)
+			var missedSubs []adt.Unsearched
+			source, missedSubs, err = s.adtClient.GetFunctionGroupAllSources(ctx, obj.objName)
+			if len(missedSubs) > 0 {
+				// A half-read function group looks exactly like a small one:
+				// fewer statements, fewer dependencies, fewer violations.
+				unreadable = append(unreadable, adt.Unsearched{
+					Object: obj.objType + " " + obj.objName,
+					Reason: fmt.Sprintf("read only in part — %d of its sub-sources failed, first: %s", len(missedSubs), missedSubs[0].Reason),
+				})
+			}
 		} else {
 			source, err = s.adtClient.GetSource(ctx, obj.objType, obj.objName, nil)
 		}
 		if err != nil {
+			// The node stays in the graph with no outgoing edges, which is
+			// indistinguishable from an object that depends on nothing. That
+			// is the shape that makes this report say "no violations".
+			unreadable = append(unreadable, adt.Unsearched{Object: obj.objType + " " + obj.objName, Reason: err.Error()})
 			continue
 		}
 
@@ -341,13 +358,32 @@ func (s *Server) analyzeTransportBoundaries(ctx context.Context, trList []string
 	}
 
 	// Resolve packages for context in the report
-	s.resolvePackages(ctx, g)
+	missed := s.resolvePackages(ctx, g)
 
 	// Step 3: Run boundary analysis
 	report := graph.AnalyzeTransportBoundaries(g, scope)
 
-	data, _ := json.MarshalIndent(report, "", "  ")
+	var notes []string
+	if n := adt.UnsearchedNote(unreadable, count+len(unreadable), "object"); n != "" {
+		notes = append(notes, "objects in this transport scope could not be read, so their dependencies are missing from the analysis below.\n"+n)
+	}
+	if truncated > 0 {
+		notes = append(notes, fmt.Sprintf("only %d objects were analysed; %d more in this scope were not looked at, so this analysis does not cover them.", count, truncated))
+	}
+	if n := unresolvedPackageNote(missed); n != "" {
+		notes = append(notes, n)
+	}
+
+	data, _ := json.MarshalIndent(transportBoundaryResult{TransportBoundaryReport: report, Notes: notes}, "", "  ")
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// transportBoundaryResult wraps the report with what the sweep could not do.
+// The caveat has to be inside the JSON: this handler's whole output to an agent
+// is this document, and a gap recorded anywhere else is a gap nobody reads.
+type transportBoundaryResult struct {
+	*graph.TransportBoundaryReport
+	Notes []string `json:"notes,omitempty"`
 }
 
 // splitAndUpper splits a comma-separated string and uppercases each part.

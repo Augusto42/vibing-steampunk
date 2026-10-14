@@ -111,7 +111,7 @@ Transitive behavior = derived report, not first-class topology.
 | System | URL | Notes |
 |--------|-----|-------|
 | devsys-adt | dev.example.local:50000 | Test system, user TESTUSER, `$ZHIRTEST` hierarchy |
-| a4h (desude) | a4h.desude.su:50000 | Alice's dev system, `$ZLLM` package |
+| a4h (devsys2) | devsys2.example.local:50000 | dev system, `$ZLLM` package |
 | trialsys | trialsys.example | External reporter's SAP 2023 trial — install bug reproduction target |
 
 ## Smoke Tests

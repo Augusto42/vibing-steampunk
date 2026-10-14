@@ -393,7 +393,7 @@ func collectCodeTablesFromScope(ctx context.Context, client *adt.Client, liveObj
 
 	// Step 2: per-object symbol-ref queries run in parallel via a small
 	// worker pool. An earlier attempt to batch 5 objects per query using
-	// OR-LIKE failed on live d15 — SAP's freestyle query parser rejects
+	// OR-LIKE failed on a live system — SAP's freestyle query parser rejects
 	// more than one LIKE per WHERE clause ("LIKE is not allowed here"),
 	// so any OR-ed pattern list fell back to zero rows and silently
 	// dropped every code-side table. Parallelism via goroutines gives the
@@ -482,10 +482,10 @@ func collectCodeTablesFromScope(ctx context.Context, client *adt.Client, liveObj
 // Covered/Missing/Orphan buckets on the metadata plane.
 //
 // Query plan (no regex, everything through DDIC tables):
-//   1. DD03L WHERE TABNAME IN (<batch>) → (TABNAME, FIELDNAME, ROLLNAME)
-//   2. DD04L WHERE ROLLNAME IN (<batch>) → (ROLLNAME, DOMNAME)
-//   3. DD01L WHERE DOMNAME IN (<batch>) → (DOMNAME, ENTITYTAB)   [check table]
-//   4. DD07L WHERE DOMNAME IN (<batch>) → (DOMNAME, DOMVALUE_L)  [fixed values]
+//  1. DD03L WHERE TABNAME IN (<batch>) → (TABNAME, FIELDNAME, ROLLNAME)
+//  2. DD04L WHERE ROLLNAME IN (<batch>) → (ROLLNAME, DOMNAME)
+//  3. DD01L WHERE DOMNAME IN (<batch>) → (DOMNAME, ENTITYTAB)   [check table]
+//  4. DD07L WHERE DOMNAME IN (<batch>) → (DOMNAME, DOMVALUE_L)  [fixed values]
 //
 // Batched to 5 names per IN clause to respect SAP freestyle 255-char limit.
 func walkDDICMetadata(ctx context.Context, client *adt.Client, tables map[string]bool, cache *auditCache) (map[string]graph.MetadataRef, error) {
@@ -835,7 +835,14 @@ func runValueLevelAudit(
 		var source string
 		var err error
 		if c.objType == "FUGR" {
-			source, err = client.GetFunctionGroupAllSources(ctx, c.objName)
+			var missed []adt.Unsearched
+			source, missed, err = client.GetFunctionGroupAllSources(ctx, c.objName)
+			// An include that did not load contributes no literals, and a
+			// missing literal here reads as "this caller does not use the
+			// variable". Say which includes went unread.
+			for _, m := range missed {
+				fmt.Fprintf(os.Stderr, "    WARN: %s: %s\n", m.Object, m.Reason)
+			}
 		} else {
 			source, err = client.GetSource(ctx, c.objType, c.objName, nil)
 		}

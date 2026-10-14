@@ -16,15 +16,24 @@ import (
 // BreakpointKind represents the type of breakpoint.
 type BreakpointKind string
 
+// The four kinds SAP's breakpoint resource accepts, confirmed against A4H on
+// 2026-08-21 by sending each and reading what came back:
+//
+//	line       KIND=0.SOURCETYPE=ABAP.MAIN_PROGRAM=…
+//	statement  KIND=1.STATEMENT=CALL FUNCTION
+//	exception  KIND=5.EXCEPTION_CLASS=CX_SY_ZERODIVIDE
+//	message    KIND=12.MSGID=00.MSGNO=001.MSGTY=E
+//
+// There is no "badi" kind — SAP answers "Invalid breakpoint kind badi". A BAdI
+// call is caught as a statement breakpoint on CALL BADI, which is what SAP's own
+// debugger does. Nor is there a kind for enhancements or methods here; a method
+// is reached by a line breakpoint in its source, and a watchpoint is a different
+// resource (/sap/bc/adt/debugger/watchpoints) that vsp does not drive yet.
 const (
-	BreakpointKindLine        BreakpointKind = "line"
-	BreakpointKindStatement   BreakpointKind = "statement"
-	BreakpointKindException   BreakpointKind = "exception"
-	BreakpointKindMessage     BreakpointKind = "message"
-	BreakpointKindBadi        BreakpointKind = "badi"        // Business Add-In breakpoint
-	BreakpointKindEnhancement BreakpointKind = "enhancement" // Enhancement point breakpoint
-	BreakpointKindWatchpoint  BreakpointKind = "watchpoint"  // Data watchpoint (variable change)
-	BreakpointKindMethod      BreakpointKind = "method"      // Method/function entry breakpoint
+	BreakpointKindLine      BreakpointKind = "line"
+	BreakpointKindStatement BreakpointKind = "statement"
+	BreakpointKindException BreakpointKind = "exception"
+	BreakpointKindMessage   BreakpointKind = "message"
 )
 
 // BreakpointScope determines the lifetime of a breakpoint.
@@ -91,35 +100,32 @@ func getTerminalID() string {
 
 // Breakpoint represents an ABAP debugger breakpoint.
 type Breakpoint struct {
-	ID          string         `json:"id"`
-	Kind        BreakpointKind `json:"kind"`
-	Enabled     bool           `json:"enabled"`
-	URI         string         `json:"uri,omitempty"`         // ADT URI for line breakpoints
-	Line        int            `json:"line,omitempty"`        // Line number for line breakpoints
-	Condition   string         `json:"condition,omitempty"`   // Optional condition expression
-	Statement   string         `json:"statement,omitempty"`   // Statement type for statement breakpoints
-	Exception   string         `json:"exception,omitempty"`   // Exception class for exception breakpoints
-	MessageID   string         `json:"messageId,omitempty"`   // Message ID for message breakpoints
-	MessageType string         `json:"messageType,omitempty"` // Message type (E, W, I, S, A)
-	MessageArea string         `json:"messageArea,omitempty"` // Message class/area (e.g., "00", "SY")
-
-	// BAdi and Enhancement breakpoints
-	BadiName        string `json:"badiName,omitempty"`        // BAdi definition name
-	EnhancementSpot string `json:"enhancementSpot,omitempty"` // Enhancement spot name
-	EnhancementImpl string `json:"enhancementImpl,omitempty"` // Enhancement implementation name
-
-	// Watchpoint (data breakpoint)
-	Variable       string `json:"variable,omitempty"`       // Variable name to watch
-	WatchCondition string `json:"watchCondition,omitempty"` // When to trigger: "change", "read", "any"
-
-	// Method breakpoint
-	ClassName  string `json:"className,omitempty"`  // Class name for method breakpoint
-	MethodName string `json:"methodName,omitempty"` // Method name for method breakpoint
+	ID        string         `json:"id"`
+	Kind      BreakpointKind `json:"kind"`
+	Enabled   bool           `json:"enabled"`
+	URI       string         `json:"uri,omitempty"`       // ADT URI for line breakpoints
+	Line      int            `json:"line,omitempty"`      // Line number for line breakpoints
+	Condition string         `json:"condition,omitempty"` // Optional condition expression
+	Statement string         `json:"statement,omitempty"` // Statement type for statement breakpoints
+	Exception string         `json:"exception,omitempty"` // Exception class for exception breakpoints
+	// A message breakpoint needs all three of these. Sending only two earns a
+	// 400 naming the one that is missing — "Attribute 'msgNo' expected" — which
+	// is how the omission here was found; every message breakpoint vsp sent
+	// before that was rejected.
+	MessageID     string `json:"messageId,omitempty"`     // message class, e.g. "00"
+	MessageNumber string `json:"messageNumber,omitempty"` // message number, e.g. "001"
+	MessageType   string `json:"messageType,omitempty"`   // E, W, I, S, A
 
 	// Read-only fields returned by SAP
 	ActualLine int    `json:"actualLine,omitempty"` // Actual line after adjustment
 	IsActive   bool   `json:"isActive,omitempty"`   // Whether BP is currently active
 	ObjectName string `json:"objectName,omitempty"` // Name of the object containing the BP
+
+	// ErrorMessage is set, and ID empty, when SAP refused to place this one —
+	// "Cannot create a breakpoint at this position" for a line that carries no
+	// statement. It answers per requested breakpoint, so a caller that posts
+	// candidate lines learns exactly which ones stuck.
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 // BreakpointRequest contains parameters for creating breakpoints.
@@ -336,8 +342,8 @@ func buildBreakpointRequestXML(req *BreakpointRequest) (string, error) {
 				enabledAttr, xmlEscape(bp.Statement)))
 
 		case BreakpointKindMessage:
-			bpElements = append(bpElements, fmt.Sprintf(`<breakpoint kind="message" %s msgId="%s" msgTy="%s"/>`,
-				enabledAttr, xmlEscape(bp.MessageID), xmlEscape(bp.MessageType)))
+			bpElements = append(bpElements, fmt.Sprintf(`<breakpoint kind="message" %s msgId="%s" msgNo="%s" msgTy="%s"/>`,
+				enabledAttr, xmlEscape(bp.MessageID), xmlEscape(bp.MessageNumber), xmlEscape(bp.MessageType)))
 		}
 	}
 
@@ -377,8 +383,8 @@ func parseBreakpointResponse(data []byte) (*BreakpointResponse, error) {
 		Kind           string `xml:"kind,attr"`
 		Enabled        bool   `xml:"enabled,attr"`
 		IsActive       bool   `xml:"isActive,attr"`
-		URI            string `xml:"uri,attr"`          // adtcore:uri attribute
-		Condition      string `xml:"condition,attr"`    // condition attribute
+		URI            string `xml:"uri,attr"`       // adtcore:uri attribute
+		Condition      string `xml:"condition,attr"` // condition attribute
 		ExceptionClass string `xml:"exceptionClass,attr"`
 		Statement      string `xml:"statement,attr"`
 		MsgID          string `xml:"msgId,attr"`
@@ -400,23 +406,24 @@ func parseBreakpointResponse(data []byte) (*BreakpointResponse, error) {
 
 	result := &BreakpointResponse{}
 	for _, bp := range resp.Breakpoints {
-		// Skip breakpoints with error messages (couldn't be created)
-		if bp.ErrorMessage != "" {
-			continue
-		}
-
+		// A refused breakpoint is kept, not dropped: its message is the only
+		// explanation the caller will get for why a line it asked for is not
+		// instrumented, and silently returning fewer breakpoints than were
+		// requested is how a caller comes to believe it covered a unit it did
+		// not. Callers tell the two apart by ID, which a refusal has not got.
 		breakpoint := Breakpoint{
-			ID:          bp.ID,
-			Kind:        BreakpointKind(bp.Kind),
-			Enabled:     bp.Enabled,
-			IsActive:    bp.IsActive,
-			URI:         bp.URI,
-			Condition:   bp.Condition,
-			Exception:   bp.ExceptionClass,
-			Statement:   bp.Statement,
-			MessageID:   bp.MsgID,
-			MessageType: bp.MsgTy,
-			ObjectName:  bp.ObjectName,
+			ID:           bp.ID,
+			ErrorMessage: bp.ErrorMessage,
+			Kind:         BreakpointKind(bp.Kind),
+			Enabled:      bp.Enabled,
+			IsActive:     bp.IsActive,
+			URI:          bp.URI,
+			Condition:    bp.Condition,
+			Exception:    bp.ExceptionClass,
+			Statement:    bp.Statement,
+			MessageID:    bp.MsgID,
+			MessageType:  bp.MsgTy,
+			ObjectName:   bp.ObjectName,
 		}
 
 		// Extract line number from URI fragment if present
@@ -496,30 +503,30 @@ func NewMessageBreakpoint(messageID string, messageType string) Breakpoint {
 type DebuggeeKind string
 
 const (
-	DebuggeeKindDebuggee        DebuggeeKind = "debuggee"
-	DebuggeeKindPostMortem      DebuggeeKind = "postmortem"
+	DebuggeeKindDebuggee         DebuggeeKind = "debuggee"
+	DebuggeeKindPostMortem       DebuggeeKind = "postmortem"
 	DebuggeeKindPostMortemDialog DebuggeeKind = "postmortem_dialog"
 )
 
 // Debuggee represents a process that has hit a breakpoint and is waiting for debugging.
 type Debuggee struct {
-	ID            string       `json:"debuggeeId"`
-	Kind          DebuggeeKind `json:"kind"`
-	Client        int          `json:"client"`
-	TerminalID    string       `json:"terminalId"`
-	IdeID         string       `json:"ideId"`
-	User          string       `json:"debuggeeUser"`
-	Program       string       `json:"program"`
-	Include       string       `json:"include"`
-	Line          int          `json:"line"`
-	RFCDest       string       `json:"rfcDest,omitempty"`
-	AppServer     string       `json:"appServer,omitempty"`
-	SystemID      string       `json:"systemId,omitempty"`
-	SystemNumber  int          `json:"systemNumber,omitempty"`
-	Timestamp     int64        `json:"timestamp,omitempty"`
-	IsAttachable  bool         `json:"isAttachable"`
-	IsSameServer  bool         `json:"isSameServer"`
-	InstanceName  string       `json:"instanceName,omitempty"`
+	ID           string       `json:"debuggeeId"`
+	Kind         DebuggeeKind `json:"kind"`
+	Client       int          `json:"client"`
+	TerminalID   string       `json:"terminalId"`
+	IdeID        string       `json:"ideId"`
+	User         string       `json:"debuggeeUser"`
+	Program      string       `json:"program"`
+	Include      string       `json:"include"`
+	Line         int          `json:"line"`
+	RFCDest      string       `json:"rfcDest,omitempty"`
+	AppServer    string       `json:"appServer,omitempty"`
+	SystemID     string       `json:"systemId,omitempty"`
+	SystemNumber int          `json:"systemNumber,omitempty"`
+	Timestamp    int64        `json:"timestamp,omitempty"`
+	IsAttachable bool         `json:"isAttachable"`
+	IsSameServer bool         `json:"isSameServer"`
+	InstanceName string       `json:"instanceName,omitempty"`
 	// For post-mortem debugging (short dumps)
 	DumpID     string `json:"dumpId,omitempty"`
 	DumpDate   string `json:"dumpDate,omitempty"`
@@ -545,13 +552,13 @@ type ListenResult struct {
 
 // ListenOptions configures the debug listener.
 type ListenOptions struct {
-	DebuggingMode         DebuggingMode `json:"debuggingMode"`
-	User                  string        `json:"user,omitempty"`        // Required for user mode
-	TerminalID            string        `json:"terminalId,omitempty"`  // Auto-generated if empty
-	IdeID                 string        `json:"ideId,omitempty"`       // Default: "vsp"
-	TimeoutSeconds        int           `json:"timeout,omitempty"`     // Default: 240
-	CheckConflict         bool          `json:"checkConflict"`
-	NotifyOnConflict      bool          `json:"notifyOnConflict"`
+	DebuggingMode    DebuggingMode `json:"debuggingMode"`
+	User             string        `json:"user,omitempty"`       // Required for user mode
+	TerminalID       string        `json:"terminalId,omitempty"` // Auto-generated if empty
+	IdeID            string        `json:"ideId,omitempty"`      // Default: "vsp"
+	TimeoutSeconds   int           `json:"timeout,omitempty"`    // Default: 240
+	CheckConflict    bool          `json:"checkConflict"`
+	NotifyOnConflict bool          `json:"notifyOnConflict"`
 }
 
 // --- Debug Listener API ---
@@ -727,30 +734,30 @@ func parseDebuggeeResponse(data []byte) (*Debuggee, error) {
 
 	// The response is in ABAP XML format: <abap><values><DATA><STPDA_DEBUGGEE>...</STPDA_DEBUGGEE></DATA></values></abap>
 	type stpdaDebuggee struct {
-		Client              int    `xml:"CLIENT"`
-		DebuggeeID          string `xml:"DEBUGGEE_ID"`
-		TerminalID          string `xml:"TERMINAL_ID"`
-		IdeID               string `xml:"IDE_ID"`
-		DebuggeeUser        string `xml:"DEBUGGEE_USER"`
-		ProgramCurrent      string `xml:"PRG_CURR"`
-		IncludeCurrent      string `xml:"INCL_CURR"`
-		LineCurrent         int    `xml:"LINE_CURR"`
-		RFCDest             string `xml:"RFCDEST"`
-		AppServer           string `xml:"APPLSERVER"`
-		SystemID            string `xml:"SYSID"`
-		SystemNumber        int    `xml:"SYSNR"`
-		Timestamp           int64  `xml:"TSTMP"`
-		DebuggeeKind        string `xml:"DBGEE_KIND"`
-		IsAttachImpossible  string `xml:"IS_ATTACH_IMPOSSIBLE"`
-		IsSameServer        string `xml:"IS_SAME_SERVER"`
-		InstanceName        string `xml:"INSTANCE_NAME"`
-		DumpID              string `xml:"DUMP_ID"`
-		DumpDate            string `xml:"DUMP_DATE"`
-		DumpTime            string `xml:"DUMP_TIME"`
-		DumpHost            string `xml:"DUMP_HOST"`
-		DumpUser            string `xml:"DUMP_UNAME"`
-		DumpClient          string `xml:"DUMP_CLIENT"`
-		DumpURI             string `xml:"DUMP_URI"`
+		Client             int    `xml:"CLIENT"`
+		DebuggeeID         string `xml:"DEBUGGEE_ID"`
+		TerminalID         string `xml:"TERMINAL_ID"`
+		IdeID              string `xml:"IDE_ID"`
+		DebuggeeUser       string `xml:"DEBUGGEE_USER"`
+		ProgramCurrent     string `xml:"PRG_CURR"`
+		IncludeCurrent     string `xml:"INCL_CURR"`
+		LineCurrent        int    `xml:"LINE_CURR"`
+		RFCDest            string `xml:"RFCDEST"`
+		AppServer          string `xml:"APPLSERVER"`
+		SystemID           string `xml:"SYSID"`
+		SystemNumber       int    `xml:"SYSNR"`
+		Timestamp          int64  `xml:"TSTMP"`
+		DebuggeeKind       string `xml:"DBGEE_KIND"`
+		IsAttachImpossible string `xml:"IS_ATTACH_IMPOSSIBLE"`
+		IsSameServer       string `xml:"IS_SAME_SERVER"`
+		InstanceName       string `xml:"INSTANCE_NAME"`
+		DumpID             string `xml:"DUMP_ID"`
+		DumpDate           string `xml:"DUMP_DATE"`
+		DumpTime           string `xml:"DUMP_TIME"`
+		DumpHost           string `xml:"DUMP_HOST"`
+		DumpUser           string `xml:"DUMP_UNAME"`
+		DumpClient         string `xml:"DUMP_CLIENT"`
+		DumpURI            string `xml:"DUMP_URI"`
 	}
 
 	type abapResponse struct {
@@ -851,31 +858,31 @@ type DebugAction struct {
 
 // DebugReachedBreakpoint represents a breakpoint that was hit.
 type DebugReachedBreakpoint struct {
-	ID                              string `json:"id"`
-	Kind                            string `json:"kind"`
-	UnresolvableCondition           string `json:"unresolvableCondition,omitempty"`
+	ID                               string `json:"id"`
+	Kind                             string `json:"kind"`
+	UnresolvableCondition            string `json:"unresolvableCondition,omitempty"`
 	UnresolvableConditionErrorOffset string `json:"unresolvableConditionErrorOffset,omitempty"`
 }
 
 // DebugState contains the current debug session state.
 type DebugState struct {
-	IsRFC                       bool           `json:"isRfc"`
-	IsSameSystem                bool           `json:"isSameSystem"`
-	ServerName                  string         `json:"serverName"`
-	DebugSessionID              string         `json:"debugSessionId"`
-	ProcessID                   int            `json:"processId"`
-	IsPostMortem                bool           `json:"isPostMortem"`
-	IsUserAuthorizedForChanges  bool           `json:"isUserAuthorizedForChanges"`
-	DebuggeeSessionID           string         `json:"debuggeeSessionId"`
-	AbapTraceState              string         `json:"abapTraceState"`
-	CanAdvancedTableFeatures    bool           `json:"canAdvancedTableFeatures"`
-	IsNonExclusive              bool           `json:"isNonExclusive"`
-	IsNonExclusiveToggled       bool           `json:"isNonExclusiveToggled"`
-	GuiEditorGuid               string         `json:"guiEditorGuid"`
-	SessionTitle                string         `json:"sessionTitle"`
-	IsSteppingPossible          bool           `json:"isSteppingPossible"`
-	IsTerminationPossible       bool           `json:"isTerminationPossible"`
-	Actions                     []DebugAction  `json:"actions,omitempty"`
+	IsRFC                      bool          `json:"isRfc"`
+	IsSameSystem               bool          `json:"isSameSystem"`
+	ServerName                 string        `json:"serverName"`
+	DebugSessionID             string        `json:"debugSessionId"`
+	ProcessID                  int           `json:"processId"`
+	IsPostMortem               bool          `json:"isPostMortem"`
+	IsUserAuthorizedForChanges bool          `json:"isUserAuthorizedForChanges"`
+	DebuggeeSessionID          string        `json:"debuggeeSessionId"`
+	AbapTraceState             string        `json:"abapTraceState"`
+	CanAdvancedTableFeatures   bool          `json:"canAdvancedTableFeatures"`
+	IsNonExclusive             bool          `json:"isNonExclusive"`
+	IsNonExclusiveToggled      bool          `json:"isNonExclusiveToggled"`
+	GuiEditorGuid              string        `json:"guiEditorGuid"`
+	SessionTitle               string        `json:"sessionTitle"`
+	IsSteppingPossible         bool          `json:"isSteppingPossible"`
+	IsTerminationPossible      bool          `json:"isTerminationPossible"`
+	Actions                    []DebugAction `json:"actions,omitempty"`
 }
 
 // DebugAttachResult contains the result of attaching to a debuggee.
@@ -895,14 +902,14 @@ type DebugStepResult struct {
 // DebugStackEntry represents a single entry in the call stack.
 type DebugStackEntry struct {
 	StackPosition int    `json:"stackPosition"`
-	StackType     string `json:"stackType"`     // ABAP, DYNP, ENHANCEMENT
+	StackType     string `json:"stackType"` // ABAP, DYNP, ENHANCEMENT
 	StackURI      string `json:"stackUri"`
 	ProgramName   string `json:"programName"`
 	IncludeName   string `json:"includeName"`
 	Line          int    `json:"line"`
 	EventType     string `json:"eventType"`
 	EventName     string `json:"eventName"`
-	SourceType    string `json:"sourceType"`    // ABAP, DYNP, ST
+	SourceType    string `json:"sourceType"` // ABAP, DYNP, ST
 	SystemProgram bool   `json:"systemProgram"`
 	IsVit         bool   `json:"isVit"`
 	URI           string `json:"uri"`
@@ -937,26 +944,26 @@ const (
 
 // DebugVariable represents a variable in the debugger.
 type DebugVariable struct {
-	ID               string        `json:"id"`
-	Name             string        `json:"name"`
-	DeclaredTypeName string        `json:"declaredTypeName"`
-	ActualTypeName   string        `json:"actualTypeName"`
-	Kind             string        `json:"kind"`
-	InstantiationKind string       `json:"instantiationKind"`
-	AccessKind       string        `json:"accessKind"`
-	MetaType         DebugMetaType `json:"metaType"`
-	ParameterKind    string        `json:"parameterKind"`
-	Value            string        `json:"value"`
-	HexValue         string        `json:"hexValue,omitempty"`
-	ReadOnly         bool          `json:"readOnly"`
-	TechnicalType    string        `json:"technicalType"`
-	Length           int           `json:"length"`
-	TableBody        string        `json:"tableBody,omitempty"`
-	TableLines       int           `json:"tableLines,omitempty"`
-	IsValueIncomplete bool         `json:"isValueIncomplete"`
-	IsException      bool          `json:"isException"`
-	InheritanceLevel int           `json:"inheritanceLevel,omitempty"`
-	InheritanceClass string        `json:"inheritanceClass,omitempty"`
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	DeclaredTypeName  string        `json:"declaredTypeName"`
+	ActualTypeName    string        `json:"actualTypeName"`
+	Kind              string        `json:"kind"`
+	InstantiationKind string        `json:"instantiationKind"`
+	AccessKind        string        `json:"accessKind"`
+	MetaType          DebugMetaType `json:"metaType"`
+	ParameterKind     string        `json:"parameterKind"`
+	Value             string        `json:"value"`
+	HexValue          string        `json:"hexValue,omitempty"`
+	ReadOnly          bool          `json:"readOnly"`
+	TechnicalType     string        `json:"technicalType"`
+	Length            int           `json:"length"`
+	TableBody         string        `json:"tableBody,omitempty"`
+	TableLines        int           `json:"tableLines,omitempty"`
+	IsValueIncomplete bool          `json:"isValueIncomplete"`
+	IsException       bool          `json:"isException"`
+	InheritanceLevel  int           `json:"inheritanceLevel,omitempty"`
+	InheritanceClass  string        `json:"inheritanceClass,omitempty"`
 }
 
 // DebugVariableHierarchy represents a parent-child relationship between variables.
@@ -1164,30 +1171,30 @@ func parseAttachResponse(data []byte) (*DebugAttachResult, error) {
 	}
 
 	type xmlBreakpoint struct {
-		ID                              string `xml:"id,attr"`
-		Kind                            string `xml:"kind,attr"`
-		UnresolvableCondition           string `xml:"unresolvableCondition,attr"`
+		ID                               string `xml:"id,attr"`
+		Kind                             string `xml:"kind,attr"`
+		UnresolvableCondition            string `xml:"unresolvableCondition,attr"`
 		UnresolvableConditionErrorOffset string `xml:"unresolvableConditionErrorOffset,attr"`
 	}
 
 	type xmlAttach struct {
-		XMLName                    xml.Name        `xml:"attach"`
-		IsRFC                      bool            `xml:"isRfc,attr"`
-		IsSameSystem               bool            `xml:"isSameSystem,attr"`
-		ServerName                 string          `xml:"serverName,attr"`
-		DebugSessionID             string          `xml:"debugSessionId,attr"`
-		ProcessID                  int             `xml:"processId,attr"`
-		IsPostMortem               bool            `xml:"isPostMortem,attr"`
-		IsUserAuthorizedForChanges bool            `xml:"isUserAuthorizedForChanges,attr"`
-		DebuggeeSessionID          string          `xml:"debuggeeSessionId,attr"`
-		AbapTraceState             string          `xml:"abapTraceState,attr"`
-		CanAdvancedTableFeatures   bool            `xml:"canAdvancedTableFeatures,attr"`
-		IsNonExclusive             bool            `xml:"isNonExclusive,attr"`
-		IsNonExclusiveToggled      bool            `xml:"isNonExclusiveToggled,attr"`
-		GuiEditorGuid              string          `xml:"guiEditorGuid,attr"`
-		SessionTitle               string          `xml:"sessionTitle,attr"`
-		IsSteppingPossible         bool            `xml:"isSteppingPossible,attr"`
-		IsTerminationPossible      bool            `xml:"isTerminationPossible,attr"`
+		XMLName                    xml.Name `xml:"attach"`
+		IsRFC                      bool     `xml:"isRfc,attr"`
+		IsSameSystem               bool     `xml:"isSameSystem,attr"`
+		ServerName                 string   `xml:"serverName,attr"`
+		DebugSessionID             string   `xml:"debugSessionId,attr"`
+		ProcessID                  int      `xml:"processId,attr"`
+		IsPostMortem               bool     `xml:"isPostMortem,attr"`
+		IsUserAuthorizedForChanges bool     `xml:"isUserAuthorizedForChanges,attr"`
+		DebuggeeSessionID          string   `xml:"debuggeeSessionId,attr"`
+		AbapTraceState             string   `xml:"abapTraceState,attr"`
+		CanAdvancedTableFeatures   bool     `xml:"canAdvancedTableFeatures,attr"`
+		IsNonExclusive             bool     `xml:"isNonExclusive,attr"`
+		IsNonExclusiveToggled      bool     `xml:"isNonExclusiveToggled,attr"`
+		GuiEditorGuid              string   `xml:"guiEditorGuid,attr"`
+		SessionTitle               string   `xml:"sessionTitle,attr"`
+		IsSteppingPossible         bool     `xml:"isSteppingPossible,attr"`
+		IsTerminationPossible      bool     `xml:"isTerminationPossible,attr"`
 		Actions                    struct {
 			Action []xmlAction `xml:"action"`
 		} `xml:"actions"`
@@ -1238,9 +1245,9 @@ func parseAttachResponse(data []byte) (*DebugAttachResult, error) {
 	// Parse reached breakpoints
 	for _, bp := range resp.ReachedBreakpoints.Breakpoint {
 		result.ReachedBreakpoints = append(result.ReachedBreakpoints, DebugReachedBreakpoint{
-			ID:                              bp.ID,
-			Kind:                            bp.Kind,
-			UnresolvableCondition:           bp.UnresolvableCondition,
+			ID:                               bp.ID,
+			Kind:                             bp.Kind,
+			UnresolvableCondition:            bp.UnresolvableCondition,
 			UnresolvableConditionErrorOffset: bp.UnresolvableConditionErrorOffset,
 		})
 	}
@@ -1282,25 +1289,25 @@ func parseStepResponse(data []byte) (*DebugStepResult, error) {
 	}
 
 	type xmlStep struct {
-		XMLName                    xml.Name     `xml:"step"`
-		IsRFC                      bool         `xml:"isRfc,attr"`
-		IsSameSystem               bool         `xml:"isSameSystem,attr"`
-		ServerName                 string       `xml:"serverName,attr"`
-		DebugSessionID             string       `xml:"debugSessionId,attr"`
-		ProcessID                  int          `xml:"processId,attr"`
-		IsPostMortem               bool         `xml:"isPostMortem,attr"`
-		IsUserAuthorizedForChanges bool         `xml:"isUserAuthorizedForChanges,attr"`
-		DebuggeeSessionID          string       `xml:"debuggeeSessionId,attr"`
-		AbapTraceState             string       `xml:"abapTraceState,attr"`
-		CanAdvancedTableFeatures   bool         `xml:"canAdvancedTableFeatures,attr"`
-		IsNonExclusive             bool         `xml:"isNonExclusive,attr"`
-		IsNonExclusiveToggled      bool         `xml:"isNonExclusiveToggled,attr"`
-		GuiEditorGuid              string       `xml:"guiEditorGuid,attr"`
-		SessionTitle               string       `xml:"sessionTitle,attr"`
-		IsSteppingPossible         bool         `xml:"isSteppingPossible,attr"`
-		IsTerminationPossible      bool         `xml:"isTerminationPossible,attr"`
-		IsDebuggeeChanged          bool         `xml:"isDebuggeeChanged,attr"`
-		Settings                   xmlSettings  `xml:"settings"`
+		XMLName                    xml.Name    `xml:"step"`
+		IsRFC                      bool        `xml:"isRfc,attr"`
+		IsSameSystem               bool        `xml:"isSameSystem,attr"`
+		ServerName                 string      `xml:"serverName,attr"`
+		DebugSessionID             string      `xml:"debugSessionId,attr"`
+		ProcessID                  int         `xml:"processId,attr"`
+		IsPostMortem               bool        `xml:"isPostMortem,attr"`
+		IsUserAuthorizedForChanges bool        `xml:"isUserAuthorizedForChanges,attr"`
+		DebuggeeSessionID          string      `xml:"debuggeeSessionId,attr"`
+		AbapTraceState             string      `xml:"abapTraceState,attr"`
+		CanAdvancedTableFeatures   bool        `xml:"canAdvancedTableFeatures,attr"`
+		IsNonExclusive             bool        `xml:"isNonExclusive,attr"`
+		IsNonExclusiveToggled      bool        `xml:"isNonExclusiveToggled,attr"`
+		GuiEditorGuid              string      `xml:"guiEditorGuid,attr"`
+		SessionTitle               string      `xml:"sessionTitle,attr"`
+		IsSteppingPossible         bool        `xml:"isSteppingPossible,attr"`
+		IsTerminationPossible      bool        `xml:"isTerminationPossible,attr"`
+		IsDebuggeeChanged          bool        `xml:"isDebuggeeChanged,attr"`
+		Settings                   xmlSettings `xml:"settings"`
 		Actions                    struct {
 			Action []xmlAction `xml:"action"`
 		} `xml:"actions"`
@@ -1618,11 +1625,11 @@ func (v *DebugVariable) IsComplexType() bool {
 
 // DebugBatchOperation represents a single operation in a batch request.
 type DebugBatchOperation struct {
-	Method      string            // HTTP method (POST, GET)
-	Path        string            // Path with query params (e.g., "/sap/bc/adt/debugger?method=stepOver")
-	ContentType string            // Content-Type header (optional)
-	Accept      string            // Accept header
-	Body        string            // Request body (optional)
+	Method      string // HTTP method (POST, GET)
+	Path        string // Path with query params (e.g., "/sap/bc/adt/debugger?method=stepOver")
+	ContentType string // Content-Type header (optional)
+	Accept      string // Accept header
+	Body        string // Request body (optional)
 }
 
 // DebugBatchResponse represents a single response from a batch request.
@@ -1790,13 +1797,13 @@ func (c *Client) DebuggerStepWithBatch(ctx context.Context, stepType DebugStepTy
 			Path:        "/sap/bc/adt/debugger?method=getChildVariables",
 			Accept:      "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.ChildVariables",
 			ContentType: "application/vnd.sap.as+xml; charset=UTF-8; dataname=com.sap.adt.debugger.ChildVariables",
-			Body: `<?xml version="1.0" encoding="UTF-8" ?><asx:abap version="1.0" xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID></STPDA_ADT_VARIABLE_HIERARCHY></HIERARCHIES></DATA></asx:values></asx:abap>`,
+			Body:        `<?xml version="1.0" encoding="UTF-8" ?><asx:abap version="1.0" xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID></STPDA_ADT_VARIABLE_HIERARCHY></HIERARCHIES></DATA></asx:values></asx:abap>`,
 		},
 		{
 			Path:        "/sap/bc/adt/debugger?method=getVariables",
 			Accept:      "application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.Variables",
 			ContentType: "application/vnd.sap.as+xml; charset=UTF-8; dataname=com.sap.adt.debugger.Variables",
-			Body: `<?xml version="1.0" encoding="UTF-8" ?><asx:abap version="1.0" xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><STPDA_ADT_VARIABLE><ID>SY-SUBRC</ID></STPDA_ADT_VARIABLE></DATA></asx:values></asx:abap>`,
+			Body:        `<?xml version="1.0" encoding="UTF-8" ?><asx:abap version="1.0" xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><STPDA_ADT_VARIABLE><ID>SY-SUBRC</ID></STPDA_ADT_VARIABLE></DATA></asx:values></asx:abap>`,
 		},
 	}
 

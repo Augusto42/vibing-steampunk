@@ -8,6 +8,7 @@ CLASS zcl_vsp_git_service DEFINITION
 
   PUBLIC SECTION.
     INTERFACES zif_vsp_service.
+    CLASS-METHODS class_constructor.
 
   PRIVATE SECTION.
     TYPES:
@@ -70,10 +71,23 @@ CLASS zcl_vsp_git_service DEFINITION
                 iv_error         TYPE string OPTIONAL
       RETURNING VALUE(rs_response) TYPE zif_vsp_service=>ty_response.
 
+    CLASS-DATA gv_pcre_supported TYPE abap_bool.
+
 ENDCLASS.
 
 
 CLASS zcl_vsp_git_service IMPLEMENTATION.
+
+  METHOD class_constructor.
+    " Probe for PCRE support: \d was introduced in ABAP 7.55 (POSIX ERE on older releases).
+    TRY.
+        DATA lv_pcre_probe TYPE string.
+        FIND REGEX '\d' IN '1' SUBMATCHES lv_pcre_probe.
+        gv_pcre_supported = xsdbool( sy-subrc = 0 AND lv_pcre_probe = '1' ).
+      CATCH cx_root.
+        gv_pcre_supported = abap_false.
+    ENDTRY.
+  ENDMETHOD.
 
   METHOD zif_vsp_service~get_domain.
     rv_domain = 'git'.
@@ -103,11 +117,18 @@ CLASS zcl_vsp_git_service IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_get_types.
-    DATA: lt_types     TYPE zif_abapgit_objects=>ty_types_tt,
-          lv_types_json TYPE string.
+    DATA lv_types_json TYPE string.
 
     TRY.
-        lt_types = zcl_abapgit_objects=>supported_list( ).
+        " The table type moved between abapGit releases: older ones declare it
+        " inside ZCL_ABAPGIT_OBJECTS, newer ones in ZIF_ABAPGIT_OBJECTS. Naming
+        " either spelling makes this class refuse to compile on half the
+        " systems it is installed on — and because a syntax error in one class
+        " takes the whole APC application down, that failure is not local to
+        " this method: it costs the debugger, RFC over the tunnel and
+        " RunReport. Inferring the type asks the method what it returns and
+        " works on both.
+        DATA(lt_types) = zcl_abapgit_objects=>supported_list( ).
 
         " Build JSON array of types
         LOOP AT lt_types INTO DATA(lv_type).
@@ -152,12 +173,18 @@ CLASS zcl_vsp_git_service IMPLEMENTATION.
         " Extract package names from JSON params
         " Format: {"packages":["$PKG1","$PKG2"],"includeSubpackages":true}
         DATA lv_pkg TYPE devclass.
+        DATA lv_pattern TYPE string.
 
         " Check for packages array
-        FIND PCRE '"packages"\s*:\s*\[([^\]]*)\]' IN lv_params SUBMATCHES DATA(lv_pkgs_str).
+        IF gv_pcre_supported = abap_true.
+          lv_pattern = '"packages"\s*:\s*\[([^\]]*)\]'.
+        ELSE.
+          lv_pattern = '"packages"[[:space:]]*:[[:space:]]*\[([^\]]*)\]'.
+        ENDIF.
+        FIND REGEX lv_pattern IN lv_params SUBMATCHES DATA(lv_pkgs_str).
         IF sy-subrc = 0.
           " Parse comma-separated quoted package names
-          FIND ALL OCCURRENCES OF PCRE '"([^"]+)"' IN lv_pkgs_str
+          FIND ALL OCCURRENCES OF REGEX '"([^"]+)"' IN lv_pkgs_str
             RESULTS DATA(lt_matches).
 
           LOOP AT lt_matches INTO DATA(ls_match).
@@ -170,14 +197,24 @@ CLASS zcl_vsp_git_service IMPLEMENTATION.
         ENDIF.
 
         " Check for includeSubpackages flag
-        FIND PCRE '"includeSubpackages"\s*:\s*(true|false)' IN lv_params SUBMATCHES DATA(lv_sub_flag).
+        IF gv_pcre_supported = abap_true.
+          lv_pattern = '"includeSubpackages"\s*:\s*(true|false)'.
+        ELSE.
+          lv_pattern = '"includeSubpackages"[[:space:]]*:[[:space:]]*(true|false)'.
+        ENDIF.
+        FIND REGEX lv_pattern IN lv_params SUBMATCHES DATA(lv_sub_flag).
         lv_include_sub = xsdbool( lv_sub_flag = 'true' OR lv_sub_flag IS INITIAL ).
 
         " Check for objects array (alternative to packages)
-        FIND PCRE '"objects"\s*:\s*\[([^\]]*)\]' IN lv_params SUBMATCHES DATA(lv_objs_str).
+        IF gv_pcre_supported = abap_true.
+          lv_pattern = '"objects"\s*:\s*\[([^\]]*)\]'.
+        ELSE.
+          lv_pattern = '"objects"[[:space:]]*:[[:space:]]*\[([^\]]*)\]'.
+        ENDIF.
+        FIND REGEX lv_pattern IN lv_params SUBMATCHES DATA(lv_objs_str).
         IF sy-subrc = 0 AND lt_packages IS INITIAL.
           " Parse objects like: {"type":"CLAS","name":"ZCL_TEST"}
-          FIND ALL OCCURRENCES OF PCRE '\{"type":"([^"]+)","name":"([^"]+)"\}' IN lv_objs_str
+          FIND ALL OCCURRENCES OF REGEX '\{"type":"([^"]+)","name":"([^"]+)"\}' IN lv_objs_str
             RESULTS DATA(lt_obj_matches).
 
           LOOP AT lt_obj_matches INTO DATA(ls_obj_match).

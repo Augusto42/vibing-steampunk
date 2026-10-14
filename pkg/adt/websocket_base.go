@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,12 +25,8 @@ type BaseWebSocketClient struct {
 	client   string
 	user     string
 	password string
+	cookies  map[string]string
 	insecure bool
-
-	// cookies, if non-empty, are attached to the WebSocket upgrade via a
-	// cookie jar. Required for SSO/browser-auth flows where no plaintext
-	// password is available for Basic auth.
-	cookies map[string]string
 
 	conn      *websocket.Conn
 	sessionID string
@@ -47,6 +45,45 @@ type BaseWebSocketClient struct {
 
 	// Optional callback when connection is lost
 	onDisconnect func()
+}
+
+// SetCookies makes the client authenticate with a browser session rather than a
+// password.
+//
+// The upgrade that opens a WebSocket is an ordinary HTTP request, so it carries
+// a cookie like any other — which is the only thing that lets these features
+// reach a system where single sign-on is the way in and no password exists to
+// send. Without it the client had exactly one credential it could offer, and
+// systems that cannot supply that one were shut out of every WebSocket feature
+// for a reason that had nothing to do with the protocol.
+func (c *BaseWebSocketClient) SetCookies(cookies map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cookies = cookies
+}
+
+// hasCookieAuth reports whether a session was supplied.
+func (c *BaseWebSocketClient) hasCookieAuth() bool { return len(c.cookies) > 0 }
+
+// cookieHeader renders the session as a Cookie header value.
+func (c *BaseWebSocketClient) cookieHeader() string {
+	parts := make([]string, 0, len(c.cookies))
+	for name, value := range c.cookies {
+		parts = append(parts, name+"="+value)
+	}
+	// A stable order keeps the header reproducible, which matters when someone
+	// is comparing two captures to work out why a logon behaved differently.
+	sort.Strings(parts)
+	return strings.Join(parts, "; ")
+}
+
+// applyAuth puts this client's credential on an outgoing request's headers.
+func (c *BaseWebSocketClient) applyAuth(header http.Header) {
+	if c.hasCookieAuth() {
+		header.Set("Cookie", c.cookieHeader())
+		return
+	}
+	header.Set("Authorization", basicAuth(c.user, c.password))
 }
 
 // NewBaseWebSocketClient creates a new base WebSocket client.
@@ -88,49 +125,20 @@ func (c *BaseWebSocketClient) Connect(ctx context.Context) error {
 		InsecureSkipVerify: c.insecure,
 	}
 
-	hasBasic := c.user != "" && c.password != ""
-	hasCookies := len(c.cookies) > 0
+	header := http.Header{}
+	c.applyAuth(header)
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 30 * time.Second,
-		TLSClientConfig:  tlsConfig,
-	}
+	// Try 1: Direct Basic Auth (works on most SAP systems)
+	dialer := newWebSocketDialer(tlsConfig)
 
-	// If cookies are provided, prefer them: build a jar and dial with no
-	// Authorization header. This is the SSO/browser-auth path.
-	var conn *websocket.Conn
-	var resp *http.Response
-	if hasCookies {
+	conn, resp, err := dialer.DialContext(ctx, wsURL, header)
+
+	// Try 2: If 401, pre-authenticate to get session cookies first.
+	// Some SAP systems reject standalone Basic Auth on WebSocket upgrade
+	// but accept it on regular HTTP to issue session cookies.
+	if err != nil && resp != nil && resp.StatusCode == http.StatusUnauthorized && !c.hasCookieAuth() {
 		jar, _ := cookiejar.New(nil)
-		cookieURL := &url.URL{Scheme: u.Scheme, Host: u.Host}
-		httpCookies := make([]*http.Cookie, 0, len(c.cookies))
-		for name, value := range c.cookies {
-			httpCookies = append(httpCookies, &http.Cookie{Name: name, Value: value})
-		}
-		jar.SetCookies(cookieURL, httpCookies)
-		dialer.Jar = jar
-		conn, resp, err = dialer.DialContext(ctx, wsURL, nil)
-	} else if hasBasic {
-		// Try 1: Direct Basic Auth (works on most SAP systems)
-		header := http.Header{}
-		header.Set("Authorization", basicAuth(c.user, c.password))
-		conn, resp, err = dialer.DialContext(ctx, wsURL, header)
-	} else {
-		c.mu.Unlock()
-		return fmt.Errorf("no credentials available for WebSocket dial: need cookies or basic-auth")
-	}
-
-	// Try 2: On 401 with Basic-only path, pre-authenticate to get session
-	// cookies via REST first. Some SAP systems reject standalone Basic Auth
-	// on WebSocket upgrade but accept it on regular HTTP to issue session
-	// cookies. Skipped when we already used cookies (those are authoritative).
-	if err != nil && resp != nil && resp.StatusCode == http.StatusUnauthorized && !hasCookies && hasBasic {
-		jar, _ := cookiejar.New(nil)
-		preAuthClient := &http.Client{
-			Jar:       jar,
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
-			Timeout:   30 * time.Second,
-		}
+		preAuthClient := newPreAuthHTTPClient(jar, tlsConfig)
 
 		authURL := fmt.Sprintf("%s/sap/bc/adt/core/discovery?sap-client=%s", c.baseURL, c.client)
 		authReq, authErr := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
@@ -210,15 +218,6 @@ func (c *BaseWebSocketClient) IsConnected() bool {
 // GetUser returns the username.
 func (c *BaseWebSocketClient) GetUser() string {
 	return c.user
-}
-
-// SetCookies attaches cookies (as name→value pairs) to be used for the
-// WebSocket upgrade. Required for SSO/browser-auth flows. Must be called
-// before Connect; calls after Connect have no effect on the active dial.
-func (c *BaseWebSocketClient) SetCookies(cookies map[string]string) {
-	c.mu.Lock()
-	c.cookies = cookies
-	c.mu.Unlock()
 }
 
 // readMessages reads messages from WebSocket and routes them.
@@ -444,4 +443,32 @@ func base64Encode(data []byte) string {
 		}
 	}
 	return string(result)
+}
+
+// newPreAuthHTTPClient builds the transient client that fetches SAP session
+// cookies when the WebSocket upgrade answers 401. It drives its own jar so the
+// cookies can be handed to the dialer's retry, and it resolves a proxy from the
+// environment the way the dialer and the ADT HTTP client do — behind a
+// corporate proxy the pre-auth request used to be the one leg that bypassed it.
+func newPreAuthHTTPClient(jar http.CookieJar, tlsConfig *tls.Config) *http.Client {
+	return &http.Client{
+		Jar: jar,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+			Proxy:           http.ProxyFromEnvironment,
+		},
+		Timeout: 30 * time.Second,
+	}
+}
+
+// newWebSocketDialer builds the dialer used for the ZADT_VSP upgrade. It honours
+// HTTP_PROXY/HTTPS_PROXY/NO_PROXY exactly as the ADT HTTP client does — behind a
+// corporate proxy the upgrade used to fail with no hint why, while every plain
+// HTTP call went through.
+func newWebSocketDialer(tlsConfig *tls.Config) websocket.Dialer {
+	return websocket.Dialer{
+		HandshakeTimeout: 30 * time.Second,
+		TLSClientConfig:  tlsConfig,
+		Proxy:            http.ProxyFromEnvironment,
+	}
 }

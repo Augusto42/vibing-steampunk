@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/oisee/vibing-steampunk/embedded/deps"
+	installer "github.com/oisee/vibing-steampunk/internal/install"
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 	"github.com/spf13/cobra"
 )
@@ -83,17 +84,13 @@ func runCopy(cmd *cobra.Command, args []string) error {
 	var sourceName string
 
 	if copyEmbedded != "" {
-		// Use embedded dependency
-		zipData = deps.GetDependencyZIP(copyEmbedded)
-		if zipData == nil {
-			available := deps.GetAvailableDependencies()
-			var names []string
-			for _, d := range available {
-				if d.Available {
-					names = append(names, d.Name)
-				}
-			}
-			return fmt.Errorf("embedded dependency '%s' not found. Available: %s", copyEmbedded, strings.Join(names, ", "))
+		// Use embedded dependency. RequireDependencyZIP refuses an archive that
+		// is embedded but empty, which a nil check let through — and an empty
+		// archive unpacks to nothing and reports success.
+		var derr error
+		zipData, derr = deps.RequireDependencyZIP(copyEmbedded)
+		if derr != nil {
+			return derr
 		}
 		sourceName = copyEmbedded + " (embedded)"
 	} else {
@@ -192,12 +189,12 @@ func runCopy(cmd *cobra.Command, args []string) error {
 
 	// Ensure package exists
 	fmt.Printf("Checking package %s...\n", copyToPackage)
-	created, err := ensureCopyTargetPackage(ctx, client, copyToPackage, sourceName)
+	created, err := installer.EnsurePackage(ctx, client, copyToPackage, fmt.Sprintf("Deployed from %s", sourceName))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to ensure target package: %w", err)
 	}
 	if created {
-		fmt.Printf("Created package %s\n", copyToPackage)
+		fmt.Printf("Created and verified package %s\n", copyToPackage)
 	}
 
 	// Deploy objects
@@ -229,39 +226,14 @@ func runCopy(cmd *cobra.Command, args []string) error {
 		fmt.Println("\nNote: Unsupported or incomplete object types were skipped before deployment.")
 	}
 
-	return deploymentSummaryError(failed)
+	return deploymentSummaryError(failed, skipped)
 }
 
-func deploymentSummaryError(failed int) error {
-	if failed == 0 {
+func deploymentSummaryError(failed, skipped int) error {
+	if failed == 0 && skipped == 0 {
 		return nil
 	}
-	return fmt.Errorf("deployment completed with %d failed object(s)", failed)
-}
-
-type copyPackageClient interface {
-	PackageExists(context.Context, string) (bool, error)
-	CreateObject(context.Context, adt.CreateObjectOptions) error
-}
-
-func ensureCopyTargetPackage(ctx context.Context, client copyPackageClient, packageName, sourceName string) (bool, error) {
-	exists, err := client.PackageExists(ctx, packageName)
-	if err != nil {
-		return false, fmt.Errorf("failed to verify target package: %w", err)
-	}
-	if exists {
-		return false, nil
-	}
-
-	err = client.CreateObject(ctx, adt.CreateObjectOptions{
-		ObjectType:  adt.ObjectTypePackage,
-		Name:        packageName,
-		Description: fmt.Sprintf("Deployed from %s", sourceName),
-	})
-	if err != nil {
-		return false, fmt.Errorf("failed to create package: %w", err)
-	}
-	return true, nil
+	return fmt.Errorf("deployment incomplete: %d failed and %d skipped object(s)", failed, skipped)
 }
 
 func copyObjectSupported(obj deps.DeploymentObject) (bool, string) {
@@ -288,7 +260,7 @@ func checkWebSocketAvailable(client *adt.Client, ctx context.Context) bool {
 	return results[0].Name == "ZCL_VSP_APC_HANDLER"
 }
 
-// deployObject deploys a single object using ADT native or WebSocket.
+// deployObject deploys a single object using ADT native.
 func deployObject(ctx context.Context, client *adt.Client, obj deps.DeploymentObject, packageName string) error {
 	// ADT Native deployment
 	switch obj.Type {
@@ -324,21 +296,7 @@ func deployProgram(ctx context.Context, client *adt.Client, obj deps.DeploymentO
 	if err != nil {
 		return err
 	}
-	return validateCopyWriteResult(result)
-}
-
-func validateCopyWriteResult(result *adt.WriteSourceResult) error {
-	if result == nil {
-		return fmt.Errorf("WriteSource returned no result")
-	}
-	if result.Success {
-		return nil
-	}
-	message := strings.TrimSpace(result.Message)
-	if message == "" {
-		message = "operation returned success=false without a diagnostic"
-	}
-	return fmt.Errorf("WriteSource failed: %s", message)
+	return adt.WriteSourceResultError(result)
 }
 
 func deployClass(ctx context.Context, client *adt.Client, obj deps.DeploymentObject, packageName string) error {
@@ -357,11 +315,7 @@ func deployClass(ctx context.Context, client *adt.Client, obj deps.DeploymentObj
 	if err != nil {
 		return err
 	}
-	if err := validateCopyWriteResult(result); err != nil {
-		return err
-	}
-
-	return nil
+	return adt.WriteSourceResultError(result)
 }
 
 func deployInterface(ctx context.Context, client *adt.Client, obj deps.DeploymentObject, packageName string) error {
@@ -376,7 +330,7 @@ func deployInterface(ctx context.Context, client *adt.Client, obj deps.Deploymen
 	if err != nil {
 		return err
 	}
-	return validateCopyWriteResult(result)
+	return adt.WriteSourceResultError(result)
 }
 
 func deployDDLS(ctx context.Context, client *adt.Client, obj deps.DeploymentObject, packageName string) error {
@@ -391,7 +345,7 @@ func deployDDLS(ctx context.Context, client *adt.Client, obj deps.DeploymentObje
 	if err != nil {
 		return err
 	}
-	return validateCopyWriteResult(result)
+	return adt.WriteSourceResultError(result)
 }
 
 func deployBDEF(ctx context.Context, client *adt.Client, obj deps.DeploymentObject, packageName string) error {
@@ -406,7 +360,7 @@ func deployBDEF(ctx context.Context, client *adt.Client, obj deps.DeploymentObje
 	if err != nil {
 		return err
 	}
-	return validateCopyWriteResult(result)
+	return adt.WriteSourceResultError(result)
 }
 
 func deploySRVD(ctx context.Context, client *adt.Client, obj deps.DeploymentObject, packageName string) error {
@@ -421,5 +375,5 @@ func deploySRVD(ctx context.Context, client *adt.Client, obj deps.DeploymentObje
 	if err != nil {
 		return err
 	}
-	return validateCopyWriteResult(result)
+	return adt.WriteSourceResultError(result)
 }

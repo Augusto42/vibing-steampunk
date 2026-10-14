@@ -51,9 +51,40 @@ type Config struct {
 	// TerminalID for debugger session (shared with SAP GUI for cross-tool debugging)
 	TerminalID string
 
+	// Cache keeps successful GET responses for CacheTTL and hands them back
+	// until a modifying request empties it. CacheStore is where they live;
+	// nil means in memory, for the life of the process.
+	Cache      bool
+	CacheTTL   time.Duration
+	CacheStore ResponseStore
+
 	// ReauthFunc is called on 401 to re-authenticate (e.g., re-run SAML dance).
 	// Returns fresh cookies for the SAP system. Only used when HasBasicAuth() is false.
 	ReauthFunc func(ctx context.Context) (map[string]string, error)
+
+	// ReauthTimeout caps one re-authentication attempt. Zero uses the default,
+	// which suits a re-auth that runs unattended. Raise it where the flow may
+	// stop to ask a human something — a browser sign-in with a second factor
+	// takes far longer than any machine-to-machine handshake.
+	ReauthTimeout time.Duration
+
+	// ProxyContextIDGuard enables a workaround for session-holding proxy
+	// chains such as the SAP Business Application Studio destination proxy
+	// (HTTP_PROXY=127.0.0.1:8887 → secure-outbound-connectivity → BTP
+	// destination → Cloud Connector). Verified against BAS: the chain keeps
+	// the SAP sap-contextid itself — a live Set-Cookie for it never reaches
+	// the client, deletion cookies do — and injects the stored context into
+	// every request that carries no Cookie header. A stateless request served
+	// in that context ends it on the SAP side, after which every following
+	// request fails with ICMENOSESSION and the chain never recovers on its
+	// own. The ICM honours the first sap-contextid in the Cookie header, so an
+	// explicit empty "sap-contextid=" suppresses the injection. When enabled:
+	// stateless requests carry that empty cookie (the stateful context
+	// survives), the CSRF probe and every LOCK open a fresh stateful context
+	// with it (the chain re-learns the live one from the response), and after
+	// UNLOCK a stateless probe without the cookie retires the context.
+	// Also enabled via SAP_PROXY_CONTEXTID_GUARD=true.
+	ProxyContextIDGuard bool
 }
 
 // Option is a functional option for configuring the ADT client.
@@ -63,6 +94,24 @@ type Option func(*Config)
 func WithClient(client string) Option {
 	return func(c *Config) {
 		c.Client = client
+	}
+}
+
+// WithCache turns the response cache on. ttl 0 means DefaultCacheTTL.
+func WithCache(ttl time.Duration) Option {
+	return func(c *Config) {
+		c.Cache = true
+		c.CacheTTL = ttl
+	}
+}
+
+// WithCacheStore turns the cache on with a store of the caller's choosing,
+// such as pkg/cache's SQLite one that survives the process.
+func WithCacheStore(store ResponseStore, ttl time.Duration) Option {
+	return func(c *Config) {
+		c.Cache = true
+		c.CacheTTL = ttl
+		c.CacheStore = store
 	}
 }
 
@@ -77,6 +126,14 @@ func WithLanguage(lang string) Option {
 func WithInsecureSkipVerify() Option {
 	return func(c *Config) {
 		c.InsecureSkipVerify = true
+	}
+}
+
+// WithProxyContextIDGuard enables the session-holding-proxy workaround
+// (see Config.ProxyContextIDGuard).
+func WithProxyContextIDGuard() Option {
+	return func(c *Config) {
+		c.ProxyContextIDGuard = true
 	}
 }
 
@@ -160,6 +217,14 @@ func WithAllowedTransports(transports ...string) Option {
 	}
 }
 
+// WithTransportChoice sets how a write with no request named picks one:
+// "auto" (the default) or "off".
+func WithTransportChoice(mode string) Option {
+	return func(c *Config) {
+		c.Safety.TransportChoice = mode
+	}
+}
+
 // WithAllowTransportableEdits enables editing objects that require transport requests.
 // By default, only local objects ($TMP, $* packages) can be edited.
 // When enabled, users can provide transport parameters to EditSource/WriteSource.
@@ -217,6 +282,13 @@ func WithReauthFunc(f func(ctx context.Context) (map[string]string, error)) Opti
 	}
 }
 
+// WithReauthTimeout caps a single re-authentication attempt.
+func WithReauthTimeout(d time.Duration) Option {
+	return func(c *Config) {
+		c.ReauthTimeout = d
+	}
+}
+
 // WithTerminalID sets the debugger terminal ID.
 // Use the same ID as SAP GUI to enable cross-tool breakpoint sharing.
 // SAP GUI stores this in: Windows Registry HKCU\Software\SAP\ABAP Debugging\TerminalID
@@ -244,17 +316,37 @@ func (c *Config) NewHTTPClient() *http.Client {
 		Timeout:   c.Timeout,
 	}
 
-	// Preserve Authorization header across redirects.
-	// Go's default strips it per RFC 7235 §4.2, but SAP BTP/Cloud
-	// authentication flows require it to survive redirects.
-	// Without this, BTP users get 401 even though curl works (issue #90).
+	// Preserve ADT-critical headers across redirects.
+	//
+	// Go's default strips Authorization / WWW-Authenticate / Cookie / Cookie2
+	// on cross-origin redirects per RFC 7235 §4.2 — SAP BTP/Cloud SAML flows
+	// need Authorization back, otherwise the IdP dance drops it and the user
+	// gets 401 even though curl works (issue #90).
+	//
+	// Custom headers like X-CSRF-Token and X-sap-adt-sessiontype are *not*
+	// in Go's sensitive-headers list, so Go technically forwards them by
+	// default. We re-set them explicitly anyway for two reasons:
+	//   - defensive: guards against any Go version or middleware tweak that
+	//     decides to strip custom headers on its own;
+	//   - intent: makes it obvious in the code that these two headers are
+	//     load-bearing for the lock→write→unlock ADT sequence. If either
+	//     goes missing across a redirect, the second hop hits SAP with a
+	//     fresh (stateless) session-type or a missing CSRF token, and the
+	//     lock handle / mutation is rejected.
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("too many redirects")
 		}
 		if len(via) > 0 {
-			if auth := via[0].Header.Get("Authorization"); auth != "" {
+			first := via[0]
+			if auth := first.Header.Get("Authorization"); auth != "" {
 				req.Header.Set("Authorization", auth)
+			}
+			if csrf := first.Header.Get("X-CSRF-Token"); csrf != "" {
+				req.Header.Set("X-CSRF-Token", csrf)
+			}
+			if st := first.Header.Get("X-sap-adt-sessiontype"); st != "" {
+				req.Header.Set("X-sap-adt-sessiontype", st)
 			}
 		}
 		return nil

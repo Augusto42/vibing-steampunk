@@ -8,9 +8,7 @@ import (
 )
 
 func TestGenerateRecordingIDUniqueUnderBurst(t *testing.T) {
-	const goroutines = 16
-	const idsPerGoroutine = 250
-
+	const goroutines, idsPerGoroutine = 16, 250
 	ids := make(chan string, goroutines*idsPerGoroutine)
 	var wg sync.WaitGroup
 	for range goroutines {
@@ -24,11 +22,10 @@ func TestGenerateRecordingIDUniqueUnderBurst(t *testing.T) {
 	}
 	wg.Wait()
 	close(ids)
-
 	seen := make(map[string]struct{}, goroutines*idsPerGoroutine)
 	for id := range ids {
 		if _, exists := seen[id]; exists {
-			t.Fatalf("duplicate recording ID generated: %s", id)
+			t.Fatalf("duplicate recording ID: %s", id)
 		}
 		seen[id] = struct{}{}
 	}

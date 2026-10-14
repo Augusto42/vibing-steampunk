@@ -27,7 +27,7 @@ import (
 //   - If tool is explicitly enabled (true), it WILL be registered (overrides focused mode)
 //   - If tool is not in config, mode/disabledGroups rules apply
 func (s *Server) registerTools(mode string, disabledGroups string, toolsConfig map[string]bool) {
-	// Hyperfocused mode: single universal SAP tool
+	// Hyperfocused mode: the universal tool, and nothing else.
 	if mode == "hyperfocused" {
 		s.registerUniversalTool()
 		return
@@ -65,6 +65,22 @@ func (s *Server) registerTools(mode string, disabledGroups string, toolsConfig m
 		return focusedTools[toolName] // Focused mode: only whitelisted tools (except disabled)
 	}
 
+	// The universal tool is registered in every mode, not only hyperfocused.
+	//
+	// It used to be hyperfocused-only, which meant an agent in focused or
+	// expert could not reach a single one of the thirty-eight `analyze` types:
+	// eight analysis handlers, every post-mortem type and every AMDP target are
+	// routed through SAP() and registered as tools nowhere. Two of the three
+	// modes advertised a capability surface that was missing a third of itself,
+	// and nothing said so — the same disease as a tool whitelisted behind a
+	// registration function nobody calls.
+	//
+	// It goes through shouldRegister like everything else, so a deployment that
+	// wants it gone can still turn it off by name.
+	if shouldRegister("SAP") {
+		s.registerUniversalTool()
+	}
+
 	// Register all tools
 	s.registerUnifiedTools(shouldRegister)
 	s.registerReadTools(shouldRegister)
@@ -90,6 +106,7 @@ func (s *Server) registerTools(mode string, disabledGroups string, toolsConfig m
 	s.registerVersionHistoryTools(shouldRegister)
 	s.registerTestingQualityTools(shouldRegister)
 	s.registerI18NTools(shouldRegister)
+	s.registerIAMTools(shouldRegister)
 
 	// Register tool aliases for common operations
 	s.registerToolAliases(shouldRegister)
@@ -192,7 +209,10 @@ func (s *Server) registerReadTools(shouldRegister func(string) bool) {
 				mcp.Description("Name of the ABAP table"),
 			),
 			mcp.WithNumber("max_rows",
-				mcp.Description("Maximum number of rows to retrieve (default 100). Use this instead of SQL LIMIT clause"),
+				mcp.Description("Maximum number of rows to retrieve (default 100). Ignored if all_rows is true. Use this instead of SQL LIMIT clause"),
+			),
+			mcp.WithBoolean("all_rows",
+				mcp.Description("Set true to retrieve every matching row, ignoring max_rows and the 100-row default. Prefer this over max_rows: 0 for \"all rows\" — MCP clients may not transmit 0 or negative numbers reliably; a boolean has no such ambiguity."),
 			),
 			mcp.WithString("sql_query",
 				mcp.Description("Optional ABAP SQL SELECT statement. Uses ABAP syntax: ASCENDING/DESCENDING work, ASC/DESC fail. Example: SELECT * FROM T000 WHERE MANDT = '001' ORDER BY MANDT DESCENDING"),
@@ -214,7 +234,10 @@ func (s *Server) registerReadTools(shouldRegister func(string) bool) {
 				mcp.Description("ABAP SQL query. Example: SELECT carrid, COUNT(*) as cnt FROM sflight GROUP BY carrid ORDER BY cnt DESCENDING. Note: ASC/DESC keywords fail - use ASCENDING/DESCENDING"),
 			),
 			mcp.WithNumber("max_rows",
-				mcp.Description("Maximum number of rows to retrieve (default 100). Use this instead of SQL LIMIT clause"),
+				mcp.Description("Maximum number of rows to retrieve (default 100). Ignored if all_rows is true. Use this instead of SQL LIMIT clause"),
+			),
+			mcp.WithBoolean("all_rows",
+				mcp.Description("Set true to retrieve every matching row, ignoring max_rows and the 100-row default. Prefer this over max_rows: 0 for \"all rows\" — MCP clients may not transmit 0 or negative numbers reliably; a boolean has no such ambiguity."),
 			),
 		), s.handleRunQuery)
 	}
@@ -358,21 +381,35 @@ func (s *Server) registerSystemTools(shouldRegister func(string) bool) {
 
 // registerAnalysisTools registers code analysis infrastructure tools.
 func (s *Server) registerAnalysisTools(shouldRegister func(string) bool) {
+	// The four call-graph tools below name their source in their own
+	// descriptions, and that is deliberate. They used to say "call graph" and
+	// mean /sap/bc/adt/cai/callgraph, a resource that exists on no release we
+	// have checked; an agent had no way to know the empty answer it got was a
+	// missing resource rather than an unused object. The two sources that do
+	// answer have different strengths and different blind spots, so the tool
+	// says which one spoke.
+	//
+	// object_uri is no longer required: an agent that knows the object by name
+	// should not have to build a URI to ask about it.
 	if shouldRegister("GetCallGraph") {
 		s.mcpServer.AddTool(mcp.NewTool("GetCallGraph",
-			mcp.WithDescription("Get call hierarchy for methods/functions. Shows callers or callees of an ABAP object."),
+			mcp.WithDescription("Who calls this ABAP object, and what it calls. 'callers' reads the where-used list behind SE84; "+
+				"'callees' reads the CROSS and WBCROSSGT cross-reference tables, which record references made at activation "+
+				"rather than observed calls. One hop in either direction."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,1)"),
+				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/zcl_test). Or give object_type and object_name."),
+			),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
 			),
 			mcp.WithString("direction",
-				mcp.Description("Direction: 'callers' (who calls this) or 'callees' (what this calls). Default: callers"),
-			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth of call hierarchy (default: 3)"),
+				mcp.Description("'callers' (who uses this), 'callees' (what this uses), or 'both'. Default: callers"),
 			),
 			mcp.WithNumber("max_results",
-				mcp.Description("Maximum number of results (default: 100)"),
+				mcp.Description("Maximum number of results (default: 200)"),
 			),
 		), s.handleGetCallGraph)
 	}
@@ -392,49 +429,68 @@ func (s *Server) registerAnalysisTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("GetCallersOf") {
 		s.mcpServer.AddTool(mcp.NewTool("GetCallersOf",
-			mcp.WithDescription("Find all callers of an ABAP object (up traversal). Shows who calls this method/function. Simplified wrapper around GetCallGraph."),
+			mcp.WithDescription("Who references this ABAP object, from the where-used list behind SE84. Reports each caller's "+
+				"package, type and the method the reference sits in. One hop: the list is not recursive. "+
+				"An empty answer and a misspelt name look identical here, so the answer says so."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,1)"),
+				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/zcl_test). Or give object_type and object_name."),
 			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth of caller hierarchy (default: 5)"),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
+			),
+			mcp.WithNumber("max_results",
+				mcp.Description("Maximum number of results (default: 200)"),
 			),
 		), s.handleGetCallersOf)
 	}
 
 	if shouldRegister("GetCalleesOf") {
 		s.mcpServer.AddTool(mcp.NewTool("GetCalleesOf",
-			mcp.WithDescription("Find all callees of an ABAP object (down traversal). Shows what this method/function calls. Simplified wrapper around GetCallGraph."),
+			mcp.WithDescription("What this ABAP object's code reaches, from the CROSS and WBCROSSGT cross-reference tables. "+
+				"These are references recorded when the object was activated, not observed calls: a dynamic CALL METHOD (name) "+
+				"is in no row. Rows marked calls:true are invocations; the rest are type and data references. Needs free SQL."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/ZCL_TEST/source/main#start=10,1)"),
+				mcp.Description("ADT URI of the object (e.g., /sap/bc/adt/oo/classes/zcl_test). Or give object_type and object_name."),
 			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth of callee hierarchy (default: 5)"),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
+			),
+			mcp.WithNumber("max_results",
+				mcp.Description("Maximum number of results (default: 200)"),
 			),
 		), s.handleGetCalleesOf)
 	}
 
 	if shouldRegister("AnalyzeCallGraph") {
 		s.mcpServer.AddTool(mcp.NewTool("AnalyzeCallGraph",
-			mcp.WithDescription("Analyze call graph for an object. Returns statistics: total nodes, edges, max depth, nodes by type. Use for understanding code complexity and dependencies."),
+			mcp.WithDescription("Counts over one object's references: how many, of what kind, in which direction. "+
+				"Same two sources as GetCallGraph, so the same caveats apply — and the depth is always 1, because neither source is recursive."),
 			mcp.WithString("object_uri",
-				mcp.Required(),
-				mcp.Description("ADT URI of the object to analyze"),
+				mcp.Description("ADT URI of the object to analyze. Or give object_type and object_name."),
+			),
+			mcp.WithString("object_type",
+				mcp.Description("CLAS, INTF, PROG, FUGR or FUNC — with object_name, instead of object_uri"),
+			),
+			mcp.WithString("object_name",
+				mcp.Description("Object name, e.g. ZCL_ORDER_PROCESSING"),
 			),
 			mcp.WithString("direction",
 				mcp.Description("Direction: 'callers' or 'callees' (default: callees)"),
-			),
-			mcp.WithNumber("max_depth",
-				mcp.Description("Maximum depth to analyze (default: 5)"),
 			),
 		), s.handleAnalyzeCallGraph)
 	}
 
 	if shouldRegister("CompareCallGraphs") {
 		s.mcpServer.AddTool(mcp.NewTool("CompareCallGraphs",
-			mcp.WithDescription("Compare static call graph with actual execution trace. Identifies: common paths, untested paths (static only), and dynamic calls (actual only). Use for test coverage analysis and RCA."),
+			mcp.WithDescription("Compare an object's recorded references with an actual execution trace: what ran, what did not, "+
+				"and what ran without being recorded. The static side comes from the cross-reference tables, so a 'static only' "+
+				"edge may be a type the code names and never calls rather than an untested path."),
 			mcp.WithString("object_uri",
 				mcp.Required(),
 				mcp.Description("ADT URI of the root object"),
@@ -510,24 +566,22 @@ func (s *Server) registerDiagnosticsTools(shouldRegister func(string) bool) {
 	// --- Runtime Errors / Short Dumps (RABAX) ---
 	if shouldRegister("ListDumps") {
 		s.mcpServer.AddTool(mcp.NewTool("ListDumps",
-			mcp.WithDescription("List runtime errors (short dumps) from the SAP system. Filter by user, exception type, program, date range."),
+			mcp.WithDescription("List runtime errors (short dumps) from the SAP system, newest first. Filter by error type, program, user, date range. "+
+				"Grouping, correlation with the application log, similarity and blast radius are reachable through SAP(action=\"analyze\") in hyperfocused mode."),
 			mcp.WithString("user",
 				mcp.Description("Filter by username"),
 			),
-			mcp.WithString("exception_type",
-				mcp.Description("Filter by exception type (e.g., CX_SY_ZERODIVIDE)"),
+			mcp.WithString("error_type",
+				mcp.Description("Filter by runtime error, e.g. CALL_FUNCTION_NOT_REMOTE or CX_SY_ZERODIVIDE (alias: exception_type)"),
 			),
 			mcp.WithString("program",
-				mcp.Description("Filter by program name"),
+				mcp.Description("Filter by terminated program"),
 			),
-			mcp.WithString("package",
-				mcp.Description("Filter by package"),
+			mcp.WithString("since",
+				mcp.Description("Earliest date, YYYY-MM-DD or YYYYMMDD (alias: date_from)"),
 			),
-			mcp.WithString("date_from",
-				mcp.Description("Start date (YYYYMMDD format)"),
-			),
-			mcp.WithString("date_to",
-				mcp.Description("End date (YYYYMMDD format)"),
+			mcp.WithString("until",
+				mcp.Description("Latest date, YYYY-MM-DD or YYYYMMDD (alias: date_to)"),
 			),
 			mcp.WithNumber("max_results",
 				mcp.Description("Maximum number of results (default: 100)"),
@@ -537,10 +591,11 @@ func (s *Server) registerDiagnosticsTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("GetDump") {
 		s.mcpServer.AddTool(mcp.NewTool("GetDump",
-			mcp.WithDescription("Get full details of a specific runtime error (short dump) including stack trace."),
+			mcp.WithDescription("Get one runtime error in detail: header, termination point, application component and call stack. "+
+				"A release that serves the dump feed without the detail resource says so in notes rather than failing."),
 			mcp.WithString("dump_id",
 				mcp.Required(),
-				mcp.Description("Dump ID from ListDumps result"),
+				mcp.Description("Dump ID from ListDumps, part of one, or \"latest\""),
 			),
 		), s.handleGetDump)
 	}
@@ -601,18 +656,18 @@ func (s *Server) registerDiagnosticsTools(shouldRegister func(string) bool) {
 func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 	if shouldRegister("SetBreakpoint") {
 		s.mcpServer.AddTool(mcp.NewTool("SetBreakpoint",
-			mcp.WithDescription("Set a breakpoint in ABAP code. Supports three types: 'line' (specific location), 'statement' (ABAP keyword), 'exception' (exception class). For class methods, use 'method' parameter for include-relative line numbers. Uses WebSocket connection to ZADT_VSP."),
+			mcp.WithDescription("Set an external breakpoint through SAP's ADT resources. Kinds: 'line' (an object and a line), 'statement' (an ABAP keyword), 'exception' (an exception class). The line is the line in the source as vsp shows it. Needs no ZADT_VSP and no other ABAP on the system."),
 			mcp.WithString("kind",
 				mcp.Description("Breakpoint type: 'line' (default), 'statement', or 'exception'"),
 			),
 			mcp.WithString("program",
-				mcp.Description("Program name for line breakpoints (e.g., 'ZADT_DBG_PROG' or 'ZCL_MY_CLASS')"),
-			),
-			mcp.WithString("method",
-				mcp.Description("Method name for class breakpoints. When specified, line number is relative to method start (line 1 = first line of METHOD implementation). Enables accurate breakpoints in class methods."),
+				mcp.Description("Object the breakpoint sits in — a program, class or function module name, or an ADT source URI"),
 			),
 			mcp.WithNumber("line",
-				mcp.Description("Line number for line breakpoints. Without 'method': pool-absolute line. With 'method': relative to method start."),
+				mcp.Description("Line number, counted in the object's own source as vsp reads it"),
+			),
+			mcp.WithString("condition",
+				mcp.Description("Optional ABAP condition; the breakpoint only stops when it is true (e.g., 'lv_count > 10')"),
 			),
 			mcp.WithString("statement",
 				mcp.Description("ABAP statement for statement breakpoints (e.g., 'CALL FUNCTION', 'SELECT', 'LOOP', 'CALL METHOD')"),
@@ -625,16 +680,16 @@ func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("GetBreakpoints") {
 		s.mcpServer.AddTool(mcp.NewTool("GetBreakpoints",
-			mcp.WithDescription("Get all breakpoints registered in the current debug session. Uses WebSocket connection to ZADT_VSP."),
+			mcp.WithDescription("List the breakpoints this session registered. ADT does not report breakpoints belonging to other clients, so this is not a system-wide list."),
 		), s.handleGetBreakpoints)
 	}
 
 	if shouldRegister("DeleteBreakpoint") {
 		s.mcpServer.AddTool(mcp.NewTool("DeleteBreakpoint",
-			mcp.WithDescription("Delete a breakpoint by ID. Uses WebSocket connection to ZADT_VSP."),
+			mcp.WithDescription("Delete a breakpoint by ID, or pass 'all' to remove every breakpoint this session registered."),
 			mcp.WithString("breakpoint_id",
 				mcp.Required(),
-				mcp.Description("ID of the breakpoint to delete"),
+				mcp.Description("ID of the breakpoint to delete, from SetBreakpoint or GetBreakpoints — or 'all'"),
 			),
 		), s.handleDeleteBreakpoint)
 	}
@@ -672,7 +727,7 @@ func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("DebuggerListen") {
 		s.mcpServer.AddTool(mcp.NewTool("DebuggerListen",
-			mcp.WithDescription("Start a debug listener that waits for a debuggee to hit a breakpoint. This is a BLOCKING call that uses long-polling. Returns when a debuggee is caught, timeout occurs, or a conflict is detected."),
+			mcp.WithDescription("Wait for a debuggee to hit a breakpoint, attach to it, and report where it stopped. BLOCKING: it returns when something stops or the timeout expires. Listen and attach are one call because a debuggee is only attachable while it waits. Breakpoints fire only for code running in ANOTHER session, so trigger the code from elsewhere while this waits."),
 			mcp.WithString("user",
 				mcp.Description("User to listen for (defaults to current user)"),
 			),
@@ -722,9 +777,9 @@ func (s *Server) registerDebuggerTools(shouldRegister func(string) bool) {
 
 	if shouldRegister("DebuggerGetVariables") {
 		s.mcpServer.AddTool(mcp.NewTool("DebuggerGetVariables",
-			mcp.WithDescription("Get variable values during a debug session. Use '@ROOT' to get top-level variables, or specific variable IDs to get their values."),
+			mcp.WithDescription("Read variables at the current stop. With no argument it returns the stopped frame's own variables with their values; pass a composite id (from a previous answer) to expand a structure or table, or names to read specific ones."),
 			mcp.WithArray("variable_ids",
-				mcp.Description("Variable IDs to retrieve (e.g., ['@ROOT'] for top-level, or specific IDs like ['LV_COUNT', 'LS_DATA'])"),
+				mcp.Description("Leave empty for the locals; or a single composite id to expand; or variable names to read"),
 				mcp.Items(map[string]interface{}{"type": "string"}),
 			),
 		), s.handleDebuggerGetVariables)
@@ -775,6 +830,18 @@ func (s *Server) registerDevTools(shouldRegister func(string) bool) {
 				mcp.Description("Technical name of the object (e.g., ZTEST)"),
 			),
 		), s.handleActivate)
+	}
+
+	if shouldRegister("ActivateMultiple") {
+		s.mcpServer.AddTool(mcp.NewTool("ActivateMultiple",
+			mcp.WithDescription("Activate multiple ABAP objects in a single ADT request, resolving mutual dependencies between them (same behaviour as Eclipse ADT). Use when includes and their main program must be activated together."),
+			mcp.WithArray("objects",
+				mcp.Required(),
+				mcp.Description(`Objects to activate. Each item can be:
+  - {"url": "/sap/bc/adt/programs/programs/zprog", "name": "ZPROG"}
+  - "TYPE NAME" shorthand, e.g. "PROG ZPROG", "INCL ZPROG_TOP", "CLAS ZCL_X"`),
+			),
+		), s.handleActivateMultiple)
 	}
 
 	if shouldRegister("ActivatePackage") {
@@ -928,8 +995,7 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
 				mcp.Description("ABAP source code to write"),
 			),
 			mcp.WithString("lock_handle",
-				mcp.Required(),
-				mcp.Description("Lock handle from LockObject"),
+				mcp.Description("Optional lock handle. Omit it and this call takes and releases its own lock (#169)."),
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for local packages)"),
@@ -962,15 +1028,22 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
 			mcp.WithString("parent_name",
 				mcp.Description("Parent name (required for function modules - the function group name)"),
 			),
+			// Function module options (FUGR/FF)
+			mcp.WithBoolean("rfc_enabled",
+				mcp.Description("For FUGR/FF: make the module remote-enabled (RFC). Remote-enabled modules must pass every parameter by value"),
+			),
+			mcp.WithString("source",
+				mcp.Description("For FUGR/FF: full module source including the signature (FUNCTION ... IMPORTING VALUE(iv_x) TYPE i ... ENDFUNCTION.) - a function module's interface lives in its source"),
+			),
 			// RAP-specific options
 			mcp.WithString("service_definition",
 				mcp.Description("For SRVB: the service definition name to bind"),
 			),
 			mcp.WithString("binding_version",
-				mcp.Description("For SRVB: OData version 'V2' or 'V4' (default: V2)"),
+				mcp.Description("For SRVB: OData version 'V2' or 'V4'. Defaults to 'V2' - pass 'V4' explicitly for Fiori Elements V4 apps, otherwise a V2 binding is created silently."),
 			),
 			mcp.WithString("binding_category",
-				mcp.Description("For SRVB: '0' for Web API, '1' for UI (default: 0)"),
+				mcp.Description("For SRVB: '0' = UI (User Interface), '1' = A2X (Web API). Default: '0' (UI). Values follow SAP domain SRVB_BND_CATEGORY."),
 			),
 		), s.handleCreateObject)
 	}
@@ -1099,8 +1172,7 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
 				mcp.Description("ADT URL of the object (e.g., /sap/bc/adt/programs/programs/ZTEST)"),
 			),
 			mcp.WithString("lock_handle",
-				mcp.Required(),
-				mcp.Description("Lock handle from LockObject"),
+				mcp.Description("Optional lock handle. Omit it and this call takes and releases its own lock (#169)."),
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for local packages)"),
@@ -1141,12 +1213,12 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
 
 	// Transport-related tools
 	if shouldRegister("GetUserTransports") {
-		s.mcpServer.AddTool(mcp.NewTool("GetUserTransports",
-			mcp.WithDescription("Get all transport requests for a user (requires --enable-transports flag). Returns both workbench and customizing requests grouped by target system."),
+		s.mcpServer.AddTool(mcp.NewTool("GetUserTransports", append([]mcp.ToolOption{
+			mcp.WithDescription("Get the transport requests of a user from the transport organizer (requires --enable-transports): workbench and customizing, modifiable and released, with tasks and objects, grouped by target and CTS project. Reads GET /sap/bc/adt/cts/transportrequests with explicit requestType/requestStatus (the organizer returns only released requests without them), falls back to the saved search configuration and then to E070/E07T."),
 			mcp.WithString("user_name",
-				mcp.Required(),
-				mcp.Description("SAP user name (will be converted to uppercase)"),
+				mcp.Description("SAP user name (uppercased); default: the connection user. '*' for every user (source sql only)"),
 			),
+		}, transportListingParams...)...,
 		), s.handleGetUserTransports)
 	}
 
@@ -1189,8 +1261,7 @@ func (s *Server) registerClassIncludeTools(shouldRegister func(string) bool) {
 				mcp.Description("Name of the ABAP class"),
 			),
 			mcp.WithString("lock_handle",
-				mcp.Required(),
-				mcp.Description("Lock handle from LockObject (lock the parent class first)"),
+				mcp.Description("Optional lock handle. Omit it and this call takes and releases its own lock on the parent class (#169)."),
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for local packages)"),
@@ -1214,8 +1285,7 @@ func (s *Server) registerClassIncludeTools(shouldRegister func(string) bool) {
 				mcp.Description("ABAP source code to write"),
 			),
 			mcp.WithString("lock_handle",
-				mcp.Required(),
-				mcp.Description("Lock handle from LockObject (lock the parent class first)"),
+				mcp.Description("Optional lock handle. Omit it and this call takes and releases its own lock on the parent class (#169)."),
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for local packages)"),
@@ -1357,6 +1427,9 @@ func (s *Server) registerFileTools(shouldRegister func(string) bool) {
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for local packages)"),
 			),
+			mcp.WithString("expected_source_hash",
+				mcp.Description("Optional sourceHash returned by GetSource(include_hash=true). Refuse an existing-object deployment if SAP source has changed."),
+			),
 		), s.handleDeployFromFile)
 	}
 
@@ -1442,6 +1515,9 @@ func (s *Server) registerEditTools(shouldRegister func(string) bool) {
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (required for objects not in $TMP package)"),
+			),
+			mcp.WithString("expected_source_hash",
+				mcp.Description("Optional sourceHash returned by GetSource(include_hash=true). After locking, refuse the edit if SAP source has changed."),
 			),
 		), s.handleEditSource)
 	}
@@ -1799,11 +1875,12 @@ func (s *Server) registerAMDPTools(shouldRegister func(string) bool) {
 // registerTransportTools registers CTS/Transport management tools.
 func (s *Server) registerTransportTools(shouldRegister func(string) bool) {
 	if shouldRegister("ListTransports") {
-		s.mcpServer.AddTool(mcp.NewTool("ListTransports",
-			mcp.WithDescription("List transport requests. Returns modifiable transports for a user. Requires --enable-transports OR --allow-transportable-edits flag."),
+		s.mcpServer.AddTool(mcp.NewTool("ListTransports", append([]mcp.ToolOption{
+			mcp.WithDescription("List transport requests of a user as flat rows: workbench and customizing, modifiable and released by default (request_status D limits it to modifiable). Requires --enable-transports OR --allow-transportable-edits. Reads GET /sap/bc/adt/cts/transportrequests with explicit requestType/requestStatus, falls back to the saved search configuration and then to E070/E07T; the answer names the source used."),
 			mcp.WithString("user",
-				mcp.Description("Username to list transports for (default: current user, '*' for all users)"),
+				mcp.Description("Username to list transports for (default: the connection user, '*' for all users — source sql only)"),
 			),
+		}, transportListingParams...)...,
 		), s.handleListTransports)
 	}
 
@@ -2346,10 +2423,22 @@ func (s *Server) registerI18NTools(shouldRegister func(string) bool) {
 			),
 			mcp.WithString("lock_handle",
 				mcp.Required(),
-				mcp.Description("Lock handle from LockObject"),
+				mcp.Description("Optional lock handle. Omit it and this call takes and releases its own lock (#169)."),
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for $TMP objects)"),
+			),
+			mcp.WithArray("texts",
+				mcp.Required(),
+				mcp.Description(`Messages to write: [{"number":"001","text":"Order & created"}]`),
+				mcp.Items(map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"number": map[string]any{"type": "string", "description": "Three-digit message number"},
+						"text":   map[string]any{"type": "string", "description": "Message text for this language"},
+					},
+					"required": []string{"number", "text"},
+				}),
 			),
 		), s.handleWriteMessageClassTexts)
 	}
@@ -2367,7 +2456,7 @@ func (s *Server) registerI18NTools(shouldRegister func(string) bool) {
 			),
 			mcp.WithString("lock_handle",
 				mcp.Required(),
-				mcp.Description("Lock handle from LockObject"),
+				mcp.Description("Optional lock handle. Omit it and this call takes and releases its own lock (#169)."),
 			),
 			mcp.WithString("transport",
 				mcp.Description("Transport request number (optional for $TMP objects)"),
@@ -2418,4 +2507,32 @@ func (s *Server) registerI18NTools(shouldRegister func(string) bool) {
 			),
 		), s.handleCompareObjectLanguages)
 	}
+}
+
+// transportListingParams are the parameters GetUserTransports and
+// ListTransports share. They mirror the query parameters of
+// GET /sap/bc/adt/cts/transportrequests; see pkg/adt/transport_query.go
+// for the contract.
+var transportListingParams = []mcp.ToolOption{
+	mcp.WithString("request_type",
+		mcp.Description("Letters of K (workbench), W (customizing), T (transport of copies); default KWT"),
+	),
+	mcp.WithString("request_status",
+		mcp.Description("Letters of D (modifiable), R (released); default DR. Without it the organizer would return released requests only"),
+	),
+	mcp.WithString("released_from",
+		mcp.Description("YYYYMMDD; with released_to bounds the released requests (default: last 14 days)"),
+	),
+	mcp.WithString("released_to",
+		mcp.Description("YYYYMMDD; see released_from"),
+	),
+	mcp.WithBoolean("targets",
+		mcp.Description("Group by transport target and CTS project (default true)"),
+	),
+	mcp.WithString("source",
+		mcp.Description("Where to read from: auto (default: params, then config, then sql — first source with requests wins), params (organizer tree with explicit parameters), config (organizer tree through the saved search configuration, as Eclipse does; the configuration decides the filters and the user), sql (E070/E07T)"),
+	),
+	mcp.WithString("config_uri",
+		mcp.Description("Search configuration to use with source config, e.g. /sap/bc/adt/cts/transportrequests/searchconfiguration/configurations/<id>; default: the one saved for the user, else the first one (noted in the answer)"),
+	),
 }

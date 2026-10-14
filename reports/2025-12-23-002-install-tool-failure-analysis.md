@@ -44,7 +44,7 @@ The `InstallZADTVSP` tool internally calls `WriteSource`, but if that tool isn't
 
 ## Verification Test on devsys2 (Working System)
 
-Tested the same workflow on devsys2 (a4h.desude.su) which has full toolset:
+Tested the same workflow on devsys2 (devsys2.example.local) which has full toolset:
 
 | Step | Action | Result |
 |------|--------|--------|

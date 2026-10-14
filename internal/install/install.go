@@ -1,6 +1,5 @@
-// Package install contains the fail-closed primitives shared by CLI and MCP
-// installers. It performs no SAP-specific discovery beyond the supplied ADT
-// client and is designed to be testable with an in-memory fake.
+// Package install contains fail-closed primitives shared by CLI and MCP
+// installers.
 package install
 
 import (
@@ -21,7 +20,8 @@ type Client interface {
 
 // EnsurePackage proves that a package exists, creating and re-probing it only
 // after a definite missing result. A create error is tolerated only if a fresh
-// probe proves that the package now exists (for example, a concurrent create).
+// probe proves that the package now exists, as can happen with a concurrent
+// create.
 func EnsurePackage(ctx context.Context, client Client, name, description string) (created bool, err error) {
 	exists, err := client.PackageExists(ctx, name)
 	if err != nil {
@@ -62,24 +62,24 @@ func DeploySource(ctx context.Context, client Client, objectType, name, source s
 	if err != nil {
 		return result, err
 	}
-	if result == nil {
-		return nil, fmt.Errorf("WriteSource returned no result")
-	}
-	if !result.Success {
-		message := strings.TrimSpace(result.Message)
-		if message == "" {
-			message = "WriteSource returned success=false without a diagnostic"
+	if resultErr := adt.WriteSourceResultError(result); resultErr != nil {
+		if result != nil {
+			if diagnostics := fatalSyntaxDiagnostics(result.SyntaxErrors); diagnostics != "" {
+				return result, fmt.Errorf("%w: %s", resultErr, diagnostics)
+			}
 		}
-		if diagnostics := fatalSyntaxDiagnostics(result.SyntaxErrors); diagnostics != "" {
-			message += ": " + diagnostics
+		return result, resultErr
+	}
+	for _, syntax := range result.SyntaxErrors {
+		severity := strings.ToUpper(strings.TrimSpace(syntax.Severity))
+		if severity == "E" || severity == "A" || severity == "X" {
+			return result, fmt.Errorf("WriteSource reported a syntax error: %s", fatalSyntaxDiagnostics(result.SyntaxErrors))
 		}
-		return result, fmt.Errorf("WriteSource failed: %s", message)
 	}
-	if diagnostics := fatalSyntaxDiagnostics(result.SyntaxErrors); diagnostics != "" {
-		return result, fmt.Errorf("WriteSource reported a syntax error: %s", diagnostics)
-	}
-	if result.Activation != nil && !result.Activation.Success {
-		return result, fmt.Errorf("WriteSource reported activation failure")
+	if result.Activation != nil {
+		if activationErr := adt.ActivationResultError(result.Activation); activationErr != nil {
+			return result, fmt.Errorf("WriteSource reported %w", activationErr)
+		}
 	}
 	readBack, err := client.GetSource(ctx, objectType, name, nil)
 	if err != nil {

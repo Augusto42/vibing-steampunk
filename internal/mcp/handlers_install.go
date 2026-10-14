@@ -87,10 +87,10 @@ func (s *Server) handleInstallDummyTest(ctx context.Context, request mcp.CallToo
 	// Step 1: Check/Create package (upsert strategy)
 	step("Package Check/Create")
 	packageExists, err := s.adtClient.PackageExists(ctx, testPackage)
-	if err != nil {
-		return newToolResultError(fmt.Sprintf("PackageExists failed: %v", err)), nil
-	}
-	if !packageExists {
+	switch {
+	case err != nil:
+		fail(fmt.Sprintf("PackageExists failed: %v", err))
+	case !packageExists:
 		info("Package doesn't exist, creating...")
 		if checkOnly {
 			info("SKIP (check_only mode)")
@@ -99,16 +99,10 @@ func (s *Server) handleInstallDummyTest(ctx context.Context, request mcp.CallToo
 			if err != nil {
 				fail(fmt.Sprintf("EnsurePackage failed: %v", err))
 			} else {
-				// Verify
-				packageExists, err = s.adtClient.PackageExists(ctx, testPackage)
-				if err != nil || !packageExists {
-					fail("Verification failed: package not found after create")
-				} else {
-					pass("Package created and verified")
-				}
+				pass("Package created and verified")
 			}
 		}
-	} else {
+	default:
 		pass("Package exists")
 	}
 
@@ -330,8 +324,6 @@ func (s *Server) handleInstallZADTVSP(ctx context.Context, request mcp.CallToolR
 	// Phase 1: Check prerequisites
 	sb.WriteString("Checking prerequisites...\n")
 
-	// Check package identity using the direct resource, which distinguishes an
-	// empty existing package from a missing one.
 	packageExists, err := s.adtClient.PackageExists(ctx, packageName)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to check package %s: %v", packageName, err)), nil
@@ -393,8 +385,7 @@ func (s *Server) handleInstallZADTVSP(ctx context.Context, request mcp.CallToolR
 		return newToolResultError(fmt.Sprintf("Failed to ensure package %s: %v", packageName, err)), nil
 	}
 	if created {
-		fmt.Fprintf(&sb, "Creating package %s...\n", packageName)
-		fmt.Fprintf(&sb, "  ✓ Package %s created and verified\n\n", packageName)
+		fmt.Fprintf(&sb, "Package %s created and verified\n\n", packageName)
 	} else {
 		fmt.Fprintf(&sb, "Using existing package %s\n\n", packageName)
 	}

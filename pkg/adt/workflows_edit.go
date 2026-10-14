@@ -10,27 +10,39 @@ import (
 
 // EditSourceResult represents the result of editing source code.
 type EditSourceResult struct {
-	Success        bool              `json:"success"`
-	ObjectURL      string            `json:"objectUrl"`
-	ObjectName     string            `json:"objectName"`
-	MatchCount     int               `json:"matchCount"`
-	OldString      string            `json:"oldString,omitempty"`
-	NewString      string            `json:"newString,omitempty"`
-	SyntaxErrors   []string          `json:"syntaxErrors,omitempty"`
-	SyntaxWarnings []string          `json:"syntaxWarnings,omitempty"`
-	Activation     *ActivationResult `json:"activation,omitempty"`
-	Message        string            `json:"message,omitempty"`
-	Method         string            `json:"method,omitempty"` // Method name if method-level edit
+	// Transport is the request the write went under, and TransportNote
+	// says how it was chosen when the caller named none.
+	Transport          string            `json:"transport,omitempty"`
+	TransportNote      string            `json:"transportNote,omitempty"`
+	Success            bool              `json:"success"`
+	ObjectURL          string            `json:"objectUrl"`
+	ObjectName         string            `json:"objectName"`
+	MatchCount         int               `json:"matchCount"`
+	OldString          string            `json:"oldString,omitempty"`
+	NewString          string            `json:"newString,omitempty"`
+	SyntaxErrors       []string          `json:"syntaxErrors,omitempty"`
+	SyntaxWarnings     []string          `json:"syntaxWarnings,omitempty"`
+	Activation         *ActivationResult `json:"activation,omitempty"`
+	ExpectedSourceHash string            `json:"expectedSourceHash,omitempty"`
+	TargetSourceHash   string            `json:"targetSourceHash,omitempty"`
+	VerifiedSourceHash string            `json:"verifiedSourceHash,omitempty"`
+	Message            string            `json:"message,omitempty"`
+	Method             string            `json:"method,omitempty"` // Method name if method-level edit
 }
 
 // EditSourceOptions provides optional parameters for EditSource.
 type EditSourceOptions struct {
-	ReplaceAll      bool   // If true, replace all occurrences; if false, require unique match
-	SyntaxCheck     bool   // If true, validate syntax before saving (default: true if not set)
-	IgnoreWarnings  bool   // If true, only block on errors (E), allow warnings (W) and info (I)
-	CaseInsensitive bool   // If true, ignore case when matching
-	Method          string // For CLAS only: constrain search/replace to this method only
-	Transport       string // Transport request number (required for non-$TMP packages)
+	ReplaceAll  bool // If true, replace all occurrences; if false, require unique match
+	SyntaxCheck bool // If true, validate syntax before saving (default: true if not set)
+	// Deprecated: warnings no longer block an edit, so this has no effect.
+	// Kept so existing callers keep compiling and existing MCP arguments keep
+	// being accepted rather than rejected as unknown. Warnings are reported in
+	// EditSourceResult.SyntaxWarnings and named in the result message.
+	IgnoreWarnings     bool
+	CaseInsensitive    bool   // If true, ignore case when matching
+	Method             string // For CLAS only: constrain search/replace to this method only
+	Transport          string // Transport request number (required for non-$TMP packages)
+	ExpectedSourceHash string // Optional SourceHash returned by GetSource
 }
 
 // normalizeLineEndings converts CRLF to LF for consistent matching
@@ -150,24 +162,31 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 	if opts == nil {
 		opts = &EditSourceOptions{SyntaxCheck: true}
 	}
+	ctx = withExpectedSourceHash(ctx, opts.ExpectedSourceHash)
 
-	// Unified mutation policy gate (op type + package + transport)
-	if err := c.checkMutation(ctx, MutationContext{
+	// Unified mutation policy gate (op type + package + transport). The mark
+	// on the returned context stops the identical package resolve running a
+	// second time from inside the lock window, where it would retire the
+	// session the lock handle lives in (issue #91). A class include marks the
+	// same key as its parent class, which is the object ADT resolves the
+	// package from either way.
+	ctx, err := c.gateAndMark(ctx, MutationContext{
 		Op:        OpUpdate,
 		OpName:    "EditSource",
 		ObjectURL: objectURL,
 		Transport: opts.Transport,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
-	ctx = withMutationPackageChecked(ctx)
 	// SyntaxCheck defaults to true if not explicitly set (zero value is false, so we need to handle this)
 	// Note: caller should explicitly set SyntaxCheck=false if they don't want it
 
 	result := &EditSourceResult{
-		ObjectURL: objectURL,
-		OldString: oldString,
-		NewString: newString,
+		ObjectURL:          objectURL,
+		OldString:          oldString,
+		NewString:          newString,
+		ExpectedSourceHash: opts.ExpectedSourceHash,
 	}
 
 	// Extract object name from URL for error messages
@@ -193,8 +212,9 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 		result.Method = opts.Method
 	}
 
-	// Detect if this is a class include (e.g., /sap/bc/adt/oo/classes/ZCL_FOO/includes/testclasses)
-	isClassInclude := isClassIncludeObjectURL(objectURL)
+	// Detect if this is a class include (e.g., /sap/bc/adt/oo/classes/ZCL_FOO/includes/testclasses).
+	// Program includes (/programs/includes/ZZ_NAME) are NOT class includes — /includes/ is their collection path.
+	isClassInclude := strings.Contains(objectURL, "/oo/classes/") && strings.Contains(objectURL, "/includes/")
 	var className string
 	var includeType ClassIncludeType
 	var parentClassURL string
@@ -349,12 +369,19 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 				return result, nil
 			}
 
-			if len(warnings) > 0 && !opts.IgnoreWarnings {
-				// Block on warnings unless ignore_warnings is set
-				result.SyntaxErrors = warnings
-				result.Message = fmt.Sprintf("Edit has %d syntax warning(s). Use ignore_warnings=true to proceed. Changes NOT saved.", len(warnings))
-				return result, nil
-			}
+			// Warnings do not block. They used to, unless the caller passed
+			// ignore_warnings on that call — which made vsp stricter than
+			// Eclipse ADT, where a warning is shown and the save proceeds.
+			//
+			// Blocking added no information: the warnings are in
+			// result.SyntaxWarnings either way, so a caller who wants to act on
+			// them can, and one who does not would not have read the refusal
+			// either. What it added was a refused write and a parameter the
+			// caller had to know to pass on every single call.
+			//
+			// Errors still block, above. That distinction is the whole point:
+			// an error means the object would not compile, a warning means
+			// somebody should look.
 		}
 	}
 
@@ -363,6 +390,7 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 	if isClassInclude && parentClassURL != "" {
 		lockURL = parentClassURL
 	}
+	trPlan := c.planTransport(ctx, opts.Transport, lockURL, "")
 	lockResult, err := c.LockObject(ctx, lockURL, "MODIFY")
 	if err != nil {
 		result.Message = fmt.Sprintf("Failed to lock object: %v", err)
@@ -377,12 +405,22 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 		}
 	}()
 
+	// Reuse the request the object is already bound to when the caller supplied no
+	// transport, so an already-captured object is not rejected with a spurious 409
+	// (issue #144). Re-checks transportable-edit policy on the resolved request.
+	tr, trNote, err := c.resolveWriteTransportFor(trPlan, opts.Transport, lockResult.CorrNr, "EditSource")
+	if err != nil {
+		result.Message = fmt.Sprintf("Transportable-edit check failed: %v", err)
+		return result, nil
+	}
+	result.Transport, result.TransportNote = tr, trNote
+
 	// 6. Update source
 	if isClassInclude && className != "" {
 		// Use UpdateClassInclude for class includes
-		err = c.UpdateClassInclude(ctx, className, includeType, newSource, lockResult.LockHandle, opts.Transport)
+		err = c.UpdateClassInclude(ctx, className, includeType, newSource, lockResult.LockHandle, tr)
 	} else {
-		err = c.UpdateSource(ctx, sourceURL, newSource, lockResult.LockHandle, opts.Transport)
+		err = c.UpdateSource(ctx, sourceURL, newSource, lockResult.LockHandle, tr)
 	}
 	if err != nil {
 		result.Message = fmt.Sprintf("Failed to update source: %v", err)
@@ -410,14 +448,43 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
 		return result, nil
 	}
 	result.Activation = activation
+	if !activation.Success {
+		// The write went through, the activation did not: say so instead of
+		// reporting an activated object that is still inactive.
+		result.Message = fmt.Sprintf("Source updated but activation failed: %s",
+			strings.Join(activation.ProblemLines(), "; "))
+		return result, nil
+	}
+	if opts.ExpectedSourceHash != "" {
+		result.TargetSourceHash = SourceHash(newSource)
+		resp, verifyErr := c.transport.Request(ctx, sourceURL, &RequestOptions{
+			Method: "GET", Accept: "text/plain",
+		})
+		if verifyErr != nil {
+			result.Message = fmt.Sprintf("Source was written and activated, but post-write verification could not read it: %v. Do not retry blindly.", verifyErr)
+			return result, nil
+		}
+		result.VerifiedSourceHash = SourceHash(string(resp.Body))
+		if result.VerifiedSourceHash != result.TargetSourceHash {
+			result.Message = fmt.Sprintf("Source was written and activated, but post-write verification differs (target %s, actual %s). Do not retry blindly.", result.TargetSourceHash, result.VerifiedSourceHash)
+			return result, nil
+		}
+	}
 
 	result.Success = true
+	// Warnings no longer stop the write, so the message has to carry them —
+	// otherwise the only trace is a field the caller may not read, and a
+	// warning nobody sees is the thing the old block was trying to prevent.
+	warned := ""
+	if n := len(result.SyntaxWarnings); n > 0 {
+		warned = fmt.Sprintf(" (%d syntax warning(s): see syntaxWarnings)", n)
+	}
 	if opts.Method != "" {
-		result.Message = fmt.Sprintf("Successfully edited method %s and activated %s", opts.Method, result.ObjectName)
+		result.Message = fmt.Sprintf("Successfully edited method %s and activated %s%s", opts.Method, result.ObjectName, warned)
 	} else if opts.ReplaceAll {
-		result.Message = fmt.Sprintf("Successfully replaced %d occurrences and activated %s", result.MatchCount, result.ObjectName)
+		result.Message = fmt.Sprintf("Successfully replaced %d occurrences and activated %s%s", result.MatchCount, result.ObjectName, warned)
 	} else {
-		result.Message = fmt.Sprintf("Successfully edited and activated %s", result.ObjectName)
+		result.Message = fmt.Sprintf("Successfully edited and activated %s%s", result.ObjectName, warned)
 	}
 	return result, nil
 }

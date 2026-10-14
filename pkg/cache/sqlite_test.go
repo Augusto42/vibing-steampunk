@@ -8,7 +8,7 @@ import (
 	"github.com/oisee/vibing-steampunk/pkg/cache"
 )
 
-func TestNewSQLiteCacheCreatesParentDirectory(t *testing.T) {
+func TestForkNewSQLiteCacheCreatesParentDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "cache.db")
 	config := cache.DefaultConfig()
 	config.Type = "sqlite"

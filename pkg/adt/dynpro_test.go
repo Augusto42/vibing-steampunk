@@ -13,11 +13,11 @@ type stubDynproRFCFetcher struct {
 	result   *RFCResult
 	err      error
 	function string
-	params   map[string]string
+	params   map[string]any
 	closed   bool
 }
 
-func (s *stubDynproRFCFetcher) CallRFC(_ context.Context, function string, params map[string]string) (*RFCResult, error) {
+func (s *stubDynproRFCFetcher) CallRFC(_ context.Context, function string, params map[string]any) (*RFCResult, error) {
 	s.function = function
 	s.params = params
 	return s.result, s.err

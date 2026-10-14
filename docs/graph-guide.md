@@ -24,7 +24,7 @@ Current entry points:
 - MCP: `SAP(action="analyze", params={"type":"impact", ...})`
 - MCP: `SAP(action="analyze", params={"type":"where_used_config", ...})`
 
-The core implementation lives in [`pkg/graph`](/home/alice/dev/vibing-steampunk/pkg/graph).
+The core implementation lives in [`pkg/graph`](../pkg/graph).
 
 ## Mental Model
 

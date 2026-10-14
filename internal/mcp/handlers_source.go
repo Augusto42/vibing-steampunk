@@ -18,9 +18,9 @@ import (
 // routeSourceAction routes "read" for GetSource and "edit" for WriteSource/EditSource.
 func (s *Server) routeSourceAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action == "read" {
-		// GetSource covers: CLAS, PROG, INTF, FUNC, FUGR, INCL, DYNP, DDLS, BDEF, SRVD, MSAG, VIEW, ENHO
+		// GetSource covers: CLAS, PROG, INTF, FUNC, FUGR, INCL, DYNP, DDLS, BDEF, SRVD, SRVB, MSAG, VIEW, ENHO
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "FUNC", "FUGR", "INCL", "DYNP", "DDLS", "BDEF", "SRVD", "MSAG", "VIEW", "ENHO":
+		case "CLAS", "PROG", "INTF", "FUNC", "FUGR", "INCL", "DYNP", "DDLS", "BDEF", "SRVD", "SRVB", "MSAG", "VIEW", "ENHO":
 			args := map[string]any{
 				"object_type": objectType,
 				"name":        objectName,
@@ -37,6 +37,9 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 			if v, ok := getBoolParam(params, "include_context"); ok {
 				args["include_context"] = v
 			}
+			if v, ok := getBoolParam(params, "include_hash"); ok {
+				args["include_hash"] = v
+			}
 			if v, ok := getFloatParam(params, "max_deps"); ok {
 				args["max_deps"] = v
 			}
@@ -50,7 +53,7 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 	if action == "edit" {
 		// High-level WriteSource
 		switch objectType {
-		case "CLAS", "PROG", "INTF", "INCL", "DDLS", "BDEF", "SRVD":
+		case "CLAS", "PROG", "INTF", "FUNC", "INCL", "ENHO", "DDLS", "BDEF", "SRVD", "MSAG", "TABL":
 			if src := getStringParam(params, "source"); src != "" {
 				args := map[string]any{
 					"object_type": objectType,
@@ -75,6 +78,13 @@ func (s *Server) routeSourceAction(ctx context.Context, action, objectType, obje
 				if v := getStringParam(params, "method"); v != "" {
 					args["method"] = v
 				}
+				if v := getStringParam(params, "expected_source_hash"); v != "" {
+					args["expected_source_hash"] = v
+				}
+				// FUNC only: the group, when the caller happens to know it.
+				if v := getStringParam(params, "parent"); v != "" {
+					args["parent"] = v
+				}
 				return s.callHandler(ctx, s.handleWriteSource, args)
 			}
 		case "EDITSOURCE":
@@ -96,7 +106,7 @@ func (s *Server) registerGetSource() {
 		mcp.WithDescription("Unified tool for reading ABAP source and metadata across supported object types, including enhancement implementations and merged include views."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation; existing XH objects are writable), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
+			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), FUNC (function module), FUGR (function group), INCL (include), DYNP (screen, read-only via ZADT_VSP), ENHO (enhancement implementation), DDLS (CDS DDL source), VIEW (DDIC view), BDEF (behavior definition), SRVD (service definition), SRVB (service binding), MSAG (message class)"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -117,19 +127,20 @@ func (s *Server) registerGetSource() {
 		mcp.WithNumber("max_deps",
 			mcp.Description("Maximum dependencies to resolve when include_context=true (default: 20)"),
 		),
-		mcp.WithBoolean("merged",
-			mcp.Description("INCL only: return an annotated SE80-style view with attached ENHO sources spliced at enhancement anchors. The result is read-only and must not be uploaded."),
+		mcp.WithBoolean("include_hash",
+			mcp.Description("Return JSON with the raw source and its sourceHash for a guarded later write. Default false preserves the text response."),
 		),
+		mcp.WithBoolean("merged", mcp.Description("INCL only: annotated read-only view with attached ENHO sources; never upload this output")),
 	), s.handleGetSource)
 }
 
 // registerWriteSource registers the unified WriteSource tool
 func (s *Server) registerWriteSource() {
 	s.mcpServer.AddTool(mcp.NewTool("WriteSource",
-		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, INCL, CLAS, INTF, existing ENHO/XH implementations, and RAP types (DDLS, BDEF, SRVD)."),
+		mcp.WithDescription("Unified tool for writing ABAP source code. ENHO/XH requires mode=update and a matching SAP bridge; source-only ENHO creation is unsupported."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG (program), INCL (program include), CLAS (class), INTF (interface), ENHO (existing XH enhancement, update only), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
+			mcp.Description("Object type: PROG, CLAS, INTF, INCL, ENHO (existing XH only), DDLS, BDEF, SRVD, SRVB, TABL"),
 		),
 		mcp.WithString("name",
 			mcp.Required(),
@@ -157,46 +168,10 @@ func (s *Server) registerWriteSource() {
 		mcp.WithString("method",
 			mcp.Description("For CLAS only: update only this method (source must be METHOD...ENDMETHOD block). Method must already exist in the class."),
 		),
+		mcp.WithString("expected_source_hash",
+			mcp.Description("Optional sourceHash returned by GetSource(include_hash=true). After locking, refuse the write if SAP source has changed."),
+		),
 	), s.handleWriteSource)
-}
-
-// registerCreateEnhancement registers the explicit Enhancement Framework
-// creation surface. It is separate from WriteSource because source alone is
-// insufficient to identify an enhancement host or BAdI definition safely.
-func (s *Server) registerCreateEnhancement() {
-	s.mcpServer.AddTool(mcp.NewTool("CreateEnhancement",
-		mcp.WithDescription("Create and activate an ENHO using explicit Enhancement Framework metadata. Supports XH source-code plug-ins, class enhancements, and BAdI implementations. The BAdI implementation class must already exist."),
-		mcp.WithString("kind", mcp.Required(), mcp.Description("Enhancement kind: XH, CLASS, or BADI")),
-		mcp.WithString("name", mcp.Required(), mcp.Description("New ENHO name")),
-		mcp.WithString("description", mcp.Required(), mcp.Description("Enhancement description")),
-		mcp.WithString("package", mcp.Required(), mcp.Description("Target package")),
-		mcp.WithString("transport", mcp.Description("Transport request for a transportable package")),
-
-		mcp.WithString("host_object_type", mcp.Description("XH: host repository type, normally PROG")),
-		mcp.WithString("host_object_name", mcp.Description("XH: host repository object")),
-		mcp.WithString("host_program", mcp.Description("XH: generated/main program; defaults to host_object_name")),
-		mcp.WithString("main_object_type", mcp.Description("XH: main repository type; defaults to host_object_type")),
-		mcp.WithString("main_object_name", mcp.Description("XH: main repository name; defaults to host_object_name")),
-		mcp.WithString("anchor", mcp.Description("XH: exact Enhancement Framework FULL_NAME anchor")),
-		mcp.WithString("parent_anchor", mcp.Description("XH: optional parent anchor")),
-		mcp.WithString("source", mcp.Description("XH raw body, or CLASS method body/source")),
-		mcp.WithString("spot", mcp.Description("XH optional enhancement spot, or BADI enhancement spot")),
-		mcp.WithString("enhancement_mode", mcp.Description("XH mode S, E, or I; default S")),
-		mcp.WithBoolean("overwrite", mcp.Description("XH overwrite flag")),
-		mcp.WithBoolean("hook_method", mcp.Description("XH: mark the element as a method hook")),
-
-		mcp.WithString("class_name", mcp.Description("CLASS: class to enhance")),
-		mcp.WithString("method_name", mcp.Description("CLASS: optional new method")),
-		mcp.WithString("method_description", mcp.Description("CLASS: new method description")),
-		mcp.WithString("method_exposure", mcp.Description("CLASS: PUBLIC, PROTECTED, or PRIVATE; default PUBLIC")),
-
-		mcp.WithString("badi_name", mcp.Description("BADI: BAdI definition name")),
-		mcp.WithString("implementation_name", mcp.Description("BADI: implementation name")),
-		mcp.WithString("implementation_class", mcp.Description("BADI: existing implementation class")),
-		mcp.WithString("implementation_description", mcp.Description("BADI: implementation description")),
-		mcp.WithBoolean("inactive", mcp.Description("BADI: create implementation entry inactive")),
-		mcp.WithBoolean("default_implementation", mcp.Description("BADI: mark as default implementation")),
-	), s.handleCreateEnhancement)
 }
 
 // handleGetSource handles the unified GetSource tool call
@@ -215,6 +190,12 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 	include, _ := request.GetArguments()["include"].(string)
 	method, _ := request.GetArguments()["method"].(string)
 	merged, _ := request.GetArguments()["merged"].(bool)
+	if merged && !strings.EqualFold(objectType, "INCL") {
+		return newToolResultError("merged is supported only for INCL"), nil
+	}
+	if includeHash, _ := request.GetArguments()["include_hash"].(bool); merged && includeHash {
+		return newToolResultError("include_hash is unavailable for merged read-only views"), nil
+	}
 
 	opts := &adt.GetSourceOptions{
 		Parent:  parent,
@@ -223,17 +204,19 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 		Merged:  merged,
 	}
 
-	source, err := s.adtClient.GetSource(ctx, objectType, name, opts)
+	rawSource, err := s.adtClient.GetSource(ctx, objectType, name, opts)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("GetSource failed: %v", err)), nil
 	}
+	source := rawSource
+	contextPrologue := ""
 
 	// Append dependency context (default: true, set include_context=false to disable)
 	includeContext := true
 	if ic, ok := request.GetArguments()["include_context"].(bool); ok {
 		includeContext = ic
 	}
-	if includeContext && strings.ToUpper(objectType) != "DYNP" {
+	if includeContext && !merged && strings.ToUpper(objectType) != "DYNP" {
 		maxDeps := 20
 		if md, ok := request.GetArguments()["max_deps"].(float64); ok && md > 0 {
 			maxDeps = int(md)
@@ -241,20 +224,28 @@ func (s *Server) handleGetSource(ctx context.Context, request mcp.CallToolReques
 
 		provider := ctxcomp.NewMultiSourceProvider("", &adtSourceAdapter{server: s})
 		compressor := ctxcomp.NewCompressor(provider, maxDeps)
-		result, err := compressor.Compress(ctx, source, name, objectType)
+		result, err := compressor.Compress(ctx, rawSource, name, objectType)
 		if err == nil && result.Prologue != "" {
-			source = source + "\n\n" + result.Prologue +
+			contextPrologue = result.Prologue +
 				fmt.Sprintf("\n* Context stats: %d deps found, %d resolved, %d failed",
 					result.Stats.DepsFound, result.Stats.DepsResolved, result.Stats.DepsFailed)
+			source = rawSource + "\n\n" + contextPrologue
 		}
 	}
 
-	// Append "Enhancements attached" footer for INCL reads (and only when the
-	// caller did not opt out of contextual enrichment via include_context=false).
-	// Soft-fail: any lookup or fetch error stays a comment in the footer rather
-	// than replacing the source the caller already has.
-	if includeContext && strings.ToUpper(objectType) == "INCL" && !merged {
+	if includeContext && strings.EqualFold(objectType, "INCL") && !merged {
 		source = appendEnhancementsFooter(ctx, s, source, name)
+	}
+	if includeHash, _ := request.GetArguments()["include_hash"].(bool); includeHash {
+		payload := map[string]string{
+			"source":     rawSource,
+			"sourceHash": adt.SourceHash(rawSource),
+		}
+		if contextPrologue != "" {
+			payload["context"] = contextPrologue
+		}
+		output, _ := json.MarshalIndent(payload, "", "  ")
+		return mcp.NewToolResultText(string(output)), nil
 	}
 
 	return mcp.NewToolResultText(source), nil
@@ -369,13 +360,17 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 	testSource, _ := request.GetArguments()["test_source"].(string)
 	transport, _ := request.GetArguments()["transport"].(string)
 	method, _ := request.GetArguments()["method"].(string)
+	parent, _ := request.GetArguments()["parent"].(string)
+	expectedSourceHash, _ := request.GetArguments()["expected_source_hash"].(string)
 
 	opts := &adt.WriteSourceOptions{
-		Description: description,
-		Package:     packageName,
-		TestSource:  testSource,
-		Transport:   transport,
-		Method:      method,
+		Description:        description,
+		Package:            packageName,
+		Parent:             parent,
+		TestSource:         testSource,
+		Transport:          transport,
+		Method:             method,
+		ExpectedSourceHash: expectedSourceHash,
 	}
 
 	if mode != "" {
@@ -386,83 +381,22 @@ func (s *Server) handleWriteSource(ctx context.Context, request mcp.CallToolRequ
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("WriteSource failed: %v", err)), nil
 	}
-	if err := validateWriteSourceResult(result); err != nil {
-		return newToolResultErrorWithPayload(err, result), nil
+	if err := adt.WriteSourceResultError(result); err != nil {
+		// Fail closed, but do not throw away the diagnosis with the verdict.
+		// The commonest way for this to fail is a syntax error, and
+		// result.SyntaxErrors carries the line, offset and text the caller
+		// needs to fix it. Returning only the message would hand an agent
+		// "Source has syntax errors - not saved" and nothing to act on.
+		payload, _ := json.MarshalIndent(result, "", "  ")
+		return newToolResultError(fmt.Sprintf("%v\n\n%s", err, payload)), nil
 	}
 
 	output, _ := json.MarshalIndent(result, "", "  ")
-	return mcp.NewToolResultText(string(output)), nil
-}
-
-func (s *Server) handleCreateEnhancement(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := request.GetArguments()
-	stringArg := func(name string) string {
-		value, _ := args[name].(string)
-		return value
+	res := mcp.NewToolResultText(string(output))
+	if t := strings.ToUpper(objectType); t == "PROG" || t == "PROG/P" || t == "PROGRAM" {
+		res = withHint(res, s.textPoolHint(ctx, adt.TextPoolTarget{Type: "PROG", Name: name}, source))
 	}
-	boolArg := func(name string) bool {
-		value, _ := args[name].(bool)
-		return value
-	}
-
-	for _, required := range []string{"kind", "name", "description", "package"} {
-		if strings.TrimSpace(stringArg(required)) == "" {
-			return newToolResultError(required + " is required"), nil
-		}
-	}
-
-	opts := adt.CreateEnhancementOptions{
-		Kind:        adt.EnhancementCreateKind(stringArg("kind")),
-		Name:        stringArg("name"),
-		Description: stringArg("description"),
-		Package:     stringArg("package"),
-		Transport:   stringArg("transport"),
-
-		HostObjectType:  stringArg("host_object_type"),
-		HostObjectName:  stringArg("host_object_name"),
-		HostProgram:     stringArg("host_program"),
-		MainObjectType:  stringArg("main_object_type"),
-		MainObjectName:  stringArg("main_object_name"),
-		Anchor:          stringArg("anchor"),
-		ParentAnchor:    stringArg("parent_anchor"),
-		Spot:            stringArg("spot"),
-		EnhancementMode: stringArg("enhancement_mode"),
-		Overwrite:       boolArg("overwrite"),
-		HookMethod:      boolArg("hook_method"),
-		Source:          stringArg("source"),
-
-		ClassName:         stringArg("class_name"),
-		MethodName:        stringArg("method_name"),
-		MethodDescription: stringArg("method_description"),
-		MethodExposure:    stringArg("method_exposure"),
-		MethodSource:      stringArg("source"),
-
-		SpotName:                  stringArg("spot"),
-		BAdIName:                  stringArg("badi_name"),
-		ImplementationName:        stringArg("implementation_name"),
-		ImplementationClass:       stringArg("implementation_class"),
-		ImplementationDescription: stringArg("implementation_description"),
-		Inactive:                  boolArg("inactive"),
-		DefaultImplementation:     boolArg("default_implementation"),
-	}
-
-	result, err := s.adtClient.CreateEnhancement(ctx, opts)
-	if err != nil {
-		return newToolResultError(fmt.Sprintf("CreateEnhancement blocked: %v", err)), nil
-	}
-	if result == nil {
-		return newToolResultError("CreateEnhancement failed: no result returned"), nil
-	}
-	if !result.Success {
-		message := strings.TrimSpace(result.Message)
-		if message == "" {
-			message = "operation returned success=false without a diagnostic"
-		}
-		return newToolResultError("CreateEnhancement failed: " + message), nil
-	}
-
-	output, _ := json.MarshalIndent(result, "", "  ")
-	return mcp.NewToolResultText(string(output)), nil
+	return res, nil
 }
 
 func validateWriteSourceResult(result *adt.WriteSourceResult) error {
@@ -533,10 +467,10 @@ func (s *Server) registerGrepPackages() {
 // registerImportFromFile registers the ImportFromFile tool (alias for DeployFromFile)
 func (s *Server) registerImportFromFile() {
 	s.mcpServer.AddTool(mcp.NewTool("ImportFromFile",
-		mcp.WithDescription("Import ABAP object from local file into SAP system. Auto-detects object type from file extension, creates or updates, activates. Supports: programs, classes (with includes), interfaces, function groups/modules, CDS views (DDLS), behavior definitions (BDEF), service definitions (SRVD). For class includes (.clas.testclasses.abap, .clas.locals_def.abap, etc.), the parent class must exist."),
+		mcp.WithDescription("Import ABAP object from local file into SAP system. Auto-detects object type from file extension, creates or updates, activates. Supports: programs, includes, classes (with includes), interfaces, function groups/modules, CDS views (DDLS), behavior definitions (BDEF), service definitions (SRVD). For class includes (.clas.testclasses.abap, .clas.locals_def.abap, etc.), the parent class must exist."),
 		mcp.WithString("file_path",
 			mcp.Required(),
-			mcp.Description("Absolute path to ABAP source file. Supported extensions: .prog.abap, .clas.abap, .clas.testclasses.abap, .clas.locals_def.abap, .clas.locals_imp.abap, .intf.abap, .fugr.abap, .func.abap, .ddls.asddls, .bdef.asbdef, .srvd.srvdsrv"),
+			mcp.Description("Absolute path to ABAP source file. Supported extensions: .prog.abap, .incl.abap, .clas.abap, .clas.testclasses.abap, .clas.locals_def.abap, .clas.locals_imp.abap, .intf.abap, .fugr.abap, .func.abap, .ddls.asddls, .bdef.asbdef, .srvd.srvdsrv"),
 		),
 		mcp.WithString("package_name",
 			mcp.Description("Target package name (required for new objects, not needed for class includes)"),
@@ -544,16 +478,19 @@ func (s *Server) registerImportFromFile() {
 		mcp.WithString("transport",
 			mcp.Description("Transport request number"),
 		),
+		mcp.WithString("expected_source_hash",
+			mcp.Description("Optional sourceHash returned by GetSource(include_hash=true). Refuse an existing-object import if SAP source has changed."),
+		),
 	), s.handleDeployFromFile) // Reuse existing handler
 }
 
 // registerExportToFile registers the ExportToFile tool (alias for SaveToFile)
 func (s *Server) registerExportToFile() {
 	s.mcpServer.AddTool(mcp.NewTool("ExportToFile",
-		mcp.WithDescription("Export ABAP object from SAP system to local file. Saves source code with appropriate file extension. Supports: programs, classes (with includes), interfaces, function groups/modules, CDS views (DDLS), behavior definitions (BDEF), service definitions (SRVD). For classes, use 'include' parameter to export specific includes (testclasses, definitions, implementations, macros)."),
+		mcp.WithDescription("Export ABAP object from SAP system to local file. Saves source code with appropriate file extension. Supports: programs, includes, classes (with includes), interfaces, function groups/modules, CDS views (DDLS), behavior definitions (BDEF), service definitions (SRVD). For classes, use 'include' parameter to export specific includes (testclasses, definitions, implementations, macros)."),
 		mcp.WithString("object_type",
 			mcp.Required(),
-			mcp.Description("Object type: PROG, CLAS, INTF, FUGR, FUNC, DDLS, BDEF, SRVD"),
+			mcp.Description("Object type: PROG, INCL, CLAS, INTF, FUGR, FUNC, DDLS, BDEF, SRVD"),
 		),
 		mcp.WithString("object_name",
 			mcp.Required(),

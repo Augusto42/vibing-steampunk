@@ -234,7 +234,8 @@ func TestParseBreakpointResponse_MultipleBreakpoints(t *testing.T) {
 }
 
 func TestParseBreakpointResponse_WithErrorMessage(t *testing.T) {
-	// Breakpoint with error should be skipped
+	// A refusal is returned with its reason, not dropped: the caller has to be
+	// able to say which of the lines it asked for are actually instrumented.
 	xmlResp := `<?xml version="1.0" encoding="utf-8"?>
 <dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger">
   <breakpoint kind="line" errorMessage="Cannot create a breakpoint at this position"/>
@@ -245,9 +246,14 @@ func TestParseBreakpointResponse_WithErrorMessage(t *testing.T) {
 		t.Fatalf("parseBreakpointResponse failed: %v", err)
 	}
 
-	// Breakpoint with error should be skipped
-	if len(resp.Breakpoints) != 0 {
-		t.Errorf("expected 0 breakpoints (error case should be skipped), got %d", len(resp.Breakpoints))
+	if len(resp.Breakpoints) != 1 {
+		t.Fatalf("expected the refusal to be reported, got %d breakpoints", len(resp.Breakpoints))
+	}
+	if resp.Breakpoints[0].ID != "" {
+		t.Errorf("a refused breakpoint must have no id, got %q", resp.Breakpoints[0].ID)
+	}
+	if resp.Breakpoints[0].ErrorMessage != "Cannot create a breakpoint at this position" {
+		t.Errorf("the reason was lost: %q", resp.Breakpoints[0].ErrorMessage)
 	}
 }
 
@@ -528,11 +534,11 @@ func TestBuildBreakpointRequestXML_WithOptionalAttributes(t *testing.T) {
 
 	// Verify optional attributes are included when set
 	checks := []string{
-		`terminalId="TERM123"`,       // terminalId attribute when set
-		`ideId="myide"`,              // ideId attribute
-		`systemDebugging="true"`,     // systemDebugging when true
-		`deactivated="true"`,         // deactivated when true
-		`xmlns:adtcore`,              // namespace declaration
+		`terminalId="TERM123"`,   // terminalId attribute when set
+		`ideId="myide"`,          // ideId attribute
+		`systemDebugging="true"`, // systemDebugging when true
+		`deactivated="true"`,     // deactivated when true
+		`xmlns:adtcore`,          // namespace declaration
 	}
 
 	for _, check := range checks {
@@ -561,8 +567,8 @@ func TestBuildBreakpointRequestXML_OmitsEmptyOptionalAttrs(t *testing.T) {
 
 	// Verify false optional attributes are NOT included
 	shouldNotContain := []string{
-		`systemDebugging=`,    // should be omitted when false
-		`deactivated=`,        // should be omitted when false
+		`systemDebugging=`, // should be omitted when false
+		`deactivated=`,     // should be omitted when false
 	}
 
 	for _, check := range shouldNotContain {

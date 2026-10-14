@@ -2,9 +2,92 @@ package adt
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type createEnhancementFetcher struct {
+	created *bool
+}
+
+func (f *createEnhancementFetcher) CallRFC(context.Context, string, map[string]any) (*RFCResult, error) {
+	return nil, nil
+}
+func (f *createEnhancementFetcher) ReadSource(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (f *createEnhancementFetcher) Close() error { return nil }
+func (f *createEnhancementFetcher) CreateEnhancement(context.Context, CreateEnhancementOptions) error {
+	*f.created = true
+	return nil
+}
+
+type createQueryMock struct {
+	queryRoutedMock
+	created  *bool
+	toolType string
+}
+
+func (m *createQueryMock) Do(req *http.Request) (*http.Response, error) {
+	if strings.EqualFold(req.URL.Query().Get("ddicEntityName"), "ENHHEADER") {
+		rows := [][]string{}
+		if *m.created {
+			rows = append(rows, []string{m.toolType, "A"})
+		}
+		return freshResponse(dataPreviewBody([]string{"ENHTOOLTYPE", "VERSION"}, rows)), nil
+	}
+	return m.queryRoutedMock.Do(req)
+}
+
+func TestCreateEnhancementRequiresActiveRepositoryReadBack(t *testing.T) {
+	cases := []struct {
+		name string
+		kind EnhancementCreateKind
+		tool string
+		opts CreateEnhancementOptions
+	}{
+		{"xh", EnhancementCreateXH, "HOOK_IMPL", CreateEnhancementOptions{HostObjectName: "ZSYNTHETIC_HOST", Anchor: `\PR:ZSYNTHETIC_HOST\SE:END\EI`, Source: "WRITE 'SYNTHETIC'."}},
+		{"class", EnhancementCreateClass, "CLASENH", CreateEnhancementOptions{ClassName: "ZCL_SYNTHETIC_HOST"}},
+		{"badi", EnhancementCreateBAdI, "BADI_IMPL", CreateEnhancementOptions{SpotName: "ZSYNTHETIC_SPOT", BAdIName: "ZBADI_SYNTHETIC", ImplementationName: "ZIM_SYNTHETIC", ImplementationClass: "ZCL_IM_SYNTHETIC"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			created := false
+			mock := &createQueryMock{created: &created, toolType: tc.tool}
+			mock.byPathBody = map[string]string{"/sap/bc/adt/discovery": "OK", "/sap/bc/adt/core/discovery": "OK"}
+			mock.byDdicEntityKeyBody = map[string]string{"TADIR": dataPreviewBody([]string{"DEVCLASS"}, [][]string{{"$TMP"}})}
+			cfg := NewConfig("https://sap.example.invalid", "synthetic", "synthetic", WithSafety(DevelopmentSafetyConfig()))
+			client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
+			client.rfcFetcherFactory = func(context.Context) (rfcSourceFetcher, error) {
+				return &createEnhancementFetcher{created: &created}, nil
+			}
+			opts := tc.opts
+			opts.Kind, opts.Name, opts.Package, opts.Description = tc.kind, "ZSYNTHETIC_ENHO", "$TMP", "Synthetic test"
+			result, err := client.CreateEnhancement(context.Background(), opts)
+			if err != nil || result == nil || !result.Success || result.ToolType != tc.tool || !created {
+				t.Fatalf("expected verified %s creation: result=%+v err=%v created=%v", tc.kind, result, err, created)
+			}
+		})
+	}
+}
+
+func TestCreateEnhancementRejectsWrongRepositorySubtype(t *testing.T) {
+	created := false
+	mock := &createQueryMock{created: &created, toolType: "BADI_IMPL"}
+	mock.byPathBody = map[string]string{"/sap/bc/adt/discovery": "OK", "/sap/bc/adt/core/discovery": "OK"}
+	mock.byDdicEntityKeyBody = map[string]string{"TADIR": dataPreviewBody([]string{"DEVCLASS"}, [][]string{{"$TMP"}})}
+	cfg := NewConfig("https://sap.example.invalid", "synthetic", "synthetic", WithSafety(DevelopmentSafetyConfig()))
+	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
+	client.rfcFetcherFactory = func(context.Context) (rfcSourceFetcher, error) { return &createEnhancementFetcher{created: &created}, nil }
+	result, err := client.CreateEnhancement(context.Background(), CreateEnhancementOptions{
+		Kind: EnhancementCreateXH, Name: "ZSYNTHETIC_ENHO", Package: "$TMP", Description: "Synthetic test",
+		HostObjectName: "ZSYNTHETIC_HOST", Anchor: `\PR:ZSYNTHETIC_HOST\SE:END\EI`, Source: "WRITE 'SYNTHETIC'.",
+	})
+	if err != nil || result == nil || result.Success || !strings.Contains(result.Message, "unexpected tool type") {
+		t.Fatalf("wrong subtype must not be reported as success: result=%+v err=%v", result, err)
+	}
+}
 
 func TestNormalizeCreateEnhancementOptions(t *testing.T) {
 	t.Run("xh defaults", func(t *testing.T) {

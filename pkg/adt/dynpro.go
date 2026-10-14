@@ -45,7 +45,7 @@ func (c *Client) GetDynpro(ctx context.Context, program, screen string) (*Dynpro
 	}
 	defer fetcher.Close()
 
-	result, err := fetcher.CallRFC(ctx, "RPY_DYNPRO_READ", map[string]string{
+	result, err := fetcher.CallRFC(ctx, "RPY_DYNPRO_READ", map[string]any{
 		"PROGNAME": program,
 		"DYNNR":    normalizedScreen,
 	})

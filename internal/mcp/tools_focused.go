@@ -5,9 +5,15 @@ package mcp
 // focusedToolSet returns the set of tools enabled in focused mode (81+ essential tools).
 func focusedToolSet() map[string]bool {
 	return map[string]bool{
+		// The universal router. It is on the whitelist rather than special-cased
+		// so that focused mode reaches the analyze surface — thirty-eight types
+		// that are routed through SAP() and registered as tools nowhere — and so
+		// that a deployment can still switch it off by name like anything else.
+		"SAP": true,
+
 		// Unified tools (2)
-		"GetSource":         true,
-		"WriteSource":       true,
+		"GetSource":   true,
+		"WriteSource": true,
 		"CreateEnhancement": true,
 
 		// Search tools (3) - foundation
@@ -51,9 +57,12 @@ func focusedToolSet() map[string]bool {
 		"CloneObject":        true, // Copy object to new name
 		"GetClassInfo":       true, // Quick class metadata
 
-		// Advanced/Edge cases (2)
-		"LockObject":   true,
-		"UnlockObject": true,
+		// LockObject and UnlockObject used to sit here, and focused mode had
+		// nothing that accepts a lock handle — no UpdateSource, no
+		// DeleteObject, no include writers. So an agent in this mode could
+		// take a lock and had no way to spend it: the only reachable outcome
+		// was a stranded ENQUEUE somebody clears by hand in SM12. Writing is
+		// covered by WriteSource and EditSource, which lock internally (#169).
 
 		// File-based operations (2)
 		"ImportFromFile": true, // File → SAP (replaces DeployFromFile)
@@ -129,11 +138,12 @@ func focusedToolSet() map[string]bool {
 		"ListTransports": true, // List transport requests
 		"GetTransport":   true, // Get transport details with objects
 
-		// gCTS (git-enabled Change Transport System) - read-only in focused mode
-		"GctsListRepositories": true, // List gCTS repositories
-		"GctsGetRepository":    true, // Get repository details
-		"GctsListBranches":     true, // List branches
-		"GctsGetHistory":       true, // Get commit history
+		// gCTS is deliberately absent. Its tools name nothing: registerGCTSTools
+		// is never called, so the four entries that used to sit here whitelisted
+		// tools that no mode registers — which reads as a capability that is
+		// present and switched off, rather than one that was never wired up.
+		// The handlers still exist (internal/mcp/handlers_gcts.go, pkg/adt/gcts.go);
+		// connecting or deleting them is an open decision, see agenda/AGENDA.md.
 
 		// Git/abapGit Integration (via ZADT_VSP WebSocket)
 		"GitTypes":  true, // List 158 supported object types

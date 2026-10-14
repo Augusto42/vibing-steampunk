@@ -109,12 +109,57 @@ func (s *Server) handleFindReferences(ctx context.Context, request mcp.CallToolR
 		column = int(colF)
 	}
 
+	maxResults := 50
+	if m, ok := request.GetArguments()["max_results"].(float64); ok && m > 0 {
+		maxResults = int(m)
+	}
+
 	results, err := s.adtClient.FindReferences(ctx, objectURL, line, column)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("FindReferences failed: %v", err)), nil
 	}
 
-	output, _ := json.MarshalIndent(results, "", "  ")
+	// The where-used response is a tree flattened into a list, and most of it is
+	// scaffolding: packages and function groups carrying isResult=false, present
+	// so their children have a parent. Returned whole, one question produced 113
+	// entries and 56,000 characters — more than the agent asking it can hold, so
+	// the tool that answered was the tool that could not be used.
+	//
+	// Both numbers are reported rather than quietly applied. "50 of 113" and
+	// "the object has 50 references" are different answers, and a list that was
+	// cut is not a list that ended.
+	hits := make([]adt.UsageReference, 0, len(results))
+	for _, r := range results {
+		if r.IsResult {
+			hits = append(hits, r)
+		}
+	}
+
+	answer := map[string]any{
+		"object_url":  objectURL,
+		"total":       len(hits),
+		"rows_read":   len(results),
+		"scaffolding": len(results) - len(hits),
+		"source":      "the where-used list behind SE84 (/sap/bc/adt/repository/informationsystem/usageReferences)",
+	}
+	if line > 0 || column > 0 {
+		answer["position"] = map[string]int{"line": line, "column": column}
+	}
+	if len(hits) > maxResults {
+		answer["references"] = hits[:maxResults]
+		answer["truncated"] = fmt.Sprintf("showing %d of %d; raise max_results to see the rest",
+			maxResults, len(hits))
+	} else {
+		answer["references"] = hits
+	}
+	if len(hits) == 0 && len(results) > 0 {
+		// Every row was scaffolding. That is an answer, and it is not the same
+		// as the resource returning nothing.
+		answer["note"] = "the resource answered with containers only — packages and groups, no references. " +
+			"Either the position names no symbol, or nothing uses it."
+	}
+
+	output, _ := json.MarshalIndent(answer, "", "  ")
 	return mcp.NewToolResultText(string(output)), nil
 }
 

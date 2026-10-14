@@ -2,7 +2,6 @@ package adt
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -13,13 +12,20 @@ import (
 
 // RFCResult contains the result of an RFC call.
 type RFCResult struct {
-	Subrc   int            `json:"subrc"`
+	Subrc int `json:"subrc"`
+	// Message is the system message behind a non-zero subrc, when the
+	// function raised one.
+	Message string         `json:"message,omitempty"`
 	Exports map[string]any `json:"exports"`
 	Tables  map[string]any `json:"tables"`
 }
 
-// CallRFC calls a function module via WebSocket.
-func (c *DebugWebSocketClient) CallRFC(ctx context.Context, function string, params map[string]string) (*RFCResult, error) {
+// CallRFC calls a function module through ZADT_VSP's CALL FUNCTION
+// bridge — any function module, remote-enabled or not. A string value
+// goes to an elementary parameter as given (present and empty sets it to
+// initial, which is how a default of 'X' is turned off); a map or slice
+// goes to a structure or table as JSON, deserialized on the ABAP side.
+func (c *DebugWebSocketClient) CallRFC(ctx context.Context, function string, params map[string]any) (*RFCResult, error) {
 	if !c.IsConnected() {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -140,194 +146,6 @@ func (c *DebugWebSocketClient) RunReportSync(ctx context.Context, report string,
 	return c.SendRawRequest(ctx, id, rawMsg, 60*time.Second)
 }
 
-// ReadSourceResult is the response shape from rfc/readSource.
-type ReadSourceResult struct {
-	Program string   `json:"program"`
-	Source  []string `json:"source"`
-}
-
-// ReadSource reads ABAP source for a program/include via the rfc domain's
-// readSource action. The ABAP-side handler uses native `READ REPORT`, so it
-// works for SUBC=I includes (enhancement plug-in source) where
-// RPY_PROGRAM_READ raises CANCELLED in RFC contexts on classic ECC.
-func (c *DebugWebSocketClient) ReadSource(ctx context.Context, program string) ([]string, error) {
-	if !c.IsConnected() {
-		return nil, fmt.Errorf("not connected")
-	}
-
-	id := c.GenerateID("rfc_read")
-
-	rawMsg := map[string]any{
-		"id":      id,
-		"domain":  "rfc",
-		"action":  "readSource",
-		"params":  map[string]any{"program": program},
-		"timeout": 30000,
-	}
-
-	resp, err := c.SendRawRequest(ctx, id, rawMsg, 30*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
-	if !resp.Success {
-		if resp.Error != nil {
-			return nil, fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
-		}
-		return nil, fmt.Errorf("readSource failed")
-	}
-
-	var result ReadSourceResult
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, err
-	}
-	return result.Source, nil
-}
-
-// WriteEnhancementSource updates an existing classic HOOK_IMPL enhancement
-// through the optional ZADT_VSP bridge. The ABAP side uses the Enhancement
-// Framework API (not a raw INSERT REPORT), so locking, transport assignment,
-// saving, and activation remain owned by SAP.
-func (c *DebugWebSocketClient) WriteEnhancementSource(ctx context.Context, enhancement, source, transport string) error {
-	if !c.IsConnected() {
-		return fmt.Errorf("not connected")
-	}
-
-	id := c.GenerateID("rfc_enho_write")
-	rawMsg := map[string]any{
-		"id":     id,
-		"domain": "rfc",
-		"action": "writeEnhancementSource",
-		"params": map[string]any{
-			"enhancement":   strings.ToUpper(strings.TrimSpace(enhancement)),
-			"source_base64": base64.StdEncoding.EncodeToString([]byte(source)),
-			"transport":     strings.ToUpper(strings.TrimSpace(transport)),
-		},
-		"timeout": 120000,
-	}
-
-	resp, err := c.SendRawRequest(ctx, id, rawMsg, 125*time.Second)
-	if err != nil {
-		return err
-	}
-	if !resp.Success {
-		if resp.Error != nil {
-			return fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
-		}
-		return fmt.Errorf("writeEnhancementSource failed")
-	}
-	return nil
-}
-
-// CreateEnhancement schedules creation through SAP's Enhancement Framework.
-// The bridge deliberately receives every relationship explicitly; it never
-// tries to infer an anchor, host class, enhancement spot, or BAdI definition
-// from source text.
-func (c *DebugWebSocketClient) CreateEnhancement(ctx context.Context, opts CreateEnhancementOptions) error {
-	if !c.IsConnected() {
-		return fmt.Errorf("not connected")
-	}
-
-	active := "X"
-	if opts.Inactive {
-		active = ""
-	}
-	defaultImpl := ""
-	if opts.DefaultImplementation {
-		defaultImpl = "X"
-	}
-	overwrite := ""
-	if opts.Overwrite {
-		overwrite = "X"
-	}
-	hookMethod := ""
-	if opts.HookMethod {
-		hookMethod = "X"
-	}
-
-	id := c.GenerateID("rfc_enho_create")
-	rawMsg := map[string]any{
-		"id":     id,
-		"domain": "rfc",
-		"action": "createEnhancement",
-		"params": map[string]any{
-			"kind":                       string(opts.Kind),
-			"enhancement":                opts.Name,
-			"description_base64":         base64.StdEncoding.EncodeToString([]byte(opts.Description)),
-			"package":                    opts.Package,
-			"transport":                  opts.Transport,
-			"host_object_type":           opts.HostObjectType,
-			"host_object_name":           opts.HostObjectName,
-			"host_program":               opts.HostProgram,
-			"main_object_type":           opts.MainObjectType,
-			"main_object_name":           opts.MainObjectName,
-			"anchor_base64":              base64.StdEncoding.EncodeToString([]byte(opts.Anchor)),
-			"parent_anchor_base64":       base64.StdEncoding.EncodeToString([]byte(opts.ParentAnchor)),
-			"spot":                       opts.Spot,
-			"enhancement_mode":           opts.EnhancementMode,
-			"overwrite":                  overwrite,
-			"hook_method":                hookMethod,
-			"source_base64":              base64.StdEncoding.EncodeToString([]byte(opts.Source)),
-			"class_name":                 opts.ClassName,
-			"method_name":                opts.MethodName,
-			"method_description_base64":  base64.StdEncoding.EncodeToString([]byte(opts.MethodDescription)),
-			"method_exposure":            opts.MethodExposure,
-			"method_source_base64":       base64.StdEncoding.EncodeToString([]byte(opts.MethodSource)),
-			"spot_name":                  opts.SpotName,
-			"badi_name":                  opts.BAdIName,
-			"implementation_name":        opts.ImplementationName,
-			"implementation_class":       opts.ImplementationClass,
-			"implementation_desc_base64": base64.StdEncoding.EncodeToString([]byte(opts.ImplementationDescription)),
-			"active":                     active,
-			"default_implementation":     defaultImpl,
-		},
-		"timeout": 120000,
-	}
-
-	resp, err := c.SendRawRequest(ctx, id, rawMsg, 125*time.Second)
-	if err != nil {
-		return err
-	}
-	if !resp.Success {
-		if resp.Error != nil {
-			return fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
-		}
-		return fmt.Errorf("createEnhancement failed")
-	}
-	return nil
-}
-
-// DescribeEnhancement returns tool-specific metadata from the Enhancement
-// Framework. This is especially useful for BAdI implementations, whose source
-// lives in a separate implementation class rather than in an ENHO include.
-func (c *DebugWebSocketClient) DescribeEnhancement(ctx context.Context, enhancement string) (string, error) {
-	if !c.IsConnected() {
-		return "", fmt.Errorf("not connected")
-	}
-
-	id := c.GenerateID("rfc_enho_describe")
-	rawMsg := map[string]any{
-		"id":     id,
-		"domain": "rfc",
-		"action": "describeEnhancement",
-		"params": map[string]any{
-			"enhancement": strings.ToUpper(strings.TrimSpace(enhancement)),
-		},
-		"timeout": 30000,
-	}
-	resp, err := c.SendRawRequest(ctx, id, rawMsg, 35*time.Second)
-	if err != nil {
-		return "", err
-	}
-	if !resp.Success {
-		if resp.Error != nil {
-			return "", fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
-		}
-		return "", fmt.Errorf("describeEnhancement failed")
-	}
-	return string(resp.Data), nil
-}
-
 // --- Package Operations ---
 
 // MoveObjectResult contains the result of a package reassignment.
@@ -383,4 +201,32 @@ func (c *DebugWebSocketClient) MoveObject(ctx context.Context, objectType, objec
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (c *DebugWebSocketClient) DescribeEnhancement(ctx context.Context, enhancement string) (string, error) {
+	if !c.IsConnected() {
+		return "", fmt.Errorf("not connected")
+	}
+
+	id := c.GenerateID("rfc_enho_describe")
+	rawMsg := map[string]any{
+		"id":     id,
+		"domain": "rfc",
+		"action": "describeEnhancement",
+		"params": map[string]any{
+			"enhancement": strings.ToUpper(strings.TrimSpace(enhancement)),
+		},
+		"timeout": 30000,
+	}
+	resp, err := c.SendRawRequest(ctx, id, rawMsg, 35*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success {
+		if resp.Error != nil {
+			return "", fmt.Errorf("%s: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return "", fmt.Errorf("describeEnhancement failed")
+	}
+	return string(resp.Data), nil
 }

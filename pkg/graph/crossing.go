@@ -2,19 +2,58 @@ package graph
 
 import "strings"
 
+// Complete reports whether every object in scope was read. A verdict from an
+// incomplete scan is still useful and must not be presented as a whole one.
+func (r *CrossingReport) Complete() bool {
+	return r.SourceAttempted == 0 || r.SourceRead == r.SourceAttempted
+}
+
+// Missed is how many objects in scope could not be read.
+func (r *CrossingReport) Missed() int {
+	if r.SourceAttempted <= r.SourceRead {
+		return 0
+	}
+	return r.SourceAttempted - r.SourceRead
+}
+
+// Caveat is the sentence a text report must carry when the scan was partial,
+// or the empty string when it was not.
+func (r *CrossingReport) Caveat() string {
+	if r.Complete() {
+		return ""
+	}
+	return "Read " + itoa(r.SourceRead) + " of " + itoa(r.SourceAttempted) +
+		" objects in scope: " + itoa(r.Missed()) +
+		" could not be read, so a crossing in any of them is missing from this report."
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
+
 // CrossingDirection classifies the direction of a cross-package dependency.
 type CrossingDirection string
 
 const (
-	CrossUpward    CrossingDirection = "UPWARD"      // child → parent/ancestor — OK
+	CrossUpward     CrossingDirection = "UPWARD"      // child → parent/ancestor — OK
 	CrossUpwardSkip CrossingDirection = "UPWARD_SKIP" // child → grandparent+ (skipping levels) — WARN
-	CrossCommon    CrossingDirection = "COMMON"       // anything → common/shared package (_00) — OK
-	CrossSibling   CrossingDirection = "SIBLING"      // between siblings at same level — BAD
-	CrossDownward  CrossingDirection = "DOWNWARD"     // parent → child — BAD
+	CrossCommon     CrossingDirection = "COMMON"      // anything → common/shared package (_00) — OK
+	CrossSibling    CrossingDirection = "SIBLING"     // between siblings at same level — BAD
+	CrossDownward   CrossingDirection = "DOWNWARD"    // parent → child — BAD
 	CrossCommonDown CrossingDirection = "COMMON_DOWN" // common package → specific module — BAD
-	CrossExternal  CrossingDirection = "EXTERNAL"     // different hierarchy entirely — INFO
-	CrossSame      CrossingDirection = "SAME"         // same package — OK (not a crossing)
-	CrossStandard  CrossingDirection = "STANDARD"     // standard SAP — ignore
+	CrossExternal   CrossingDirection = "EXTERNAL"    // different hierarchy entirely — INFO
+	CrossSame       CrossingDirection = "SAME"        // same package — OK (not a crossing)
+	CrossStandard   CrossingDirection = "STANDARD"    // standard SAP — ignore
 )
 
 // CrossingEntry represents a single directional crossing.
@@ -32,10 +71,32 @@ type CrossingEntry struct {
 
 // CrossingReport is the result of a directional boundary crossing analysis.
 type CrossingReport struct {
-	RootPackage     string           `json:"rootPackage"`
-	PackagesScanned int              `json:"packagesScanned"`
-	ObjectsScanned  int              `json:"objectsScanned"`
-	Entries         []CrossingEntry  `json:"entries,omitempty"`
+	RootPackage     string `json:"rootPackage"`
+	PackagesScanned int    `json:"packagesScanned"`
+	// ObjectsScanned counts objects actually read. It used to count objects
+	// attempted, so a package where a third of the programs answered 404 still
+	// reported every one of them as scanned.
+	ObjectsScanned int `json:"objectsScanned"`
+	// SourceRead and SourceAttempted count objects whose source the scan tried
+	// to read, and Unreadable names the ones it could not. They are separate
+	// from ObjectsScanned on purpose: that counts nodes in the graph, which
+	// includes targets discovered through edges and is therefore not a figure
+	// about coverage. Two numbers that mean different things must not share a
+	// name, which is how a header saying 167 came to sit above a caveat saying
+	// 167 of 222.
+	//
+	// Fields rather than a sentence, because this report is also emitted as
+	// JSON, where prose is not a caveat but a parse error.
+	//
+	// The direction of the error is worth keeping in mind: an object that could
+	// not be read contributes no edges, and an edge never extracted cannot
+	// cross a boundary. So this can only ever hide crossings, never invent
+	// them, which makes a clean verdict exactly the case where it matters most.
+	SourceRead      int      `json:"sourceRead,omitempty"`
+	SourceAttempted int      `json:"sourceAttempted,omitempty"`
+	Unreadable      []string `json:"unreadable,omitempty"`
+
+	Entries []CrossingEntry `json:"entries,omitempty"`
 
 	// Counts by direction
 	Upward     int `json:"upward"`

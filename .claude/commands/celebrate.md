@@ -20,8 +20,18 @@ go test ./...
 # Check for uncommitted changes
 git status
 
-# Verify no credentials in repo
-git log --all -p | grep -E "password|PASSWORD|secret|SECRET" | head -5 || echo "No credentials found"
+# Verify the sensitive files are not tracked.
+# (Grepping all of history for the word "password" was the old check here. On a
+# repo this size it takes minutes and returns mostly comments and field names,
+# so it got skimmed — a check nobody reads is not a check.)
+for f in .env cookies.txt .mcp.json; do
+  git ls-files --error-unmatch "$f" >/dev/null 2>&1 \
+    && echo "DANGER: $f is tracked" || echo "ok: $f not in the index"
+done
+
+# And scan the staged diff for the identifier families the sanitize policy names
+git diff --cached | grep -nE \
+  '\b[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b|\b[A-Z][0-9]{2}K[0-9]{6}\b|\bDEVK[0-9]{6,}\b'
 ```
 
 ## 3. Update Documentation
@@ -42,19 +52,37 @@ git commit -m "Prepare release vX.Y.Z"
 git push origin main
 ```
 
-## 5. Build All Platforms
+## 5. Create Git Tag — BEFORE building
 
-```bash
-make build-all
-```
-
-Verify all 9 binaries are created in `build/` directory.
-
-## 6. Create Git Tag
+The tag has to exist first. `LDFLAGS` takes the version from `git describe`, so
+a binary built before the tag reports the PREVIOUS release: someone downloading
+v2.58.0 runs `vsp --version` and is told `v2.57.0-25-g977f968`. Tag, then build.
 
 ```bash
 git tag -a vX.Y.Z -m "Release vX.Y.Z: <title>"
 git push origin vX.Y.Z
+```
+
+## 6. Build All Platforms
+
+**`build-all-all`, not `build-all`.** `build-all` builds only `PLATFORMS_COMMON`
+— linux-amd64, darwin-arm64, windows-amd64. The other six are left at whatever
+they were, so a release assembled after it ships stale binaries under a new
+version number, and nothing about them looks wrong from the outside.
+
+```bash
+rm -f build/vsp-* build/checksums.txt   # so a stale one cannot survive
+make build-all-all
+```
+
+Then verify, rather than trusting the timestamps:
+
+```bash
+ls build/vsp-*                                    # expect 9 + the local alias
+./build/vsp-linux-amd64 --version                 # must print vX.Y.Z exactly
+./build/vsp-linux-amd64 <a command added this release> --help   # the feature is really in there
+
+cd build && sha256sum vsp-linux-* vsp-darwin-* vsp-windows-* > checksums.txt
 ```
 
 ## 7. Create GitHub Release

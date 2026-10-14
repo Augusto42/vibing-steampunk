@@ -516,7 +516,9 @@ func writeLLVMZip(outFile, objName, source, desc, pkg string) error {
 	zf.Write([]byte(source))
 
 	descLen := len(desc)
-	if descLen > 70 { descLen = 70 }
+	if descLen > 70 {
+		descLen = 70
+	}
 	zf, _ = w.Create("src/" + lower + ".prog.xml")
 	fmt.Fprintf(zf, `<?xml version="1.0" encoding="utf-8"?>
 <abapGit version="v1.0.0" serializer="LCL_OBJECT_PROG" serializer_version="v1.0.0">

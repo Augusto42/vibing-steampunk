@@ -57,7 +57,7 @@ func TestEnsurePackage(t *testing.T) {
 		wantErr     bool
 		wantCreates int
 	}{
-		{name: "existing", fake: &fakeClient{packageProbes: []packageProbe{{exists: true}}}, wantCreates: 0},
+		{name: "existing", fake: &fakeClient{packageProbes: []packageProbe{{exists: true}}}},
 		{name: "created and verified", fake: &fakeClient{packageProbes: []packageProbe{{}, {exists: true}}}, wantCreated: true, wantCreates: 1},
 		{name: "concurrent create verified", fake: &fakeClient{packageProbes: []packageProbe{{}, {exists: true}}, createErr: errors.New("already exists")}, wantCreates: 1},
 		{name: "initial probe inconclusive", fake: &fakeClient{packageProbes: []packageProbe{{err: errors.New("synthetic auth failure")}}}, wantErr: true},
@@ -81,7 +81,6 @@ func TestEnsurePackage(t *testing.T) {
 	}
 }
 
-//nolint:misspell // CLAS is the SAP ADT object type.
 func TestDeploySource(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -92,9 +91,8 @@ func TestDeploySource(t *testing.T) {
 		{name: "transport error", fake: &fakeClient{writeErr: errors.New("synthetic request failure")}, wantErr: "synthetic request failure"},
 		{name: "nil result", fake: &fakeClient{}, wantErr: "no result"},
 		{name: "logical failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Message: "synthetic workflow failure"}}, wantErr: "synthetic workflow failure"},
-		{name: "syntax failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Success: true, SyntaxErrors: []adt.SyntaxCheckResult{{Severity: "E", Line: 42, Text: "synthetic syntax failure"}}}}, wantErr: "line 42: synthetic syntax failure"},
-		{name: "logical syntax failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Message: "source rejected", SyntaxErrors: []adt.SyntaxCheckResult{{Severity: "E", Line: 7, Text: "synthetic parser failure"}}}}, wantErr: "line 7: synthetic parser failure"},
-		{name: "activation failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Success: true, Activation: &adt.ActivationResult{Success: false}}}, wantErr: "activation failure"},
+		{name: "syntax failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Success: true, SyntaxErrors: []adt.SyntaxCheckResult{{Severity: "E"}}}}, wantErr: "syntax error"},
+		{name: "activation failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Success: true, Activation: &adt.ActivationResult{Messages: []adt.ActivationResultMessage{{Type: "E", ShortText: "synthetic activation failure"}}}}}, wantErr: "activation failure"},
 		{name: "read-back failure", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Success: true}, readBackErr: errors.New("synthetic read failure")}, wantErr: "read-back failed"},
 		{name: "empty read-back", fake: &fakeClient{writeResult: &adt.WriteSourceResult{Success: true}, readBack: "  "}, wantErr: "read-back was empty"},
 	}

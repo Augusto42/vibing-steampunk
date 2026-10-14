@@ -14,14 +14,14 @@ type EdgeKind string
 
 const (
 	// Code dependency edges
-	EdgeCalls           EdgeKind = "CALLS"             // FM call, method call, SUBMIT, PERFORM
-	EdgeReferences      EdgeKind = "REFERENCES"        // TYPE REF TO, DATA TYPE, INTERFACES
-	EdgeLoads           EdgeKind = "LOADS"              // D010INC compile-time include load
-	EdgeContainsInclude EdgeKind = "CONTAINS_INCLUDE"   // Program structure (INCLUDE statement)
-	EdgeDependsOnCDS    EdgeKind = "DEPENDS_ON_CDS"     // CDS view dependency
+	EdgeCalls           EdgeKind = "CALLS"            // FM call, method call, SUBMIT, PERFORM
+	EdgeReferences      EdgeKind = "REFERENCES"       // TYPE REF TO, DATA TYPE, INTERFACES
+	EdgeLoads           EdgeKind = "LOADS"            // D010INC compile-time include load
+	EdgeContainsInclude EdgeKind = "CONTAINS_INCLUDE" // Program structure (INCLUDE statement)
+	EdgeDependsOnCDS    EdgeKind = "DEPENDS_ON_CDS"   // CDS view dependency
 
 	// Transport edges (MVP)
-	EdgeInTransport  EdgeKind = "IN_TRANSPORT"  // object → transport request (E071)
+	EdgeInTransport   EdgeKind = "IN_TRANSPORT"   // object → transport request (E071)
 	EdgeCoTransported EdgeKind = "CO_TRANSPORTED" // object ↔ object: shared TR or CR (weaker, derived)
 
 	// Config edges (MVP)
@@ -91,17 +91,23 @@ type Node struct {
 
 // Edge represents a dependency relationship between two nodes.
 // All edges point FROM the dependent TO the dependency:
-//   PROG:ZREPORT --CALLS--> FUGR:BAPI_USER (ZREPORT calls BAPI_USER)
-//   CLAS:ZCL_FOO --IN_TRANSPORT--> TR:A4HK900123 (ZCL_FOO is in transport)
-//   PROG:ZREPORT --READS_CONFIG--> TVARVC:ZKEKEKE (ZREPORT reads ZKEKEKE)
+//
+//	PROG:ZREPORT --CALLS--> FUGR:BAPI_USER (ZREPORT calls BAPI_USER)
+//	CLAS:ZCL_FOO --IN_TRANSPORT--> TR:A4HK900123 (ZCL_FOO is in transport)
+//	PROG:ZREPORT --READS_CONFIG--> TVARVC:ZKEKEKE (ZREPORT reads ZKEKEKE)
 type Edge struct {
-	From       string         `json:"from"`                  // Source node ID
-	To         string         `json:"to"`                    // Target node ID
-	Kind       EdgeKind       `json:"kind"`                  // CALLS, REFERENCES, IN_TRANSPORT, READS_CONFIG, ...
-	Source     EdgeSource     `json:"source"`                // Where this evidence came from
-	RawInclude string         `json:"raw_include,omitempty"` // Original include where ref occurs
-	RefDetail  string         `json:"ref_detail,omitempty"`  // e.g. "METHOD:GET_DATA" or "FM:BAPI_USER_GET_DETAIL"
-	Meta       map[string]any `json:"meta,omitempty"`        // Enrichment signals (confidence, last_seen, etc.)
+	From       string     `json:"from"`                  // Source node ID
+	To         string     `json:"to"`                    // Target node ID
+	Kind       EdgeKind   `json:"kind"`                  // CALLS, REFERENCES, IN_TRANSPORT, READS_CONFIG, ...
+	Source     EdgeSource `json:"source"`                // Where this evidence came from
+	RawInclude string     `json:"raw_include,omitempty"` // Original include where ref occurs
+	RefDetail  string     `json:"ref_detail,omitempty"`  // e.g. "METHOD:GET_DATA" or "FM:BAPI_USER_GET_DETAIL"
+	// Line is where the statement that produced this edge starts, 1-based, or 0
+	// when the edge came from a table rather than from source. The lexer has
+	// carried it all along; nothing asked, so a consumer that needed line
+	// numbers had to keep its own parser.
+	Line int            `json:"line,omitempty"`
+	Meta map[string]any `json:"meta,omitempty"` // Enrichment signals (confidence, last_seen, etc.)
 }
 
 // Well-known Meta key constants for enrichment signals.
@@ -149,7 +155,7 @@ func (e *Edge) GetMeta(key string) (any, bool) {
 // Graph is an in-memory dependency graph with adjacency indexes.
 type Graph struct {
 	mu    sync.RWMutex
-	nodes map[string]*Node  // ID → Node
+	nodes map[string]*Node // ID → Node
 	edges []*Edge
 
 	// Indexes for fast lookup
@@ -268,12 +274,12 @@ func (g *Graph) Stats() GraphStats {
 	defer g.mu.RUnlock()
 
 	s := GraphStats{
-		NodeCount:   len(g.nodes),
-		EdgeCount:   len(g.edges),
-		ByNodeType:  make(map[string]int),
-		ByEdgeKind:  make(map[EdgeKind]int),
-		BySource:    make(map[EdgeSource]int),
-		ByPackage:   make(map[string]int),
+		NodeCount:  len(g.nodes),
+		EdgeCount:  len(g.edges),
+		ByNodeType: make(map[string]int),
+		ByEdgeKind: make(map[EdgeKind]int),
+		BySource:   make(map[EdgeSource]int),
+		ByPackage:  make(map[string]int),
 	}
 	for _, n := range g.nodes {
 		s.ByNodeType[n.Type]++
@@ -290,12 +296,12 @@ func (g *Graph) Stats() GraphStats {
 
 // GraphStats holds summary statistics.
 type GraphStats struct {
-	NodeCount  int                  `json:"node_count"`
-	EdgeCount  int                  `json:"edge_count"`
-	ByNodeType map[string]int       `json:"by_node_type"`
-	ByEdgeKind map[EdgeKind]int     `json:"by_edge_kind"`
-	BySource   map[EdgeSource]int   `json:"by_source"`
-	ByPackage  map[string]int       `json:"by_package"`
+	NodeCount  int                `json:"node_count"`
+	EdgeCount  int                `json:"edge_count"`
+	ByNodeType map[string]int     `json:"by_node_type"`
+	ByEdgeKind map[EdgeKind]int   `json:"by_edge_kind"`
+	BySource   map[EdgeSource]int `json:"by_source"`
+	ByPackage  map[string]int     `json:"by_package"`
 }
 
 // --- Include → Object normalization ---
@@ -316,6 +322,33 @@ func NodeID(objType, objName string) string {
 //	LZFUGR_U01            → FUGR:ZFUGR
 //	ZREPORT               → PROG:ZREPORT
 //	ZREPORT_F01           → PROG:ZREPORT (heuristic)
+//
+// SectionOfInclude returns the part of a padded include that says *which part
+// of the object* it is: CCAU for the test classes, CCIMP for the local
+// implementations, CM001 for one method, CU for the public section. Empty for
+// includes that are not a section of a class or interface pool.
+//
+// It exists because NormalizeInclude computes this and throws it away, and
+// throwing it away turned out to matter. A cross-reference row saying
+// CL_X===========CCAU means the reference is in that class's *test* include;
+// normalising it to "class CL_X" and then reading source/main looks up a
+// different part of the same object, finds nothing, and reports nothing found.
+// Measured on a live 7.58: of the callers of CL_ABAP_UNIT_ASSERT's
+// ASSERT_EQUALS, every single one is a CCAU row, and every single one read
+// clean and empty.
+//
+// So the name is not the address. A consumer that goes from a cross-reference
+// row to source has to carry the section with it or it is blind to test code
+// entirely — which is most of where a utility class is called from.
+func SectionOfInclude(include string) string {
+	inc := strings.TrimSpace(include)
+	idx := strings.Index(inc, "=")
+	if idx <= 0 {
+		return ""
+	}
+	return strings.TrimLeft(inc[idx:], "=")
+}
+
 func NormalizeInclude(include string) (nodeID string, objType string, objName string) {
 	inc := strings.TrimSpace(include)
 
@@ -339,14 +372,18 @@ func NormalizeInclude(include string) (nodeID string, objType string, objName st
 		fugr := inc[4:]
 		return NodeID("FUGR", fugr), "FUGR", fugr
 	}
-	if len(inc) > 4 && inc[0] == 'L' {
-		// L<fugr>Uxx, L<fugr>Fxx, L<fugr>TOP, etc.
-		// Try to extract function group name
-		for _, sep := range []string{"U0", "F0", "U1", "F1", "TOP", "UXX", "I0"} {
-			if idx := strings.Index(inc[1:], sep); idx > 0 {
-				fugr := inc[1 : idx+1]
-				return NodeID("FUGR", fugr), "FUGR", fugr
-			}
+	// L<fugr><section>, where the section is always the last three characters:
+	// U01…U99 for function modules, F01…F99 for forms, TOP, UXX, I01, E01, O01.
+	//
+	// This used to search for one of {U0, F0, U1, F1, TOP, UXX, I0} anywhere in
+	// the name, which matches U01 and F15 and misses U27 — so a function group
+	// with more than a couple of dozen includes of one kind was reported as a
+	// *program* named after its own include. Nothing failed; the object simply
+	// came out as the wrong kind with the wrong name, which is worse.
+	if len(inc) > 4 && inc[0] == 'L' && looksLikePoolSection(inc[len(inc)-3:]) {
+		fugr := inc[1 : len(inc)-3]
+		if fugr != "" {
+			return NodeID("FUGR", fugr), "FUGR", fugr
 		}
 	}
 
@@ -361,4 +398,35 @@ func IsStandardObject(name string) bool {
 		return true
 	}
 	return upper[0] != 'Z' && upper[0] != 'Y'
+}
+
+// looksLikePoolSection reports whether three characters are a function-pool
+// section: U01…U99, F01…F99, I01, E01, O01, or the two named ones, TOP and UXX.
+//
+// The first attempt at this accepted a letter followed by any two letters or
+// digits, with a comment arguing that being strict would reject a section
+// nobody here had met. A test written five minutes later refused a program
+// called LEGACY_REPORT: its last three characters are ORT, which is a letter
+// and two more, so the program became a function group named EGACY_REP. The
+// looseness was not caution, it was a second way to get the wrong object.
+//
+// Digits it is. A section that turns out to exist and is neither shape will
+// simply not resolve, which is visible, rather than resolving to something
+// plausible and wrong.
+func looksLikePoolSection(section string) bool {
+	if section == "TOP" || section == "UXX" {
+		return true
+	}
+	if len(section) != 3 {
+		return false
+	}
+	if section[0] < 'A' || section[0] > 'Z' {
+		return false
+	}
+	for i := 1; i < 3; i++ {
+		if section[i] < '0' || section[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -9,6 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
+	// modernc.org/sqlite is SQLite transpiled to Go, not a cgo binding. The
+	// binding (mattn/go-sqlite3) compiles to a stub when CGO_ENABLED=0, and
+	// every released binary is cross-compiled, which implies exactly that — so
+	// the shipped cache returned "This is a stub" for the life of the feature
+	// (issue #157). Same SQL, same database/sql interface, no C toolchain.
 	_ "modernc.org/sqlite"
 )
 
@@ -159,6 +164,11 @@ func (s *SQLiteCache) GetNode(ctx context.Context, id string) (*Node, error) {
 	var lastModifiedUnix, cachedAtUnix int64
 	var invalidatedAtUnix sql.NullInt64
 	var validInt int
+	// invalidation_reason is NULL for every node that has not been invalidated
+	// — i.e. every healthy one — and database/sql refuses NULL into a string.
+	// Scanning it directly made GetNode fail on exactly the rows it exists to
+	// return. It never worked, under either driver.
+	var invalidationReason sql.NullString
 
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&node.ID,
@@ -172,7 +182,7 @@ func (s *SQLiteCache) GetNode(ctx context.Context, id string) (*Node, error) {
 		&cachedAtUnix,
 		&validInt,
 		&invalidatedAtUnix,
-		&node.InvalidationReason,
+		&invalidationReason,
 		&metadataJSON,
 	)
 
@@ -184,6 +194,7 @@ func (s *SQLiteCache) GetNode(ctx context.Context, id string) (*Node, error) {
 	}
 
 	node.Valid = intToBool(validInt)
+	node.InvalidationReason = invalidationReason.String
 	node.LastModifiedADT = time.Unix(lastModifiedUnix, 0)
 	node.CachedAt = time.Unix(cachedAtUnix, 0)
 

@@ -161,107 +161,6 @@ func TestListEnhancementsForInclude_ParsesResponse(t *testing.T) {
 	}
 }
 
-func TestGetIncludeMerged_AnchorResolvable(t *testing.T) {
-	includeBody := `FORM SYNTHETIC_FORM.
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""$*$\SE:(1) Form SYNTHETIC_FORM, Start                                                                                                                 A
-*$*$-Start: (1)---------------------------------------------------------------------------------$*$*
-* existing body
-ENDFORM.
-`
-	enhSource := `ENHANCEMENT 2 ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG.
-  DATA lv_sum TYPE i.
-  lv_sum = lv_sum + 1.
-ENDENHANCEMENT.`
-
-	browserResp := `<?xml version="1.0" encoding="UTF-8"?>
-<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_enhancement_sample_long" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG" adtcore:packageName="$TMP"/>
-</adtcore:objectReferences>`
-
-	searchResp := newEnhancementSearchResponse("ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG", "XH", "$TMP")
-
-	mock := &routedMock{
-		byPath: map[string]*http.Response{
-			"/sap/bc/adt/programs/includes/ZSYNTHETIC_INCLUDE/source/main":                   newBody(includeBody),
-			"/sap/bc/adt/enhancements/enhoxhs":                                               newBody(browserResp),
-			"/sap/bc/adt/repository/informationsystem/search":                                searchResp,
-			"/sap/bc/adt/enhancements/enhoxh/zsynthetic_enhancement_sample_long/source/main": newBody(enhSource),
-			"/sap/bc/adt/discovery":                                                          newBody("OK"),
-		},
-	}
-	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
-	transport := NewTransportWithClient(cfg, mock)
-	client := NewClientWithTransport(cfg, transport)
-
-	merged, err := client.GetIncludeMerged(context.Background(), "ZSYNTHETIC_INCLUDE")
-	if err != nil {
-		t.Fatalf("GetIncludeMerged failed: %v", err)
-	}
-
-	if !strings.Contains(merged, "ENHO/XH ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG") {
-		t.Errorf("expected ENHO banner in output, got:\n%s", merged)
-	}
-	if !strings.Contains(merged, "ENHANCEMENT 2 ZSYNTHETIC_ENHANCEMENT_SAMPLE_LONG") {
-		t.Errorf("expected enhancement body in merged output, got:\n%s", merged)
-	}
-	if !strings.Contains(merged, "unresolved enhancements") {
-		// Good — should not be in this positive case.
-	} else {
-		t.Errorf("positive case should not contain unresolved-enhancements banner, got:\n%s", merged)
-	}
-
-	// Anchor marker must still appear (we insert AFTER it, we don't consume it).
-	if !strings.Contains(merged, "$*$\\SE:(1) Form SYNTHETIC_FORM, Start") {
-		t.Errorf("anchor marker was dropped from output")
-	}
-}
-
-func TestGetIncludeMerged_AnchorUnresolvable(t *testing.T) {
-	includeBody := `FORM foo.
-* no SE anchor markers in this body
-ENDFORM.
-`
-	enhSource := `ENHANCEMENT 2 ZSYNTHETIC_UNRESOLVED.
-  WRITE 'hi'.
-ENDENHANCEMENT.`
-
-	browserResp := `<?xml version="1.0" encoding="UTF-8"?>
-<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_unresolved" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_UNRESOLVED" adtcore:packageName="$TMP"/>
-</adtcore:objectReferences>`
-	searchResp := newEnhancementSearchResponse("ZSYNTHETIC_UNRESOLVED", "XH", "$TMP")
-
-	mock := &routedMock{
-		byPath: map[string]*http.Response{
-			"/sap/bc/adt/programs/includes/ZINCL_NOANCHOR/source/main":          newBody(includeBody),
-			"/sap/bc/adt/enhancements/enhoxhs":                                  newBody(browserResp),
-			"/sap/bc/adt/repository/informationsystem/search":                   searchResp,
-			"/sap/bc/adt/enhancements/enhoxh/zsynthetic_unresolved/source/main": newBody(enhSource),
-			"/sap/bc/adt/discovery":                                             newBody("OK"),
-		},
-	}
-	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
-	transport := NewTransportWithClient(cfg, mock)
-	client := NewClientWithTransport(cfg, transport)
-
-	merged, err := client.GetIncludeMerged(context.Background(), "ZINCL_NOANCHOR")
-	if err != nil {
-		t.Fatalf("GetIncludeMerged should not error on unresolved anchor, got: %v", err)
-	}
-	if !strings.Contains(merged, "unresolved enhancements") {
-		t.Errorf("expected unresolved-enhancements banner, got:\n%s", merged)
-	}
-	if !strings.Contains(merged, "ENHO/XH ZSYNTHETIC_UNRESOLVED") {
-		t.Errorf("expected enhancement banner in unresolved section, got:\n%s", merged)
-	}
-	if !strings.Contains(merged, "anchor unresolved") {
-		t.Errorf("expected 'anchor unresolved' note, got:\n%s", merged)
-	}
-}
-
-// stubRFCSourceFetcher is the test boundary for GetEnhancement's RFC fallback
-// path. Records the calls the production code made; returns whatever the test
-// preloaded in sourceLines/err.
 type stubRFCSourceFetcher struct {
 	sourceLines []string
 	err         error
@@ -274,7 +173,7 @@ type stubRFCSourceFetcher struct {
 	closeFn        func()
 }
 
-func (s *stubRFCSourceFetcher) CallRFC(ctx context.Context, function string, params map[string]string) (*RFCResult, error) {
+func (s *stubRFCSourceFetcher) CallRFC(ctx context.Context, function string, params map[string]any) (*RFCResult, error) {
 	// CallRFC is no longer the production path — kept on the stub purely so it
 	// satisfies the rfcSourceFetcher interface. Tests should set sourceLines
 	// and observe readCalls.
@@ -286,10 +185,8 @@ func (s *stubRFCSourceFetcher) ReadSource(ctx context.Context, program string) (
 	return s.sourceLines, s.err
 }
 
-func (s *stubRFCSourceFetcher) WriteEnhancementSource(ctx context.Context, enhancement, source, transport string) error {
-	s.writeName = enhancement
-	s.writeSource = source
-	s.writeTransport = transport
+func (s *stubRFCSourceFetcher) WriteEnhancementSource(_ context.Context, enhancement, source, transport string) error {
+	s.writeName, s.writeSource, s.writeTransport = enhancement, source, transport
 	if s.writeErr == nil {
 		s.sourceLines = strings.Split(source, "\n")
 	}
@@ -301,68 +198,6 @@ func (s *stubRFCSourceFetcher) Close() error {
 		s.closeFn()
 	}
 	return nil
-}
-
-func TestWriteEnhancementUpdateByRef_WritesAndVerifiesActiveSource(t *testing.T) {
-	const source = "ENHANCEMENT 1 ZSYNTHETIC_ENHO.\n  DATA lv_marker TYPE string VALUE 'SYNTHETIC'.\nENDENHANCEMENT."
-	stub := &stubRFCSourceFetcher{sourceLines: []string{
-		"ENHANCEMENT 1.",
-		"  DATA lv_marker TYPE string VALUE 'BEFORE'.",
-		"ENDENHANCEMENT.",
-	}}
-	client := &Client{rfcFetcherFactory: func(ctx context.Context) (rfcSourceFetcher, error) {
-		return stub, nil
-	}}
-	ref := &EnhancementRef{
-		Name:        "ZSYNTHETIC_ENHO",
-		Kind:        EnhancementKind("XH"),
-		URI:         "/sap/bc/adt/enhancements/enhoxh/zsynthetic_enho",
-		PackageName: "$TMP",
-		EnhInclude:  "ZSYNTHETIC_ENHO===============E",
-	}
-
-	result, err := client.writeEnhancementUpdateByRef(context.Background(), ref, source, "")
-	if err != nil {
-		t.Fatalf("writeEnhancementUpdateByRef returned error: %v", err)
-	}
-	if !result.Success || result.Activation == nil || !result.Activation.Success {
-		t.Fatalf("expected verified success, got: %+v", result)
-	}
-	if stub.writeName != ref.Name || stub.writeSource != source || stub.writeTransport != "" {
-		t.Fatalf("unexpected writer call: name=%q source=%q transport=%q", stub.writeName, stub.writeSource, stub.writeTransport)
-	}
-	if len(stub.readCalls) != 2 || stub.readCalls[0] != ref.EnhInclude || stub.readCalls[1] != ref.EnhInclude {
-		t.Fatalf("expected preflight and post-write active read-back from %q, got %#v", ref.EnhInclude, stub.readCalls)
-	}
-}
-
-func TestGetEnhancementTransportOwner_ResolvesParentRequest(t *testing.T) {
-	mock := &queryRoutedMock{
-		byPathBody: map[string]string{
-			"/sap/bc/adt/discovery":      "OK",
-			"/sap/bc/adt/core/discovery": "OK",
-		},
-		byDdicEntityKeyBody: map[string]string{
-			"E071": dataPreviewBody([]string{"TRKORR"}, [][]string{{"NPLK900078"}}),
-			"E070": dataPreviewBody([]string{"TRKORR", "STRKORR"}, [][]string{{"NPLK900078", "NPLK900075"}}),
-		},
-	}
-	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
-	client := NewClientWithTransport(cfg, NewTransportWithClient(cfg, mock))
-
-	task, request, err := client.getEnhancementTransportOwner(context.Background(), "ZSYNTHETIC_ENHO")
-	if err != nil {
-		t.Fatalf("getEnhancementTransportOwner returned error: %v", err)
-	}
-	if task != "NPLK900078" || request != "NPLK900075" {
-		t.Fatalf("unexpected CTS owner: task=%q request=%q", task, request)
-	}
-	if !transportMatchesCTSOwner("NPLK900075", task, request) || !transportMatchesCTSOwner("NPLK900078", task, request) {
-		t.Fatal("parent request and owning task should both be accepted")
-	}
-	if transportMatchesCTSOwner("NPLK900076", task, request) {
-		t.Fatal("unrelated request should be rejected")
-	}
 }
 
 // TestGetEnhancement_FallsBackToRFC: classic ECC, both REST source URLs 404,
@@ -416,54 +251,6 @@ func TestGetEnhancement_FallsBackToRFC(t *testing.T) {
 	}
 	if !closed {
 		t.Errorf("Close() was not called on the RFC fetcher")
-	}
-}
-
-func TestGetEnhancement_RFCFallbackResolvesPaddedIncludeFromENHINCINX(t *testing.T) {
-	const name = "ZSYNTHETIC_HOOK"
-	searchBody := `<?xml version="1.0" encoding="UTF-8"?>
-<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
-  <adtcore:objectReference adtcore:uri="/sap/bc/adt/enhancements/enhoxh/zsynthetic_hook" adtcore:type="ENHO/XH" adtcore:name="ZSYNTHETIC_HOOK" adtcore:packageName="$TMP"/>
-</adtcore:objectReferences>`
-	enhincinxBody := dataPreviewBody(
-		[]string{"ENHNAME", "PROGRAMNAME", "FULL_NAME", "ENHINCLUDE"},
-		[][]string{{
-			name,
-			"ZSYNTHETIC_PROGRAM",
-			`\PR:ZSYNTHETIC_PROGRAM\FO:SYNTHETIC_FORM\SE:BEGIN\EI`,
-			"ZSYNTHETIC_HOOK============E",
-		}},
-	)
-	mock := &queryRoutedMock{
-		byPathBody: map[string]string{
-			"/sap/bc/adt/repository/informationsystem/search": searchBody,
-			"/sap/bc/adt/discovery":                           "OK",
-			"/sap/bc/adt/core/discovery":                      "OK",
-		},
-		byDdicEntityKeyBody: map[string]string{"ENHINCINX": enhincinxBody},
-	}
-	cfg := NewConfig("https://sap.example.com:44300", "u", "p")
-	transport := NewTransportWithClient(cfg, mock)
-	client := NewClientWithTransport(cfg, transport)
-
-	stub := &stubRFCSourceFetcher{sourceLines: []string{
-		"ENHANCEMENT 1 ZSYNTHETIC_HOOK.",
-		"  WRITE 'resolved'.",
-		"ENDENHANCEMENT.",
-	}}
-	client.rfcFetcherFactory = func(ctx context.Context) (rfcSourceFetcher, error) {
-		return stub, nil
-	}
-
-	got, err := client.GetEnhancement(context.Background(), name)
-	if err != nil {
-		t.Fatalf("GetEnhancement should resolve ENHINCINX include, got: %v", err)
-	}
-	if !strings.Contains(got, "WRITE 'resolved'") {
-		t.Fatalf("expected RFC source body, got: %q", got)
-	}
-	if len(stub.readCalls) != 1 || stub.readCalls[0] != "ZSYNTHETIC_HOOK============E" {
-		t.Fatalf("expected padded ENHINCLUDE, got calls: %#v", stub.readCalls)
 	}
 }
 

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [int]$Port = 50080,
-    [string]$GoExe = ""
+    [string]$GoExe = "",
+    [string]$WorkRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,7 +24,10 @@ if (-not $GoExe -or -not (Test-Path -LiteralPath $GoExe)) {
     throw "Go was not found. Pass -GoExe with the path to go.exe."
 }
 
-$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$tempRoot = if ($WorkRoot) { [IO.Path]::GetFullPath($WorkRoot) } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()) }
+if (-not (Test-Path -LiteralPath $tempRoot -PathType Container)) {
+    throw "Temporary work root does not exist: $tempRoot"
+}
 $runDirectory = [IO.Path]::GetFullPath((Join-Path $tempRoot ("vsp-mock-sap-" + [guid]::NewGuid().ToString("N"))))
 if (-not $runDirectory.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to use temporary directory outside the system temp root: $runDirectory"
@@ -101,8 +105,8 @@ try {
         }
 
         $dynpro = & $vspExe source DYNP ZSYNTHETIC_APP/100
-        if ($LASTEXITCODE -ne 0 -or -not ($dynpro -match '"screen": "0100"')) {
-            throw "DYNP end-to-end read failed"
+        if ($LASTEXITCODE -ne 0 -or -not ($dynpro -match '"screen"\s*:\s*"0100"')) {
+            throw "DYNP end-to-end read failed (exit=$LASTEXITCODE): $dynpro"
         }
 
         $updatedSource = "INCLUDE zsynthetic_include.`nDATA gv_synthetic_value TYPE i VALUE 7."
@@ -128,7 +132,19 @@ try {
     if (Test-Path -LiteralPath $runDirectory) {
         $resolvedRunDirectory = [IO.Path]::GetFullPath($runDirectory)
         if ($resolvedRunDirectory.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            Remove-Item -LiteralPath $resolvedRunDirectory -Recurse -Force
+            $cleaned = $false
+            foreach ($attempt in 1..10) {
+                try {
+                    Remove-Item -LiteralPath $resolvedRunDirectory -Recurse -Force -ErrorAction Stop
+                    $cleaned = $true
+                    break
+                } catch {
+                    Start-Sleep -Milliseconds 300
+                }
+            }
+            if (-not $cleaned) {
+                Write-Warning "Could not remove temporary mock test directory: $resolvedRunDirectory"
+            }
         }
     }
 }

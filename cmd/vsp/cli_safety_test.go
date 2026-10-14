@@ -79,6 +79,8 @@ func TestGetClientInstallsResolvedSafety(t *testing.T) {
 		Language: "EN",
 	}
 	params.Safety.AllowTransportableEdits = true
+	params.ReadOnly = true
+	params.Safety.AllowedOps = "RS"
 	params.Safety.AllowedTransports = []string{"REQ-TEST*"}
 
 	client, err := getClient(params)
@@ -87,6 +89,9 @@ func TestGetClientInstallsResolvedSafety(t *testing.T) {
 	}
 	if !client.Safety().AllowTransportableEdits {
 		t.Error("resolved safety was not installed on the ADT client")
+	}
+	if !client.Safety().ReadOnly || client.Safety().AllowedOps != "RS" {
+		t.Fatalf("merging the legacy profile discarded the resolved safety: %+v", client.Safety())
 	}
 	if !reflect.DeepEqual(client.Safety().AllowedTransports, params.Safety.AllowedTransports) {
 		t.Fatalf("allowed transports = %v, want %v", client.Safety().AllowedTransports, params.Safety.AllowedTransports)

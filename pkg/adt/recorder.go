@@ -103,10 +103,8 @@ func NewExecutionRecorder(sessionID, program string) *ExecutionRecorder {
 
 var lastRecordingIDNanos atomic.Int64
 
-// generateRecordingID creates a unique, time-sortable recording ID. Some
-// platforms expose a clock resolution coarser than a nanosecond, so formatting
-// time.Now directly can produce duplicate IDs during a fast burst. Advance the
-// timestamp atomically when the wall clock has not moved forward.
+// generateRecordingID creates a unique, time-sortable recording ID even on
+// platforms whose clock resolution is coarser than a nanosecond.
 func generateRecordingID() string {
 	now := time.Now()
 	candidate := now.UnixNano()

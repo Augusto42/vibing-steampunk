@@ -35,32 +35,68 @@ func (s *Server) routeTransportAction(ctx context.Context, action, objectType, o
 		return s.callHandler(ctx, s.handleGetTransportInfo, params)
 	case "execute_abap":
 		return s.callHandler(ctx, s.handleExecuteABAP, params)
+	case "merge_transports":
+		return s.callHandler(ctx, s.handleMergeTransports, params)
+	case "move_transport_object", "move_object":
+		return s.callHandler(ctx, s.handleMoveTransportObject, params)
 	}
 	return nil, false, nil
 }
 
 // --- Transport Management Handlers ---
 
-func (s *Server) handleGetUserTransports(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	userName, ok := request.GetArguments()["user_name"].(string)
-	if !ok || userName == "" {
-		return newToolResultError("user_name is required"), nil
+// transportQueryFromArgs reads the shared listing parameters of
+// get_user_transports and list_transports. userKey names the parameter that
+// carries the user, which the two tools spell differently.
+func transportQueryFromArgs(args map[string]any, userKey string) adt.TransportQuery {
+	q := adt.TransportQuery{
+		User:            getStringParam(args, userKey),
+		RequestTypes:    getStringParam(args, "request_type"),
+		RequestStatuses: getStringParam(args, "request_status"),
+		ReleasedFrom:    getStringParam(args, "released_from"),
+		ReleasedTo:      getStringParam(args, "released_to"),
+		Source:          getStringParam(args, "source"),
+		ConfigURI:       getStringParam(args, "config_uri"),
+		Targets:         true,
 	}
+	if targets, ok := getBoolParam(args, "targets"); ok {
+		q.Targets = targets
+	}
+	return q
+}
 
-	transports, err := s.adtClient.GetUserTransports(ctx, userName)
+// transportListingHeader is the first line of a listing: whom it is for,
+// where it came from and which filters applied.
+func transportListingHeader(res *adt.TransportQueryResult) string {
+	user := res.Query.User
+	if user == "" {
+		user = "the connection user"
+	}
+	header := fmt.Sprintf("Transports for user %s (source: %s; %s)", user, res.Source, res.Query.Describe())
+	if res.ConfigURI != "" {
+		header += fmt.Sprintf("\nSearch configuration: %s", res.ConfigURI)
+	}
+	for _, n := range res.Notes {
+		header += "\nNote: " + n
+	}
+	return header
+}
+
+func (s *Server) handleGetUserTransports(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	res, err := s.adtClient.QueryUserTransports(ctx, transportQueryFromArgs(args, "user_name"))
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("GetUserTransports failed: %v", err)), nil
 	}
 
-	// Format output
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Transports for user %s:\n\n", strings.ToUpper(userName))
+	sb.WriteString(transportListingHeader(res))
+	sb.WriteString("\n\n")
 
+	transports := res.Transports
 	if len(transports.Workbench) > 0 {
 		sb.WriteString("=== Workbench Requests ===\n")
-		for _, tr := range transports.Workbench {
-			formatTransportRequest(&sb, &tr)
-		}
+		formatTransportBuckets(&sb, transports.Workbench)
 	} else {
 		sb.WriteString("No workbench requests found.\n")
 	}
@@ -69,9 +105,7 @@ func (s *Server) handleGetUserTransports(ctx context.Context, request mcp.CallTo
 
 	if len(transports.Customizing) > 0 {
 		sb.WriteString("=== Customizing Requests ===\n")
-		for _, tr := range transports.Customizing {
-			formatTransportRequest(&sb, &tr)
-		}
+		formatTransportBuckets(&sb, transports.Customizing)
 	} else {
 		sb.WriteString("No customizing requests found.\n")
 	}
@@ -79,11 +113,38 @@ func (s *Server) handleGetUserTransports(ctx context.Context, request mcp.CallTo
 	return mcp.NewToolResultText(sb.String()), nil
 }
 
+// formatTransportBuckets prints modifiable requests before released ones,
+// each group under its own heading, so a D and an R are never mistaken.
+func formatTransportBuckets(sb *strings.Builder, requests []adt.TransportRequest) {
+	for _, bucket := range []struct{ key, title string }{
+		{"modifiable", "--- Modifiable ---"},
+		{"released", "--- Released ---"},
+		{"", "--- Other ---"},
+	} {
+		var group []adt.TransportRequest
+		for _, tr := range requests {
+			if tr.Bucket == bucket.key {
+				group = append(group, tr)
+			}
+		}
+		if len(group) == 0 {
+			continue
+		}
+		fmt.Fprintf(sb, "%s\n", bucket.title)
+		for i := range group {
+			formatTransportRequest(sb, &group[i])
+		}
+	}
+}
+
 func formatTransportRequest(sb *strings.Builder, tr *adt.TransportRequest) {
 	fmt.Fprintf(sb, "\n%s - %s\n", tr.Number, tr.Description)
 	fmt.Fprintf(sb, "  Owner: %s, Status: %s", tr.Owner, tr.Status)
 	if tr.Target != "" {
 		fmt.Fprintf(sb, ", Target: %s", tr.Target)
+	}
+	if tr.Project != "" {
+		fmt.Fprintf(sb, ", Project: %s", tr.Project)
 	}
 	sb.WriteString("\n")
 
@@ -181,6 +242,19 @@ func (s *Server) handleExecuteABAP(ctx context.Context, request mcp.CallToolRequ
 	fmt.Fprintf(&sb, "Cleaned Up: %t\n", result.CleanedUp)
 	fmt.Fprintf(&sb, "Message: %s\n", result.Message)
 
+	// The one-line message names the failure; this is where it is spelled out.
+	// A model reading "Success: false" and nothing else has to guess whether the
+	// code was wrong or the system was, and it will guess.
+	if result.Failure != nil {
+		fmt.Fprintf(&sb, "\nFailure (%s): %s\n", result.Failure.Kind, result.Failure.Title)
+		if result.Failure.Line > 0 {
+			fmt.Fprintf(&sb, "  at line %d of the code you sent\n", result.Failure.Line)
+		}
+		for _, detail := range result.Failure.Details {
+			fmt.Fprintf(&sb, "  %s\n", detail)
+		}
+	}
+
 	if len(result.Output) > 0 {
 		sb.WriteString("\nOutput:\n")
 		for i, output := range result.Output {
@@ -207,23 +281,26 @@ func (s *Server) handleExecuteABAP(ctx context.Context, request mcp.CallToolRequ
 }
 
 func (s *Server) handleListTransports(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Check safety config for transport operations
-	if err := s.adtClient.Safety().CheckTransport("", "ListTransports", false); err != nil {
-		return newToolResultError(err.Error()), nil
-	}
-
-	user, _ := request.GetArguments()["user"].(string)
-
-	transports, err := s.adtClient.ListTransports(ctx, user)
+	args := request.GetArguments()
+	res, err := s.adtClient.QueryTransports(ctx, transportQueryFromArgs(args, "user"))
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("ListTransports failed: %v", err)), nil
 	}
 
-	if len(transports) == 0 {
-		return mcp.NewToolResultText("No modifiable transports found."), nil
+	rows := adt.FlattenTransports(res.Transports)
+	if len(rows) == 0 {
+		return mcp.NewToolResultText(transportListingHeader(res) + "\n\nNo transport requests found."), nil
 	}
 
-	jsonBytes, err := json.MarshalIndent(transports, "", "  ")
+	out := struct {
+		Source     string                 `json:"source"`
+		ConfigURI  string                 `json:"configUri,omitempty"`
+		Query      adt.TransportQuery     `json:"query"`
+		Notes      []string               `json:"notes,omitempty"`
+		Transports []adt.TransportSummary `json:"transports"`
+	}{res.Source, res.ConfigURI, res.Query, res.Notes, rows}
+
+	jsonBytes, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to format result: %v", err)), nil
 	}
@@ -333,4 +410,77 @@ func (s *Server) handleDeleteTransport(ctx context.Context, request mcp.CallTool
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Transport %s deleted successfully.", transport)), nil
+}
+
+// handleMergeTransports merges one or more requests into a target, the way
+// SE09's Merge Requests does, through ZADT_VSP's function bridge:
+// SAP(action="system", params={"type": "merge_transports", "source": ["TR-A", "TR-B"], "target": "TR-C"}).
+// Each source is merged in turn; the first failure stops the rest.
+func (s *Server) handleMergeTransports(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	target := getStringParam(args, "target")
+	if target == "" {
+		target = getStringParam(args, "into")
+	}
+	var sources []string
+	switch v := args["source"].(type) {
+	case string:
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				sources = append(sources, p)
+			}
+		}
+	case []any:
+		for _, p := range v {
+			if str, ok := p.(string); ok && strings.TrimSpace(str) != "" {
+				sources = append(sources, strings.TrimSpace(str))
+			}
+		}
+	}
+	if target == "" || len(sources) == 0 {
+		return newToolResultError("source (one request or a list) and target are required"), nil
+	}
+	if err := s.ensureDebugWSClient(ctx); err != nil {
+		return newToolResultError(fmt.Sprintf("merging requests needs ZADT_VSP's function bridge: %v", err)), nil
+	}
+	var results []*adt.TransportMergeResult
+	for _, src := range sources {
+		res, err := s.adtClient.MergeTransports(ctx, s.debugWSClient, src, target)
+		if res != nil {
+			results = append(results, res)
+		}
+		if err != nil {
+			return newToolResultJSON(map[string]any{"error": err.Error(), "merged": results}), nil
+		}
+	}
+	return newToolResultJSON(map[string]any{"target": strings.ToUpper(target), "merged": results}), nil
+}
+
+// handleMoveTransportObject moves one entry between requests:
+// SAP(action="system", params={"type": "move_transport_object", "object": "PROG ZDEMO", "from": "TR-A", "to": "TR-B"}).
+func (s *Server) handleMoveTransportObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	object := getStringParam(args, "object")
+	if object == "" {
+		object = strings.TrimSpace(getStringParam(args, "pgmid") + " " + getStringParam(args, "object_type") + " " + getStringParam(args, "object_name"))
+	}
+	key, err := adt.ParseTransportObject(object)
+	if err != nil {
+		return newToolResultError(err.Error()), nil
+	}
+	from, to := getStringParam(args, "from"), getStringParam(args, "to")
+	if from == "" || to == "" {
+		return newToolResultError("from and to (request numbers) are required"), nil
+	}
+	if err := s.ensureDebugWSClient(ctx); err != nil {
+		return newToolResultError(fmt.Sprintf("moving an object between requests needs ZADT_VSP's function bridge: %v", err)), nil
+	}
+	res, err := s.adtClient.MoveTransportObject(ctx, s.debugWSClient, key, from, to)
+	if err != nil {
+		if res != nil {
+			return newToolResultJSON(map[string]any{"error": err.Error(), "result": res}), nil
+		}
+		return newToolResultError(err.Error()), nil
+	}
+	return newToolResultJSON(res), nil
 }

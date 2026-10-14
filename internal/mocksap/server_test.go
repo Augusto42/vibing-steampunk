@@ -45,6 +45,8 @@ func TestObjectTypeExpansionEndToEnd(t *testing.T) {
 
 	const updatedSource = `INCLUDE zsynthetic_include.
 DATA gv_synthetic_value TYPE i VALUE 7.`
+	// The package must be resolved from the existing object, not supplied by
+	// the caller. This catches premature package gates in WriteSource.
 	writeResult, err := client.WriteSource(ctx, "INCL", mocksap.IncludeName, updatedSource, &adt.WriteSourceOptions{Mode: adt.WriteModeUpdate})
 	if err != nil {
 		t.Fatalf("WriteSource(INCL) through mock SAP: %v", err)
